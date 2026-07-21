@@ -1,0 +1,65 @@
+version: "3.9"
+
+# Pure infra stack — tools only (Postgres/TimescaleDB, Redis).
+# No application code is built or run from this file. The backend and
+# frontend projects are separate, built later (by hand or by an LLM
+# following the tech spec), and simply connect to these containers using
+# the connection details below.
+#
+# Note: the timescale/timescaledb image auto-enables the timescaledb
+# extension on the default database on first boot — no init script needed
+# for that. The Algo_Trading schema itself is created by the backend
+# project's first migration (see the tech spec, Section 14), not here.
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: algo_trading_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    ports:
+      # Deliberately NOT 5432 — that's your existing Postgres instance used
+      # by other projects. This project gets its own port so both can run
+      # at once.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: algo_trading_redis
+    restart: unless-stopped
+    ports:
+      # Matches the port you already had this running on standalone.
+      - "${REDIS_PORT:-55000}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- Optional dev-convenience service. Remove if not needed. ---
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: algo_trading_redis_commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on:
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:

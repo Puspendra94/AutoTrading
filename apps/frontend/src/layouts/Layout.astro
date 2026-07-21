@@ -1,0 +1,133 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title?: string;
+}
+
+const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <meta name="description" content="AI-assisted multi-provider algorithmic trading platform" />
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="app-header">
+        <div class="header-left">
+          <div class="logo">
+            <span class="logo-icon">⚡</span>
+            <span class="logo-text">AutoTrade <span class="logo-badge">AI</span></span>
+          </div>
+        </div>
+        <nav class="app-nav">
+          <a href="/" class="nav-item active">Dashboard</a>
+          <a href="/providers" class="nav-item">Providers</a>
+          <a href="/strategies" class="nav-item">Strategy Engine</a>
+          <a href="/alerts" class="nav-item">Alerts</a>
+        </nav>
+        <div class="header-right">
+          <div class="system-status">
+            <span class="status-dot"></span>
+            <span class="status-text">Risk Gate: Active (2.0% Cap)</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <slot />
+      </main>
+    </div>
+
+    <style>
+      .app-container {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+      }
+      .app-header {
+        height: 64px;
+        background: rgba(13, 18, 30, 0.8);
+        backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 1.5rem;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+      }
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 700;
+        font-size: 1.15rem;
+      }
+      .logo-icon {
+        font-size: 1.25rem;
+      }
+      .logo-badge {
+        font-size: 0.65rem;
+        background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        color: #fff;
+        text-transform: uppercase;
+      }
+      .app-nav {
+        display: flex;
+        gap: 1.5rem;
+      }
+      .nav-item {
+        color: var(--text-muted);
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        padding: 0.4rem 0.8rem;
+        border-radius: 6px;
+        transition: all 0.2s;
+      }
+      .nav-item:hover, .nav-item.active {
+        color: var(--text-main);
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .system-status {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        padding: 0.35rem 0.75rem;
+        border-radius: 20px;
+      }
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: var(--color-bull);
+        box-shadow: 0 0 8px var(--color-bull);
+      }
+      .main-content {
+        flex: 1;
+        padding: 1.5rem;
+        max-width: 1600px;
+        margin: 0 auto;
+        width: 100%;
+      }
+    </style>
+  </body>
+</html>

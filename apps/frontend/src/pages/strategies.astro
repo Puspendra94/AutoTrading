@@ -1,0 +1,238 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Strategy Engine — AI Algorithmic Trading Platform">
+  <div class="page-container">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Strategy Engine & Evaluation Center</h1>
+        <p class="page-subtitle">Deterministic quantitative evaluation scorecards, walk-forward validation, and LLM token cost analytics.</p>
+      </div>
+      <button class="btn btn-primary">+ Run Strategy Generation Pipeline</button>
+    </div>
+
+    <!-- Top Quantitative Policy Metrics Bar -->
+    <div class="glass-card policy-bar">
+      <h3 class="card-title">Active Strategy Evaluation Policy Thresholds</h3>
+      <div class="policy-stats-grid">
+        <div class="policy-item">
+          <span class="p-lbl">Min Sharpe Ratio</span>
+          <strong class="p-val mono">≥ 1.00</strong>
+        </div>
+        <div class="policy-item">
+          <span class="p-lbl">Max Drawdown Cap</span>
+          <strong class="p-val mono">≤ 20.0%</strong>
+        </div>
+        <div class="policy-item">
+          <span class="p-lbl">Min Profit Factor</span>
+          <strong class="p-val mono">≥ 1.30</strong>
+        </div>
+        <div class="policy-item">
+          <span class="p-lbl">Min Trade Count</span>
+          <strong class="p-val mono">≥ 100 trades</strong>
+        </div>
+        <div class="policy-item">
+          <span class="p-lbl">OOS Walk-Forward</span>
+          <strong class="p-val text-bull">Mandatory</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Strategies Evaluation Table -->
+    <div class="glass-card table-card">
+      <h3 class="card-title">Generated Strategies Evaluation Scorecard</h3>
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Version</th>
+              <th>Status</th>
+              <th>Mode</th>
+              <th>Sharpe</th>
+              <th>Sortino</th>
+              <th>Max DD</th>
+              <th>Profit Factor</th>
+              <th>Monte Carlo</th>
+              <th>Eval Gate</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong class="mono">BTCUSDT</strong></td>
+              <td>v2</td>
+              <td><span class="badge badge-bull">LIVE</span></td>
+              <td>Mode A (Rules)</td>
+              <td class="mono font-bold text-bull">1.84</td>
+              <td class="mono">2.15</td>
+              <td class="mono">8.4%</td>
+              <td class="mono">1.62</td>
+              <td><span class="badge badge-bull">100% Pass</span></td>
+              <td><span class="badge badge-bull">PASSED</span></td>
+            </tr>
+            <tr>
+              <td><strong class="mono">ETHUSDT</strong></td>
+              <td>v1</td>
+              <td><span class="badge badge-bull">LIVE</span></td>
+              <td>Mode A (Rules)</td>
+              <td class="mono font-bold text-bull">1.52</td>
+              <td class="mono">1.78</td>
+              <td class="mono">11.2%</td>
+              <td class="mono">1.45</td>
+              <td><span class="badge badge-bull">96% Pass</span></td>
+              <td><span class="badge badge-bull">PASSED</span></td>
+            </tr>
+            <tr>
+              <td><strong class="mono">SOLUSDT</strong></td>
+              <td>v1</td>
+              <td><span class="badge badge-info">EVALUATED</span></td>
+              <td>Mode A (Rules)</td>
+              <td class="mono">0.82</td>
+              <td class="mono">0.95</td>
+              <td class="mono text-bear">24.5%</td>
+              <td class="mono">1.12</td>
+              <td><span class="badge badge-bear">42% Pass</span></td>
+              <td><span class="badge badge-bear">FAILED</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- LLM Cost Analytics Section (Section 4.10) -->
+    <div class="glass-card cost-card">
+      <div class="cost-card-header">
+        <div>
+          <h3 class="card-title">LLM Token Cost Analytics & Provider Log</h3>
+          <p class="card-subtext">Tracks prompt token usage and USD cost per strategy generation call.</p>
+        </div>
+        <div class="total-cost-badge">
+          <span>Total LLM Spend:</span>
+          <strong class="mono text-bull">$0.042 USD</strong>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Ticker</th>
+              <th>Purpose</th>
+              <th>Model</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+              <th>Cost (USD)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">2026-07-21 13:05</td>
+              <td>BTCUSDT</td>
+              <td>Strategy Generation</td>
+              <td>claude-3-5-sonnet</td>
+              <td class="mono">210</td>
+              <td class="mono">140</td>
+              <td class="mono text-bull">$0.002730</td>
+            </tr>
+            <tr>
+              <td class="mono">2026-07-21 13:02</td>
+              <td>ETHUSDT</td>
+              <td>Strategy Generation</td>
+              <td>claude-3-5-sonnet</td>
+              <td class="mono">195</td>
+              <td class="mono">130</td>
+              <td class="mono text-bull">$0.002535</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .page-container {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .page-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+    .page-subtitle {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 0.85rem;
+    }
+    .policy-bar {
+      background: rgba(6, 182, 212, 0.05);
+      border-color: rgba(6, 182, 212, 0.2);
+    }
+    .policy-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1rem;
+    }
+    .policy-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+    .p-lbl {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .p-val {
+      font-size: 1rem;
+    }
+    .table-responsive {
+      overflow-x: auto;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.875rem;
+    }
+    .data-table th, .data-table td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .data-table th {
+      color: var(--text-muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+    }
+    .data-table tbody tr:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .cost-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }
+    .total-cost-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(16, 185, 129, 0.1);
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+    }
+  </style>
+</Layout>

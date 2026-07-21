@@ -1,0 +1,203 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Providers — AI Algorithmic Trading Platform">
+  <div class="page-container">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Provider & Account Management</h1>
+        <p class="page-subtitle">Connect exchange accounts, monitor tradable balances, and configure trading schedules.</p>
+      </div>
+      <button class="btn btn-primary" id="openAddModalBtn">+ Connect New Provider</button>
+    </div>
+
+    <!-- Provider Cards Grid -->
+    <div class="providers-grid">
+      <!-- Provider 1: Binance Spot & Futures -->
+      <div class="glass-card provider-card">
+        <div class="provider-card-top">
+          <div class="provider-brand">
+            <div class="brand-icon binance">B</div>
+            <div>
+              <h3 class="provider-name">Binance Trading Account</h3>
+              <span class="provider-type">Type: Spot & Futures API</span>
+            </div>
+          </div>
+          <div class="toggle-container">
+            <label class="switch">
+              <input type="checkbox" checked />
+              <span class="slider round"></span>
+            </label>
+            <span class="toggle-lbl">Trading Enabled</span>
+          </div>
+        </div>
+
+        <div class="provider-balance-section">
+          <div class="balance-item">
+            <span class="lbl">Available Tradable Balance</span>
+            <span class="val mono text-bull">$10,000.00 USDT</span>
+          </div>
+          <div class="balance-item">
+            <span class="lbl">Last Synced</span>
+            <span class="val">2 mins ago (Auto-Sync)</span>
+          </div>
+        </div>
+
+        <div class="provider-meta">
+          <p class="note">⚠️ Platform only manages capital explicitly allocated to algorithm trading. Pre-existing holdings are untouched.</p>
+          <div class="action-buttons">
+            <button class="btn btn-outline">Configure Risk Limits</button>
+            <button class="btn btn-outline">Sync Balance Now</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Provider 2: Zerodha / Kite (Coming Soon Placeholder per Section 4.2) -->
+      <div class="glass-card provider-card coming-soon">
+        <div class="provider-card-top">
+          <div class="provider-brand">
+            <div class="brand-icon zerodha">Z</div>
+            <div>
+              <h3 class="provider-name">Zerodha / Kite</h3>
+              <span class="provider-type">Type: Equity & Derivatives</span>
+            </div>
+          </div>
+          <span class="badge badge-info">Coming Soon</span>
+        </div>
+
+        <div class="provider-balance-section">
+          <p class="cs-text">Zerodha Kite API connector integration template ready. Starting with Binance first per implementation roadmap.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .page-container {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .page-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+    .page-subtitle {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+    .providers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+      gap: 1.5rem;
+    }
+    .provider-card {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .provider-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .provider-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .brand-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.2rem;
+    }
+    .brand-icon.binance {
+      background: rgba(243, 186, 27, 0.15);
+      color: #f3ba1b;
+      border: 1px solid rgba(243, 186, 27, 0.3);
+    }
+    .brand-icon.zerodha {
+      background: rgba(56, 126, 209, 0.15);
+      color: #387ed1;
+      border: 1px solid rgba(56, 126, 209, 0.3);
+    }
+    .provider-name {
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    .provider-type {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+    }
+
+    /* Switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 38px;
+      height: 22px;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #374151; transition: .3s; border-radius: 22px;
+    }
+    .slider:before {
+      position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
+      background-color: white; transition: .3s; border-radius: 50%;
+    }
+    input:checked + .slider { background-color: var(--color-bull); }
+    input:checked + .slider:before { transform: translateX(16px); }
+
+    .provider-balance-section {
+      background: rgba(0, 0, 0, 0.25);
+      padding: 1rem;
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .balance-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+    .lbl { font-size: 0.75rem; color: var(--text-muted); }
+    .val { font-weight: 600; font-size: 1.1rem; }
+
+    .provider-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .note {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    .action-buttons {
+      display: flex;
+      gap: 0.75rem;
+    }
+    .cs-text {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+  </style>
+</Layout>

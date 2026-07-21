@@ -1,0 +1,19 @@
+{
+  "name": "algo-trading-platform-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-Based Algorithmic Trading Platform Monorepo",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "infra:up": "cd infra && docker compose up -d",
+    "infra:down": "cd infra && docker compose down",
+    "infra:logs": "cd infra && docker compose logs -f",
+    "dev:backend": "npm --prefix apps/backend run start:dev",
+    "dev:frontend": "npm --prefix apps/frontend run dev",
+    "build:backend": "npm --prefix apps/backend run build",
+    "build:frontend": "npm --prefix apps/frontend run build",
+    "test:backend": "npm --prefix apps/backend run test"
+  }
+}
