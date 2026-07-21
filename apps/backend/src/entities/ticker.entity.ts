@@ -45,7 +45,7 @@ export class Ticker {
   @Column({ type: 'enum', enum: TickerStatus, default: TickerStatus.ONBOARDING })
   status: TickerStatus;
 
-  @Column({ type: 'enum', enum: OnboardingStage, default: OnboardingStage.FETCHING_HISTORY })
+  @Column({ name: 'onboarding_stage', type: 'enum', enum: OnboardingStage, default: OnboardingStage.FETCHING_HISTORY })
   onboardingStage: OnboardingStage;
 
   @CreateDateColumn({ name: 'created_at' })

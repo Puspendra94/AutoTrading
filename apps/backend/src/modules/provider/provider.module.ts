@@ -8,6 +8,7 @@ import { RiskLimit } from '../../entities/risk-limit.entity';
 import { ProviderService } from './provider.service';
 import { ProviderController } from './provider.controller';
 import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets-provider';
+import { BinanceAdapter } from './adapters/binance.adapter';
 
 @Module({
   imports: [
@@ -19,8 +20,8 @@ import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets
       RiskLimit,
     ]),
   ],
-  providers: [ProviderService, PlaintextSecretsProvider],
+  providers: [ProviderService, PlaintextSecretsProvider, BinanceAdapter],
   controllers: [ProviderController],
-  exports: [ProviderService, PlaintextSecretsProvider],
+  exports: [ProviderService, PlaintextSecretsProvider, BinanceAdapter],
 })
 export class ProviderModule {}

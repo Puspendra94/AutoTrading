@@ -6,10 +6,13 @@ import { StrategyEvaluationPolicy } from '../../entities/strategy-evaluation-pol
 import { Ticker } from '../../entities/ticker.entity';
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { LiveVsBacktestDivergence } from '../../entities/live-vs-backtest-divergence.entity';
+import { Position } from '../../entities/position.entity';
+import { AiLessonLearned } from '../../entities/ai-lesson-learned.entity';
 import { LlmModule } from '../llm/llm.module';
 import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyController } from './strategy.controller';
+import { AiLessonsService } from './ai-lessons.service';
 
 @Module({
   imports: [
@@ -20,11 +23,13 @@ import { StrategyController } from './strategy.controller';
       Ticker,
       OhlcvData,
       LiveVsBacktestDivergence,
+      Position,
+      AiLessonLearned,
     ]),
     LlmModule,
   ],
-  providers: [StrategyEvaluatorService, StrategyEngineService],
+  providers: [StrategyEvaluatorService, StrategyEngineService, AiLessonsService],
   controllers: [StrategyController],
-  exports: [StrategyEvaluatorService, StrategyEngineService],
+  exports: [StrategyEvaluatorService, StrategyEngineService, AiLessonsService],
 })
 export class StrategyModule {}

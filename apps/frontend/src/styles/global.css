@@ -130,3 +130,191 @@ body {
 .pulse {
   animation: pulse-subtle 2s infinite ease-in-out;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Light theme override — toggled via data-theme="light" on <html>        */
+/* (see Layout.astro's theme-toggle script). Same custom-property names,  */
+/* just re-pointed, so every existing .glass-card/.btn/.badge/etc. that   */
+/* already reads var(--...) picks this up with no per-component changes. */
+/* ---------------------------------------------------------------------- */
+:root[data-theme='light'] {
+  --bg-dark: #f3f4f6;
+  --bg-card: rgba(255, 255, 255, 0.75);
+  --bg-card-hover: rgba(255, 255, 255, 0.92);
+  --border-color: rgba(15, 23, 42, 0.1);
+  --border-highlight: rgba(6, 182, 212, 0.35);
+
+  --text-main: #0f172a;
+  --text-muted: #4b5563;
+  --text-dim: #6b7280;
+}
+
+:root[data-theme='light'] body {
+  background-image:
+    radial-gradient(circle at 15% 15%, rgba(6, 182, 212, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.08) 0%, transparent 40%);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Shared form / modal / feedback primitives used across the real pages   */
+/* (login, providers connect form, add-ticker mini form). Keep additions  */
+/* minimal and reuse the existing token names.                            */
+/* ---------------------------------------------------------------------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.field label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.text-input,
+.select-input {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 0.55rem 0.85rem;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  outline: none;
+  width: 100%;
+}
+
+:root[data-theme='light'] .text-input,
+:root[data-theme='light'] .select-input {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.text-input:focus,
+.select-input:focus {
+  border-color: var(--accent-cyan);
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.checkbox-field input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-cyan);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 460px;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.25rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  color: var(--text-main);
+}
+
+.error-text {
+  color: var(--color-bear);
+  font-size: 0.8rem;
+}
+
+.hint-text {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty-state p {
+  font-size: 0.875rem;
+  max-width: 360px;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.theme-toggle-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+}
+
+.theme-toggle-btn:hover {
+  color: var(--text-main);
+  border-color: var(--text-muted);
+}

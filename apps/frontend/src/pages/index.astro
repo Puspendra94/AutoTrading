@@ -4,181 +4,111 @@ import Layout from '../layouts/Layout.astro';
 
 <Layout title="Dashboard — AI Algorithmic Trading Platform">
   <div class="dashboard-grid">
-    <!-- Main Left Section: Selected Ticker Detail View (Section 16.1) -->
+    <!-- Main Left Section: Selected Ticker Detail View -->
     <div class="main-ticker-view">
       <!-- Top Bar: Ticker Selector & Stats -->
       <div class="glass-card ticker-header">
         <div class="ticker-selector-container">
           <label for="tickerSelect" class="label">Select Ticker:</label>
           <select id="tickerSelect" class="select-input">
-            <option value="BTCUSDT">BTC/USDT — Binance Spot</option>
-            <option value="ETHUSDT">ETH/USDT — Binance Spot</option>
-            <option value="SOLUSDT">SOL/USDT — Binance Spot</option>
+            <option value="">Loading tickers…</option>
           </select>
+          <button class="btn btn-outline" id="addTickerToggleBtn" type="button">+ Add Ticker</button>
         </div>
 
         <div class="price-stat-group">
           <div class="stat-item">
             <span class="stat-label">Live Price</span>
-            <span class="stat-value mono" id="livePrice">$65,240.50</span>
+            <span class="stat-value mono" id="livePrice">—</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">24h Change</span>
-            <span class="stat-value mono text-bull" id="priceChange">+3.42%</span>
+            <span class="stat-label">Change (window)</span>
+            <span class="stat-value mono" id="priceChange">—</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">Volume</span>
-            <span class="stat-value mono" id="priceVolume">12,450 BTC</span>
+            <span class="stat-label">Volume (window)</span>
+            <span class="stat-value mono" id="priceVolume">—</span>
           </div>
         </div>
 
         <div class="onboarding-status">
-          <span class="badge badge-info">Status: Live Trading</span>
+          <span class="badge badge-info" id="tickerStatusBadge">Status: —</span>
         </div>
       </div>
 
-      <!-- Real-time Candlestick Price Chart (Section 16.1) -->
+      <!-- Add Ticker mini-form -->
+      <div class="glass-card add-ticker-card" id="addTickerCard" hidden>
+        <h3 class="card-heading">Add Ticker</h3>
+        <form id="addTickerForm" class="add-ticker-form">
+          <div class="field">
+            <label for="newTickerProvider">Provider</label>
+            <select class="select-input" id="newTickerProvider" required>
+              <option value="">Loading providers…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="newTickerSymbol">Symbol</label>
+            <input class="text-input" id="newTickerSymbol" type="text" placeholder="BTCUSDT" required />
+          </div>
+          <div class="field">
+            <label for="newTickerInterval">Interval</label>
+            <select class="select-input" id="newTickerInterval">
+              <option value="1m">1m</option>
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary" id="addTickerSubmitBtn">Add & Start Backfill</button>
+        </form>
+        <p class="error-text" id="addTickerError" hidden></p>
+        <p class="hint-text">Adding a ticker kicks off an async historical backfill from the provider's public market data — the chart will populate once candles land.</p>
+      </div>
+
+      <!-- Real-time Candlestick Price Chart -->
       <div class="glass-card chart-card">
         <div class="chart-header">
           <h3 class="chart-title">Real-Time Price & Signal Chart</h3>
-          <div class="timeframe-buttons">
-            <button class="btn btn-outline active">1m</button>
-            <button class="btn btn-outline">5m</button>
-            <button class="btn btn-outline">1h</button>
-            <button class="btn btn-outline">1d</button>
+          <div class="chart-actions">
+            <span class="badge badge-info" id="intervalBadge">—</span>
+            <button class="btn btn-outline" id="rebackfillBtn" type="button">Re-run Backfill</button>
           </div>
         </div>
         <div class="canvas-container">
-          <canvas id="candlestickCanvas" width="900" height="380"></canvas>
+          <div id="priceChart" class="price-chart"></div>
+          <div class="empty-state" id="chartEmptyState" hidden>
+            <p>No candle data yet for this ticker. It may still be backfilling — try again shortly, or hit "Re-run Backfill".</p>
+          </div>
         </div>
       </div>
 
-      <!-- Active Strategy Proposal / Action Card (Section 16.1) -->
-      <div class="glass-card strategy-card">
-        <div class="strategy-card-header">
-          <div>
-            <h3 class="card-heading">Active Strategy Signal & Execution Mode</h3>
-            <p class="card-subtext">Strategy v2 (Mode A: Rules Engine — Zero LLM latency on hot path)</p>
-          </div>
-          <span class="badge badge-bull">Signal: HOLDING LONG</span>
-        </div>
-
-        <div class="strategy-details-grid">
-          <div class="detail-box">
-            <span class="detail-label">Strategy Model</span>
-            <span class="detail-val">Adaptive Trend Breakout</span>
-          </div>
-          <div class="detail-box">
-            <span class="detail-label">Entry Price</span>
-            <span class="detail-val mono">$64,850.00</span>
-          </div>
-          <div class="detail-box">
-            <span class="detail-label">Unrealized P/L</span>
-            <span class="detail-val mono text-bull">+$390.50 (+0.60%)</span>
-          </div>
-          <div class="detail-box">
-            <span class="detail-label">Position Sizing</span>
-            <span class="detail-val">Probation (25% size)</span>
-          </div>
-        </div>
-
-        <div class="strategy-metrics-row">
-          <div class="mini-metric">
-            <span>Backtest Sharpe</span>
-            <strong class="mono">1.84</strong>
-          </div>
-          <div class="mini-metric">
-            <span>Profit Factor</span>
-            <strong class="mono">1.62</strong>
-          </div>
-          <div class="mini-metric">
-            <span>Max Drawdown</span>
-            <strong class="mono">8.4%</strong>
-          </div>
-          <div class="mini-metric">
-            <span>OOS Pass Rate</span>
-            <strong class="mono text-bull">100%</strong>
-          </div>
-        </div>
+      <!-- Active Strategy Proposal / Action Card -->
+      <div class="glass-card strategy-card" id="strategyCard">
+        <p class="hint-text">Loading strategy…</p>
       </div>
     </div>
 
-    <!-- Persistent Sidebar: Live Trades Across ALL Tickers & Providers (Section 16.2) -->
+    <!-- Persistent Sidebar: Live Trades Across ALL Tickers & Providers -->
     <aside class="sidebar-trades-view">
-      <!-- Risk Gate Daily Loss Progress Bar (Section 5.1) -->
       <div class="glass-card risk-card">
         <div class="risk-header">
-          <h4>Provider Risk Gate & Daily Loss Limit</h4>
-          <span class="mono risk-pct">0.42% / 2.0%</span>
+          <h4>Provider Risk Gate</h4>
         </div>
-        <div class="progress-bar-container">
-          <div class="progress-bar-fill" style="width: 21%;"></div>
-        </div>
-        <p class="risk-sub">Daily Reset: 00:00 UTC | Hard Limit Gate Enforcement Active</p>
+        <p class="risk-sub">Hard risk-gate enforcement is active on every order submission across all connected providers. Daily loss limits reset 00:00 UTC.</p>
       </div>
 
-      <!-- Live Open Positions Sidebar List (Section 16.2) -->
+      <!-- Live Open Positions Sidebar List -->
       <div class="glass-card live-positions-card">
         <div class="sidebar-title-row">
           <h3>Live Trades Across All Tickers</h3>
           <span class="pulse-tag"><span class="status-dot"></span> Streaming</span>
         </div>
-        <p class="sidebar-hint">Real-time status across Binance & Zerodha accounts</p>
+        <p class="sidebar-hint">Real-time status across all connected provider accounts</p>
 
         <div class="positions-list" id="positionsList">
-          <!-- Live Trade Entry Item -->
-          <div class="position-item">
-            <div class="pos-top">
-              <div class="pos-symbol">
-                <strong class="mono">BTC/USDT</strong>
-                <span class="provider-tag">Binance</span>
-              </div>
-              <span class="badge badge-bull">LONG</span>
-            </div>
-
-            <div class="pos-mid">
-              <div class="pos-stat">
-                <span class="pos-lbl">Entry</span>
-                <span class="pos-val mono">$64,850.00</span>
-              </div>
-              <div class="pos-stat">
-                <span class="pos-lbl">Current P/L</span>
-                <span class="pos-val mono text-bull">+$390.50 (+0.60%)</span>
-              </div>
-            </div>
-
-            <div class="pos-bot">
-              <span class="pos-time">Open: 2h 14m</span>
-              <span class="probation-badge">Probation 25%</span>
-            </div>
-          </div>
-
-          <!-- Live Trade Entry Item 2 -->
-          <div class="position-item">
-            <div class="pos-top">
-              <div class="pos-symbol">
-                <strong class="mono">ETH/USDT</strong>
-                <span class="provider-tag">Binance</span>
-              </div>
-              <span class="badge badge-bull">LONG</span>
-            </div>
-
-            <div class="pos-mid">
-              <div class="pos-stat">
-                <span class="pos-lbl">Entry</span>
-                <span class="pos-val mono">$3,380.00</span>
-              </div>
-              <div class="pos-stat">
-                <span class="pos-lbl">Current P/L</span>
-                <span class="pos-val mono text-bull">+$42.10 (+1.24%)</span>
-              </div>
-            </div>
-
-            <div class="pos-bot">
-              <span class="pos-time">Open: 45m</span>
-              <span class="probation-badge">Full Size</span>
-            </div>
-          </div>
+          <p class="hint-text">Loading positions…</p>
         </div>
       </div>
     </aside>
@@ -212,22 +142,13 @@ import Layout from '../layouts/Layout.astro';
       align-items: center;
       gap: 0.75rem;
     }
+    .ticker-selector-container .select-input {
+      width: auto;
+      min-width: 220px;
+    }
     .label {
       font-size: 0.85rem;
       color: var(--text-muted);
-    }
-    .select-input {
-      background: rgba(0, 0, 0, 0.4);
-      border: 1px solid var(--border-color);
-      color: var(--text-main);
-      padding: 0.5rem 1rem;
-      border-radius: 8px;
-      font-family: var(--font-sans);
-      font-size: 0.9rem;
-      outline: none;
-    }
-    .select-input:focus {
-      border-color: var(--accent-cyan);
     }
     .price-stat-group {
       display: flex;
@@ -248,6 +169,21 @@ import Layout from '../layouts/Layout.astro';
     .text-bull { color: var(--color-bull); }
     .text-bear { color: var(--color-bear); }
 
+    .add-ticker-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .add-ticker-form {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr auto;
+      gap: 0.75rem;
+      align-items: end;
+    }
+    @media (max-width: 800px) {
+      .add-ticker-form { grid-template-columns: 1fr; }
+    }
+
     .chart-card {
       display: flex;
       flex-direction: column;
@@ -257,17 +193,20 @@ import Layout from '../layouts/Layout.astro';
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
     }
     .chart-title {
       font-size: 1rem;
       font-weight: 600;
     }
-    .timeframe-buttons {
+    .chart-actions {
       display: flex;
-      gap: 0.4rem;
+      align-items: center;
+      gap: 0.6rem;
     }
-    .timeframe-buttons .btn {
-      padding: 0.25rem 0.6rem;
+    .chart-actions .btn {
+      padding: 0.3rem 0.75rem;
       font-size: 0.75rem;
     }
     .canvas-container {
@@ -277,11 +216,19 @@ import Layout from '../layouts/Layout.astro';
       border: 1px solid rgba(255, 255, 255, 0.04);
       padding: 0.5rem;
       overflow: hidden;
+      position: relative;
+      min-height: 380px;
     }
-    canvas {
+    :root[data-theme='light'] .canvas-container {
+      background: rgba(15, 23, 42, 0.03);
+    }
+    .price-chart {
       width: 100%;
       height: 380px;
-      display: block;
+    }
+    .canvas-container .empty-state {
+      position: absolute;
+      inset: 0;
     }
 
     .strategy-card {
@@ -293,6 +240,8 @@ import Layout from '../layouts/Layout.astro';
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 0.75rem;
     }
     .card-heading {
       font-size: 1rem;
@@ -305,11 +254,14 @@ import Layout from '../layouts/Layout.astro';
     }
     .strategy-details-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 1rem;
       background: rgba(0, 0, 0, 0.25);
       padding: 1rem;
       border-radius: 8px;
+    }
+    :root[data-theme='light'] .strategy-details-grid {
+      background: rgba(15, 23, 42, 0.04);
     }
     .detail-box {
       display: flex;
@@ -327,6 +279,7 @@ import Layout from '../layouts/Layout.astro';
     .strategy-metrics-row {
       display: flex;
       gap: 1.5rem;
+      flex-wrap: wrap;
       border-top: 1px solid var(--border-color);
       padding-top: 0.75rem;
     }
@@ -359,20 +312,8 @@ import Layout from '../layouts/Layout.astro';
       font-size: 0.85rem;
       font-weight: 600;
     }
-    .progress-bar-container {
-      width: 100%;
-      height: 8px;
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    .progress-bar-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--color-bull), var(--color-warning));
-      border-radius: 4px;
-    }
     .risk-sub {
-      font-size: 0.7rem;
+      font-size: 0.75rem;
       color: var(--text-dim);
     }
 
@@ -416,6 +357,9 @@ import Layout from '../layouts/Layout.astro';
       flex-direction: column;
       gap: 0.5rem;
       transition: all 0.2s ease;
+    }
+    :root[data-theme='light'] .position-item {
+      background: rgba(15, 23, 42, 0.04);
     }
     .position-item:hover {
       border-color: var(--accent-cyan);
@@ -470,60 +414,415 @@ import Layout from '../layouts/Layout.astro';
   </style>
 
   <script>
-    // Real-Time Canvas Candlestick Chart Renderer & Polling Loop
-    const canvas = document.getElementById('candlestickCanvas') as HTMLCanvasElement;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // Draw sample candlestick chart
-        const drawChart = () => {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          
-          // Draw grid lines
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
-          ctx.lineWidth = 1;
-          for (let y = 50; y < canvas.height; y += 50) {
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(canvas.width, y);
-            ctx.stroke();
-          }
+    import { createChart, ColorType, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
+    import { apiGet, apiPost, requireAuth, ApiError } from '../lib/api';
+    import { subscribeTicker, unsubscribeTicker, onPriceUpdate, onPositionsUpdate } from '../lib/ws';
 
-          // Sample candles
-          const candleCount = 40;
-          const barWidth = 14;
-          const gap = 6;
-          let basePrice = 200;
+    requireAuth();
 
-          for (let i = 0; i < candleCount; i++) {
-            const x = i * (barWidth + gap) + 30;
-            const change = (Math.random() - 0.48) * 15;
-            const open = basePrice;
-            const close = basePrice + change;
-            const high = Math.max(open, close) + Math.random() * 8;
-            const low = Math.min(open, close) - Math.random() * 8;
-            basePrice = close;
+    type Ticker = {
+      id: string;
+      symbol: string;
+      interval: string;
+      status: string;
+      onboardingStage: string;
+      provider?: { id: string; name: string };
+    };
+    type Provider = { id: string; name: string; type: string };
+    type Candle = { timestamp: string; open: number; high: number; low: number; close: number; volume: number };
+    type Backtest = {
+      sharpe: number;
+      sortino: number;
+      maxDrawdown: number;
+      profitFactor: number;
+      tradeCount: number;
+      passedEvaluationGate: boolean;
+    };
+    type Strategy = { id: string; version: number; status: string; executionMode: string; parametersJson: any };
+    type Position = {
+      id: string;
+      ticker: { symbol: string };
+      strategy?: { id: string } | null;
+      side: 'long' | 'short';
+      entryPrice: number;
+      currentPrice: number;
+      quantity: number;
+      unrealizedPl: number;
+      realizedPl: number;
+      isProbation: boolean;
+      openedAt: string;
+    };
 
-            const isBull = close >= open;
-            ctx.strokeStyle = isBull ? '#10b981' : '#ef4444';
-            ctx.fillStyle = isBull ? '#10b981' : '#ef4444';
+    let tickers: Ticker[] = [];
+    let currentTickerId: string | null = null;
+    let chart: IChartApi | null = null;
+    let candleSeries: ISeriesApi<'Candlestick'> | null = null;
 
-            // Wick
-            ctx.beginPath();
-            ctx.moveTo(x + barWidth / 2, canvas.height - high);
-            ctx.lineTo(x + barWidth / 2, canvas.height - low);
-            ctx.stroke();
+    const tickerSelect = document.getElementById('tickerSelect') as HTMLSelectElement;
+    const chartContainer = document.getElementById('priceChart') as HTMLDivElement;
+    const chartEmptyState = document.getElementById('chartEmptyState')!;
+    const livePriceEl = document.getElementById('livePrice')!;
+    const priceChangeEl = document.getElementById('priceChange')!;
+    const priceVolumeEl = document.getElementById('priceVolume')!;
+    const tickerStatusBadge = document.getElementById('tickerStatusBadge')!;
+    const intervalBadge = document.getElementById('intervalBadge')!;
+    const strategyCard = document.getElementById('strategyCard')!;
+    const positionsList = document.getElementById('positionsList')!;
 
-            // Body
-            const bodyY = canvas.height - Math.max(open, close);
-            const bodyHeight = Math.max(2, Math.abs(close - open));
-            ctx.fillRect(x, bodyY, barWidth, bodyHeight);
-          }
-        };
+    function escapeHtml(s: string): string {
+      const div = document.createElement('div');
+      div.textContent = s ?? '';
+      return div.innerHTML;
+    }
 
-        drawChart();
-        setInterval(drawChart, 3000); // Pulse update every 3s
+    // --- Chart setup ---
+    function initChart() {
+      chart = createChart(chartContainer, {
+        layout: {
+          background: { type: ColorType.Solid, color: 'transparent' },
+          textColor: '#9ca3af',
+        },
+        grid: {
+          vertLines: { color: 'rgba(255,255,255,0.05)' },
+          horzLines: { color: 'rgba(255,255,255,0.05)' },
+        },
+        timeScale: { timeVisible: true, secondsVisible: false },
+        width: chartContainer.clientWidth,
+        height: 380,
+      });
+      candleSeries = chart.addCandlestickSeries({
+        upColor: '#10b981',
+        downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#10b981',
+        wickDownColor: '#ef4444',
+      });
+
+      new ResizeObserver(() => {
+        if (chart) chart.applyOptions({ width: chartContainer.clientWidth });
+      }).observe(chartContainer);
+    }
+
+    function toChartTime(iso: string | number): UTCTimestamp {
+      const ms = typeof iso === 'number' ? (iso > 1e12 ? iso : iso * 1000) : new Date(iso).getTime();
+      return Math.floor(ms / 1000) as UTCTimestamp;
+    }
+
+    function normalizeCandle(raw: any) {
+      const rawTime = raw.timestamp ?? raw.time ?? raw.t ?? raw.openTime;
+      return {
+        time: toChartTime(rawTime),
+        open: Number(raw.open ?? raw.o),
+        high: Number(raw.high ?? raw.h),
+        low: Number(raw.low ?? raw.l),
+        close: Number(raw.close ?? raw.c),
+        volume: Number(raw.volume ?? raw.v ?? 0),
+      };
+    }
+
+    function updateStatsFromCandles(candles: ReturnType<typeof normalizeCandle>[]) {
+      if (!candles.length) {
+        livePriceEl.textContent = '—';
+        priceChangeEl.textContent = '—';
+        priceVolumeEl.textContent = '—';
+        return;
+      }
+      const first = candles[0];
+      const last = candles[candles.length - 1];
+      livePriceEl.textContent = `$${last.close.toLocaleString(undefined, { maximumFractionDigits: 8 })}`;
+
+      const changePct = first.open ? ((last.close - first.open) / first.open) * 100 : 0;
+      priceChangeEl.textContent = `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`;
+      priceChangeEl.classList.toggle('text-bull', changePct >= 0);
+      priceChangeEl.classList.toggle('text-bear', changePct < 0);
+
+      const totalVolume = candles.reduce((sum, c) => sum + c.volume, 0);
+      priceVolumeEl.textContent = totalVolume.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+
+    let loadedCandles: ReturnType<typeof normalizeCandle>[] = [];
+
+    async function loadCandles(tickerId: string) {
+      try {
+        const raw = await apiGet<Candle[]>(`/market-data/tickers/${tickerId}/candles?limit=200`);
+        loadedCandles = raw.map(normalizeCandle);
+        chartEmptyState.hidden = loadedCandles.length > 0;
+        candleSeries?.setData(loadedCandles);
+        updateStatsFromCandles(loadedCandles);
+      } catch (err) {
+        chartEmptyState.hidden = false;
+        loadedCandles = [];
       }
     }
+
+    // --- Strategy card ---
+    async function loadStrategyCard(tickerId: string) {
+      strategyCard.innerHTML = `<p class="hint-text"><span class="spinner"></span> Loading strategy…</p>`;
+      try {
+        const result = await apiGet<{ strategy: Strategy; backtest: Backtest } | null>(
+          `/strategies/ticker/${tickerId}/active`,
+        );
+        if (!result) {
+          strategyCard.innerHTML = `
+            <div class="empty-state">
+              <p>No active (LIVE) strategy for this ticker yet. Run the generation pipeline to have the LLM propose one, backtest it, and auto-promote it if it clears the evaluation gate.</p>
+              <button class="btn btn-primary" id="generateStrategyBtn">Generate Strategy</button>
+            </div>
+          `;
+          document.getElementById('generateStrategyBtn')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget as HTMLButtonElement;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Generating…';
+            try {
+              await apiPost(`/strategies/ticker/${tickerId}/generate`);
+              await loadStrategyCard(tickerId);
+            } catch (err) {
+              strategyCard.innerHTML = `<p class="error-text">${err instanceof ApiError ? escapeHtml(err.message) : 'Strategy generation failed'}</p>`;
+            }
+          });
+          return;
+        }
+
+        const { strategy, backtest } = result;
+        const params = strategy.parametersJson || {};
+        const strategyName = params.strategyName || 'Generated Strategy';
+
+        strategyCard.innerHTML = `
+          <div class="strategy-card-header">
+            <div>
+              <h3 class="card-heading">Active Strategy Signal & Execution Mode</h3>
+              <p class="card-subtext">${escapeHtml(strategyName)} — v${strategy.version} (${strategy.executionMode === 'mode_a_rules' ? 'Mode A: Rules Engine' : 'Mode B: AI Live'})</p>
+            </div>
+            <span class="badge badge-bull">Status: ${escapeHtml(strategy.status.toUpperCase())}</span>
+          </div>
+
+          ${
+            backtest
+              ? `
+          <div class="strategy-metrics-row">
+            <div class="mini-metric">
+              <span>Backtest Sharpe</span>
+              <strong class="mono">${Number(backtest.sharpe).toFixed(2)}</strong>
+            </div>
+            <div class="mini-metric">
+              <span>Profit Factor</span>
+              <strong class="mono">${Number(backtest.profitFactor).toFixed(2)}</strong>
+            </div>
+            <div class="mini-metric">
+              <span>Max Drawdown</span>
+              <strong class="mono">${Number(backtest.maxDrawdown).toFixed(1)}%</strong>
+            </div>
+            <div class="mini-metric">
+              <span>Trade Count</span>
+              <strong class="mono">${backtest.tradeCount}</strong>
+            </div>
+            <div class="mini-metric">
+              <span>Eval Gate</span>
+              <strong class="mono ${backtest.passedEvaluationGate ? 'text-bull' : 'text-bear'}">${backtest.passedEvaluationGate ? 'PASSED' : 'FAILED'}</strong>
+            </div>
+          </div>`
+              : `<p class="hint-text">No backtest metrics recorded for this strategy version.</p>`
+          }
+        `;
+      } catch (err) {
+        strategyCard.innerHTML = `<p class="error-text">${err instanceof ApiError ? escapeHtml(err.message) : 'Failed to load strategy'}</p>`;
+      }
+    }
+
+    // --- Ticker switching ---
+    async function selectTicker(tickerId: string) {
+      if (currentTickerId) unsubscribeTicker(currentTickerId);
+      currentTickerId = tickerId;
+      localStorage.setItem('lastTickerId', tickerId);
+
+      const ticker = tickers.find((t) => t.id === tickerId);
+      if (ticker) {
+        tickerStatusBadge.textContent = `Status: ${ticker.status} / ${ticker.onboardingStage}`;
+        intervalBadge.textContent = `Interval: ${ticker.interval}`;
+      }
+
+      await loadCandles(tickerId);
+      await loadStrategyCard(tickerId);
+      subscribeTicker(tickerId);
+    }
+
+    function populateTickerSelect() {
+      if (!tickers.length) {
+        tickerSelect.innerHTML = `<option value="">No tickers yet — add one</option>`;
+        return;
+      }
+      tickerSelect.innerHTML = tickers
+        .map((t) => `<option value="${t.id}">${escapeHtml(t.symbol)} — ${escapeHtml(t.provider?.name || 'Unknown')} (${escapeHtml(t.interval)})</option>`)
+        .join('');
+    }
+
+    async function loadTickers() {
+      try {
+        tickers = await apiGet<Ticker[]>('/market-data/tickers');
+        populateTickerSelect();
+        if (!tickers.length) return;
+        const remembered = localStorage.getItem('lastTickerId');
+        const initial = tickers.find((t) => t.id === remembered)?.id || tickers[0].id;
+        tickerSelect.value = initial;
+        await selectTicker(initial);
+      } catch (err) {
+        tickerSelect.innerHTML = `<option value="">Failed to load tickers</option>`;
+      }
+    }
+
+    tickerSelect.addEventListener('change', () => {
+      if (tickerSelect.value) selectTicker(tickerSelect.value);
+    });
+
+    // --- Add ticker mini-form ---
+    const addTickerCard = document.getElementById('addTickerCard')!;
+    const addTickerToggleBtn = document.getElementById('addTickerToggleBtn')!;
+    const addTickerForm = document.getElementById('addTickerForm') as HTMLFormElement;
+    const addTickerError = document.getElementById('addTickerError')!;
+    const newTickerProviderSelect = document.getElementById('newTickerProvider') as HTMLSelectElement;
+
+    addTickerToggleBtn.addEventListener('click', () => {
+      addTickerCard.hidden = !addTickerCard.hidden;
+    });
+
+    async function loadProvidersIntoForm() {
+      try {
+        const providers = await apiGet<Provider[]>('/providers');
+        if (!providers.length) {
+          newTickerProviderSelect.innerHTML = `<option value="">No providers — connect one first</option>`;
+          return;
+        }
+        newTickerProviderSelect.innerHTML = providers
+          .map((p) => `<option value="${p.id}">${escapeHtml(p.name)} (${escapeHtml(p.type)})</option>`)
+          .join('');
+      } catch {
+        newTickerProviderSelect.innerHTML = `<option value="">Failed to load providers</option>`;
+      }
+    }
+
+    addTickerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      addTickerError.hidden = true;
+      const providerId = newTickerProviderSelect.value;
+      const symbol = (document.getElementById('newTickerSymbol') as HTMLInputElement).value.trim().toUpperCase();
+      const interval = (document.getElementById('newTickerInterval') as HTMLSelectElement).value;
+
+      if (!providerId) {
+        addTickerError.hidden = false;
+        addTickerError.textContent = 'Select a provider first (connect one on the Providers page if the list is empty).';
+        return;
+      }
+
+      const submitBtn = document.getElementById('addTickerSubmitBtn') as HTMLButtonElement;
+      submitBtn.disabled = true;
+      const original = submitBtn.textContent;
+      submitBtn.innerHTML = '<span class="spinner"></span>';
+
+      try {
+        const created = await apiPost<Ticker>('/market-data/tickers', { providerId, symbol, interval });
+        addTickerForm.reset();
+        addTickerCard.hidden = true;
+        await loadTickers();
+        if (created?.id) {
+          tickerSelect.value = created.id;
+          await selectTicker(created.id);
+        }
+      } catch (err) {
+        addTickerError.hidden = false;
+        addTickerError.textContent = err instanceof ApiError ? err.message : 'Failed to add ticker';
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = original;
+      }
+    });
+
+    // --- Re-run backfill ---
+    document.getElementById('rebackfillBtn')?.addEventListener('click', async (e) => {
+      if (!currentTickerId) return;
+      const btn = e.currentTarget as HTMLButtonElement;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        await apiPost(`/market-data/tickers/${currentTickerId}/backfill`);
+        await loadCandles(currentTickerId);
+      } catch (err) {
+        // non-fatal, chart just stays as-is
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+
+    // --- Live price updates via WS ---
+    onPriceUpdate(({ tickerId, candle }) => {
+      if (tickerId !== currentTickerId || !candleSeries) return;
+      const bar = normalizeCandle(candle);
+      candleSeries.update(bar);
+      if (loadedCandles.length && loadedCandles[loadedCandles.length - 1].time === bar.time) {
+        loadedCandles[loadedCandles.length - 1] = bar;
+      } else {
+        loadedCandles.push(bar);
+      }
+      updateStatsFromCandles(loadedCandles);
+    });
+
+    // --- Live positions sidebar ---
+    function renderPositions(positions: Position[]) {
+      if (!positions.length) {
+        positionsList.innerHTML = `<p class="hint-text">No open positions right now.</p>`;
+        return;
+      }
+      positionsList.innerHTML = positions
+        .map((p) => {
+          const plPct = p.entryPrice ? (Number(p.unrealizedPl) / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
+          const isBull = Number(p.unrealizedPl) >= 0;
+          const openedMs = Date.now() - new Date(p.openedAt).getTime();
+          const openedMins = Math.floor(openedMs / 60000);
+          const openedLabel = openedMins < 60 ? `${openedMins}m` : `${Math.floor(openedMins / 60)}h ${openedMins % 60}m`;
+          return `
+            <div class="position-item">
+              <div class="pos-top">
+                <div class="pos-symbol">
+                  <strong class="mono">${escapeHtml(p.ticker?.symbol || '—')}</strong>
+                </div>
+                <span class="badge ${p.side === 'long' ? 'badge-bull' : 'badge-bear'}">${p.side.toUpperCase()}</span>
+              </div>
+              <div class="pos-mid">
+                <div class="pos-stat">
+                  <span class="pos-lbl">Entry</span>
+                  <span class="pos-val mono">$${Number(p.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</span>
+                </div>
+                <div class="pos-stat">
+                  <span class="pos-lbl">Current P/L</span>
+                  <span class="pos-val mono ${isBull ? 'text-bull' : 'text-bear'}">${isBull ? '+' : ''}$${Number(p.unrealizedPl).toFixed(2)} (${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%)</span>
+                </div>
+              </div>
+              <div class="pos-bot">
+                <span class="pos-time">Open: ${openedLabel}</span>
+                <span class="probation-badge">${p.isProbation ? 'Probation' : 'Full Size'}</span>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    async function loadPositions() {
+      try {
+        const positions = await apiGet<Position[]>('/execution/positions/open');
+        renderPositions(positions);
+      } catch (err) {
+        positionsList.innerHTML = `<p class="hint-text">Failed to load positions.</p>`;
+      }
+    }
+
+    onPositionsUpdate((positions) => renderPositions(positions));
+
+    // --- Init ---
+    initChart();
+    loadTickers();
+    loadProvidersIntoForm();
+    loadPositions();
   </script>
 </Layout>

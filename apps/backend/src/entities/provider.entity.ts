@@ -13,6 +13,11 @@ export enum ProviderStatus {
   ERROR = 'error',
 }
 
+export enum TradingMode {
+  PAPER = 'paper',
+  LIVE = 'live',
+}
+
 @Entity({ name: 'providers', schema: 'Algo_Trading' })
 export class Provider {
   @PrimaryGeneratedColumn('uuid')
@@ -36,6 +41,17 @@ export class Provider {
 
   @Column({ name: 'trading_enabled', default: true })
   tradingEnabled: boolean;
+
+  // Explicit safety switch (spec Section 0.2 checkpoint): order placement only ever
+  // touches the real Binance API when this is 'live'. Defaults to 'paper' (simulated
+  // fills against real streamed prices) until the user opts in deliberately.
+  @Column({ name: 'trading_mode', type: 'enum', enum: TradingMode, default: TradingMode.PAPER })
+  tradingMode: TradingMode;
+
+  // When true (default), 'live' mode still targets Binance's Spot Testnet rather than
+  // mainnet — both this AND tradingMode must be explicitly flipped for real capital to move.
+  @Column({ name: 'use_testnet', default: true })
+  useTestnet: boolean;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

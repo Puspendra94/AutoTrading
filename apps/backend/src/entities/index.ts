@@ -19,3 +19,4 @@ export * from './order.entity';
 export * from './reconciliation-report.entity';
 export * from './alert.entity';
 export * from './llm-cost-log.entity';
+export * from './ai-lesson-learned.entity';

@@ -4,31 +4,33 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { dataSourceOptions } from './database/data-source';
 import { AuthModule } from './modules/auth/auth.module';
 import { ProviderModule } from './modules/provider/provider.module';
-import { MarketDataModule } from './modules/market-data/market-data.module';
+import { MarketStreamModule } from './modules/market-data/market-stream.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
 import { RiskExecutionModule } from './modules/risk-execution/risk-execution.module';
 import { AllocationModule } from './modules/allocation/allocation.module';
 import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { LlmModule } from './modules/llm/llm.module';
-import { TradingGateway } from './websockets/trading.gateway';
+import { WebsocketsModule } from './websockets/websockets.module';
+import { RedisModule } from './common/redis/redis.module';
 import dataSource from './database/data-source';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRoot(dataSourceOptions),
+    RedisModule,
     AuthModule,
     ProviderModule,
-    MarketDataModule,
+    MarketStreamModule,
     StrategyModule,
     RiskExecutionModule,
     AllocationModule,
     ReconciliationModule,
     NotificationModule,
     LlmModule,
+    WebsocketsModule,
   ],
-  providers: [TradingGateway],
 })
 export class AppModule implements OnModuleInit {
   async onModuleInit() {

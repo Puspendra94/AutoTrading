@@ -45,12 +45,19 @@ export class TradingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   }
 
   broadcastPriceUpdate(tickerId: string, candle: any) {
+    if (!this.server) return; // no bound Socket.IO server (e.g. accidentally invoked outside the API process)
     this.server.to(`ticker_${tickerId}`).emit('price_update', { tickerId, candle });
   }
 
   async broadcastPositionUpdate() {
+    if (!this.server) return;
     const positions = await this.executionService.getOpenPositions();
     this.server.emit('live_positions_update', positions);
+  }
+
+  broadcastAlert(alert: any) {
+    if (!this.server) return;
+    this.server.emit('alert_created', alert);
   }
 
   private async sendOpenPositionsStream(client: Socket) {

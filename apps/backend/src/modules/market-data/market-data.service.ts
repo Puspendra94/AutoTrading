@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Ticker, TickerStatus, OnboardingStage } from '../../entities/ticker.entity';
@@ -6,9 +6,12 @@ import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { DataQualityFlag, FlagType } from '../../entities/data-quality-flag.entity';
 import { Provider } from '../../entities/provider.entity';
 import { MarketType } from '../../entities/market-type.entity';
+import { BinanceAdapter } from '../provider/adapters/binance.adapter';
 
 @Injectable()
 export class MarketDataService {
+  private readonly logger = new Logger(MarketDataService.name);
+
   constructor(
     @InjectRepository(Ticker)
     private readonly tickerRepo: Repository<Ticker>,
@@ -20,6 +23,7 @@ export class MarketDataService {
     private readonly providerRepo: Repository<Provider>,
     @InjectRepository(MarketType)
     private readonly marketTypeRepo: Repository<MarketType>,
+    private readonly binanceAdapter: BinanceAdapter,
   ) {}
 
   async listTickers(providerId?: string) {
@@ -55,85 +59,63 @@ export class MarketDataService {
     });
     await this.tickerRepo.save(ticker);
 
-    // Trigger historical backfill asynchronously
-    this.backfillHistoricalData(ticker.id).catch((err) => {
-      console.error(`Backfill failed for ticker ${ticker.symbol}:`, err.message);
-    });
-
+    // Backfill + live-stream startup is orchestrated by MarketDataController (needs
+    // MarketStreamService too, which would create a circular module dependency if
+    // called from here) — see market-data.controller.ts.
     return ticker;
   }
 
-  async backfillHistoricalData(tickerId: string, limit = 500) {
+  /**
+   * Real historical backfill via Binance's public klines endpoint (no credentials
+   * needed — market data is public). On failure, the ticker is marked FAILED and a
+   * data-quality flag is written — no synthetic candles are ever inserted, per
+   * CONVENTIONS.md's "no silent fallbacks to fake data" rule.
+   */
+  async backfillHistoricalData(tickerId: string, limit = 1000) {
     const ticker = await this.getTickerById(tickerId);
     ticker.onboardingStage = OnboardingStage.FETCHING_HISTORY;
     await this.tickerRepo.save(ticker);
 
-    const candles: Partial<OhlcvData>[] = [];
-    const now = Date.now();
-    const intervalMs = 60 * 1000; // 1 min
-
-    // Attempt fetching from public Binance API first
-    let fetchedFromApi = false;
+    let candles;
     try {
-      const response = await fetch(
-        `https://api.binance.com/api/v3/klines?symbol=${ticker.symbol}&interval=${ticker.interval}&limit=${limit}`,
-      );
-      if (response.ok) {
-        const data = await response.json();
-        if (Array.isArray(data) && data.length > 0) {
-          for (const raw of data) {
-            candles.push({
-              tickerId: ticker.id,
-              timestamp: new Date(raw[0]),
-              open: parseFloat(raw[1]),
-              high: parseFloat(raw[2]),
-              low: parseFloat(raw[3]),
-              close: parseFloat(raw[4]),
-              volume: parseFloat(raw[5]),
-            });
-          }
-          fetchedFromApi = true;
-        }
-      }
-    } catch (e) {
-      console.warn(`Binance API fetch failed for ${ticker.symbol}, falling back to synthetic generator:`, e.message);
-    }
-
-    // Synthetic high-quality OHLCV generator if offline/mock
-    if (!fetchedFromApi || candles.length === 0) {
-      let basePrice = ticker.symbol.startsWith('BTC') ? 65000 : ticker.symbol.startsWith('ETH') ? 3400 : 150;
-      for (let i = limit; i >= 0; i--) {
-        const timestamp = new Date(now - i * intervalMs);
-        const change = (Math.random() - 0.49) * (basePrice * 0.003);
-        const open = basePrice;
-        const close = basePrice + change;
-        const high = Math.max(open, close) + Math.random() * (basePrice * 0.001);
-        const low = Math.min(open, close) - Math.random() * (basePrice * 0.001);
-        const volume = Math.random() * 10 + 1;
-
-        basePrice = close;
-        candles.push({
+      candles = await this.binanceAdapter.getPublicKlines(ticker.symbol, ticker.interval, limit);
+    } catch (err) {
+      this.logger.error(`Binance klines fetch failed for ${ticker.symbol}: ${err.message}`);
+      ticker.onboardingStage = OnboardingStage.FAILED;
+      ticker.status = TickerStatus.INACTIVE;
+      await this.tickerRepo.save(ticker);
+      await this.flagRepo.save(
+        this.flagRepo.create({
           tickerId: ticker.id,
-          timestamp,
-          open,
-          high,
-          low,
-          close,
-          volume,
-        });
-      }
+          flagType: FlagType.GAP,
+          detailJson: { reason: 'historical_backfill_failed', error: err.message },
+        }),
+      );
+      return { tickerId: ticker.id, candlesFetched: 0, failed: true, error: err.message };
     }
 
-    // Save candles in batch to TimescaleDB
+    if (candles.length === 0) {
+      ticker.onboardingStage = OnboardingStage.FAILED;
+      ticker.status = TickerStatus.INACTIVE;
+      await this.tickerRepo.save(ticker);
+      await this.flagRepo.save(
+        this.flagRepo.create({
+          tickerId: ticker.id,
+          flagType: FlagType.GAP,
+          detailJson: { reason: 'no_historical_data_returned' },
+        }),
+      );
+      return { tickerId: ticker.id, candlesFetched: 0, failed: true };
+    }
+
     for (const candle of candles) {
-      const entity = this.ohlcvRepo.create(candle);
-      await this.ohlcvRepo.save(entity).catch(() => {}); // ignore duplicates on primary key
+      const entity = this.ohlcvRepo.create({ tickerId: ticker.id, ...candle });
+      await this.ohlcvRepo.save(entity).catch(() => {}); // duplicate primary key on re-backfill, safe to ignore
     }
 
-    // Perform Data Quality Audit
     await this.auditDataQuality(ticker.id);
 
-    return { tickerId: ticker.id, candlesFetched: candles.length };
+    return { tickerId: ticker.id, candlesFetched: candles.length, failed: false };
   }
 
   async auditDataQuality(tickerId: string) {
@@ -150,7 +132,6 @@ export class MarketDataService {
       const curr = candles[i];
       const timeDiff = curr.timestamp.getTime() - prev.timestamp.getTime();
 
-      // Detect Gap (> 3 mins for 1m interval)
       if (timeDiff > 3 * 60 * 1000) {
         await this.flagRepo.save(
           this.flagRepo.create({
@@ -161,9 +142,8 @@ export class MarketDataService {
         );
       }
 
-      // Detect Spike (> 10% change single candle)
-      const priceChangePct = Math.abs(curr.close - prev.close) / prev.close;
-      if (priceChangePct > 0.10) {
+      const priceChangePct = Math.abs(Number(curr.close) - Number(prev.close)) / Number(prev.close);
+      if (priceChangePct > 0.1) {
         await this.flagRepo.save(
           this.flagRepo.create({
             tickerId,
@@ -176,10 +156,21 @@ export class MarketDataService {
   }
 
   async getCandles(tickerId: string, limit = 200) {
-    return this.ohlcvRepo.find({
-      where: { tickerId },
-      order: { timestamp: 'DESC' },
-      take: limit,
-    }).then((res) => res.reverse());
+    return this.ohlcvRepo
+      .find({
+        where: { tickerId },
+        order: { timestamp: 'DESC' },
+        take: limit,
+      })
+      .then((res) => res.reverse());
+  }
+
+  async upsertLiveCandle(tickerId: string, candle: { timestamp: Date; open: number; high: number; low: number; close: number; volume: number }) {
+    const existing = await this.ohlcvRepo.findOne({ where: { tickerId, timestamp: candle.timestamp } });
+    if (existing) {
+      await this.ohlcvRepo.update({ tickerId, timestamp: candle.timestamp }, candle);
+    } else {
+      await this.ohlcvRepo.save(this.ohlcvRepo.create({ tickerId, ...candle }));
+    }
   }
 }

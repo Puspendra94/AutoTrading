@@ -5,11 +5,13 @@ import { DailyLossTracking } from '../../entities/daily-loss-tracking.entity';
 import { Position } from '../../entities/position.entity';
 import { Order } from '../../entities/order.entity';
 import { Ticker } from '../../entities/ticker.entity';
+import { Provider } from '../../entities/provider.entity';
 import { ProviderBalanceSnapshot } from '../../entities/provider-balance-snapshot.entity';
 import { Alert } from '../../entities/alert.entity';
 import { RiskGateService } from './risk-gate.service';
 import { ExecutionService } from './execution.service';
 import { RiskExecutionController } from './risk-execution.controller';
+import { ProviderModule } from '../provider/provider.module';
 
 @Module({
   imports: [
@@ -19,9 +21,11 @@ import { RiskExecutionController } from './risk-execution.controller';
       Position,
       Order,
       Ticker,
+      Provider,
       ProviderBalanceSnapshot,
       Alert,
     ]),
+    ProviderModule,
   ],
   providers: [RiskGateService, ExecutionService],
   controllers: [RiskExecutionController],

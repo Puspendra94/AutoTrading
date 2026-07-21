@@ -6,6 +6,15 @@ interface Props {
 }
 
 const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
+
+const navItems = [
+  { href: '/', label: 'Dashboard' },
+  { href: '/providers', label: 'Providers' },
+  { href: '/strategies', label: 'Strategy Engine' },
+  { href: '/alerts', label: 'Alerts' },
+];
+
+const currentPath = Astro.url.pathname.replace(/\/+$/, '') || '/';
 ---
 
 <!DOCTYPE html>
@@ -15,6 +24,17 @@ const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{title}</title>
     <meta name="description" content="AI-assisted multi-provider algorithmic trading platform" />
+    <script is:inline>
+      // Applied before first paint to avoid a flash of the wrong theme.
+      (function () {
+        try {
+          const stored = localStorage.getItem('theme');
+          document.documentElement.setAttribute('data-theme', stored === 'light' ? 'light' : 'dark');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div class="app-container">
@@ -26,16 +46,22 @@ const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
           </div>
         </div>
         <nav class="app-nav">
-          <a href="/" class="nav-item active">Dashboard</a>
-          <a href="/providers" class="nav-item">Providers</a>
-          <a href="/strategies" class="nav-item">Strategy Engine</a>
-          <a href="/alerts" class="nav-item">Alerts</a>
+          {navItems.map((item) => (
+            <a
+              href={item.href}
+              class={`nav-item ${currentPath === item.href ? 'active' : ''}`}
+            >
+              {item.label}
+            </a>
+          ))}
         </nav>
         <div class="header-right">
+          <button id="themeToggleBtn" class="theme-toggle-btn" type="button" title="Toggle theme" aria-label="Toggle theme">🌙</button>
           <div class="system-status">
             <span class="status-dot"></span>
-            <span class="status-text">Risk Gate: Active (2.0% Cap)</span>
+            <span class="status-text">Risk Gate: Active</span>
           </div>
+          <button id="logoutBtn" class="btn btn-outline" type="button">Logout</button>
         </div>
       </header>
 
@@ -62,6 +88,9 @@ const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
         position: sticky;
         top: 0;
         z-index: 100;
+      }
+      :root[data-theme='light'] .app-header {
+        background: rgba(255, 255, 255, 0.8);
       }
       .header-left {
         display: flex;
@@ -103,6 +132,11 @@ const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
         color: var(--text-main);
         background: rgba(255, 255, 255, 0.05);
       }
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
       .system-status {
         display: flex;
         align-items: center;
@@ -129,5 +163,27 @@ const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
         width: 100%;
       }
     </style>
+
+    <script>
+      import { logout } from '../lib/api';
+
+      document.getElementById('logoutBtn')?.addEventListener('click', () => {
+        logout();
+      });
+
+      const themeBtn = document.getElementById('themeToggleBtn');
+      const applyIcon = () => {
+        const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+        if (themeBtn) themeBtn.textContent = theme === 'dark' ? '🌙' : '☀️';
+      };
+      applyIcon();
+      themeBtn?.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('theme', next);
+        applyIcon();
+      });
+    </script>
   </body>
 </html>

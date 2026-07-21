@@ -11,6 +11,7 @@
     "infra:down": "cd infra && docker compose down",
     "infra:logs": "cd infra && docker compose logs -f",
     "dev:backend": "npm --prefix apps/backend run start:dev",
+    "dev:worker": "npm --prefix apps/backend run worker:dev",
     "dev:frontend": "npm --prefix apps/frontend run dev",
     "build:backend": "npm --prefix apps/backend run build",
     "build:frontend": "npm --prefix apps/frontend run build",

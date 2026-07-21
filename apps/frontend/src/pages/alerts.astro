@@ -9,50 +9,21 @@ import Layout from '../layouts/Layout.astro';
         <h1 class="page-title">Notifications & System Alerts</h1>
         <p class="page-subtitle">Tiered alerts feed for risk events, strategy auto-promotions, and system audits.</p>
       </div>
-      <div class="filter-tabs">
-        <button class="btn btn-outline active">All Alerts</button>
-        <button class="btn btn-outline">Critical</button>
-        <button class="btn btn-outline">Warning</button>
-        <button class="btn btn-outline">Info</button>
+      <div class="filter-tabs" id="filterTabs">
+        <button class="btn btn-outline active" data-severity="">All Alerts</button>
+        <button class="btn btn-outline" data-severity="critical">Critical</button>
+        <button class="btn btn-outline" data-severity="warning">Warning</button>
+        <button class="btn btn-outline" data-severity="info">Info</button>
       </div>
     </div>
 
-    <!-- Alerts Feed List -->
-    <div class="alerts-feed">
-      <!-- Critical Tier Alert -->
-      <div class="glass-card alert-item critical">
-        <div class="alert-top">
-          <span class="badge badge-bear">CRITICAL</span>
-          <span class="alert-time mono">Today at 13:05 UTC</span>
-        </div>
-        <div class="alert-content">
-          <h4 class="alert-title">Risk Gate Daily Loss Limit Verification Passed</h4>
-          <p class="alert-msg">Provider Binance daily loss tracking initialized at 0.42% (well within 2.0% cap). Hard risk gate enforcement active on all order submissions.</p>
-        </div>
-      </div>
+    <div id="alertsError" class="error-text" hidden></div>
 
-      <!-- Info Tier Alert -->
-      <div class="glass-card alert-item info">
-        <div class="alert-top">
-          <span class="badge badge-bull">INFO</span>
-          <span class="alert-time mono">Today at 12:45 UTC</span>
-        </div>
-        <div class="alert-content">
-          <h4 class="alert-title">Strategy Auto-Promoted to Live Trading</h4>
-          <p class="alert-msg">Ticker BTCUSDT strategy v2 cleared all evaluation criteria (Sharpe 1.84, Profit Factor 1.62). Auto-promoted at probation position size (25%).</p>
-        </div>
-      </div>
-
-      <!-- Info Tier Alert 2 -->
-      <div class="glass-card alert-item info">
-        <div class="alert-top">
-          <span class="badge badge-bull">INFO</span>
-          <span class="alert-time mono">Today at 12:30 UTC</span>
-        </div>
-        <div class="alert-content">
-          <h4 class="alert-title">Ticker Onboarding Completed</h4>
-          <p class="alert-msg">Ticker BTCUSDT completed historical OHLCV backfill (500 candles), data quality audit clean, strategy generation complete.</p>
-        </div>
+    <!-- Alerts Feed List (rendered client-side from GET /alerts) -->
+    <div class="alerts-feed" id="alertsFeed">
+      <div class="glass-card empty-state">
+        <span class="spinner"></span>
+        <p>Loading alerts…</p>
       </div>
     </div>
   </div>
@@ -67,6 +38,8 @@ import Layout from '../layouts/Layout.astro';
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
     }
     .page-title {
       font-size: 1.5rem;
@@ -101,6 +74,10 @@ import Layout from '../layouts/Layout.astro';
       border-left-color: var(--color-bear);
       background: rgba(239, 68, 68, 0.05);
     }
+    .alert-item.warning {
+      border-left-color: var(--color-warning);
+      background: rgba(245, 158, 11, 0.05);
+    }
     .alert-item.info {
       border-left-color: var(--color-bull);
       background: rgba(16, 185, 129, 0.05);
@@ -109,6 +86,8 @@ import Layout from '../layouts/Layout.astro';
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
     }
     .alert-time {
       font-size: 0.75rem;
@@ -117,11 +96,166 @@ import Layout from '../layouts/Layout.astro';
     .alert-title {
       font-size: 0.95rem;
       font-weight: 600;
+      text-transform: capitalize;
     }
     .alert-msg {
       font-size: 0.85rem;
       color: var(--text-muted);
       margin-top: 0.2rem;
     }
+    .alert-bottom {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .ack-tag {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    .ack-btn {
+      padding: 0.3rem 0.75rem;
+      font-size: 0.75rem;
+    }
   </style>
+
+  <script>
+    import { apiGet, apiPatch, requireAuth, ApiError } from '../lib/api';
+    import { onAlertCreated } from '../lib/ws';
+
+    requireAuth();
+
+    type Alert = {
+      id: string;
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      message: string;
+      relatedEntityType?: string;
+      relatedEntityId?: string;
+      createdAt: string;
+      acknowledgedAt?: string | null;
+    };
+
+    const feed = document.getElementById('alertsFeed')!;
+    const errorBanner = document.getElementById('alertsError')!;
+    const tabs = document.querySelectorAll<HTMLButtonElement>('#filterTabs button');
+
+    let currentSeverity = '';
+    let alerts: Alert[] = [];
+
+    function badgeClass(severity: string): string {
+      if (severity === 'critical') return 'badge-bear';
+      if (severity === 'warning') return 'badge-info';
+      return 'badge-bull';
+    }
+
+    function formatTime(iso: string): string {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return d.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+
+    function renderAlert(a: Alert): string {
+      const title = (a.category || 'alert').replace(/[_-]/g, ' ');
+      return `
+        <div class="glass-card alert-item ${a.severity}" data-alert-id="${a.id}">
+          <div class="alert-top">
+            <span class="badge ${badgeClass(a.severity)}">${a.severity.toUpperCase()}</span>
+            <span class="alert-time mono">${formatTime(a.createdAt)}</span>
+          </div>
+          <div class="alert-content">
+            <h4 class="alert-title">${escapeHtml(title)}</h4>
+            <p class="alert-msg">${escapeHtml(a.message)}</p>
+          </div>
+          <div class="alert-bottom">
+            ${
+              a.acknowledgedAt
+                ? `<span class="ack-tag">Acknowledged ${formatTime(a.acknowledgedAt)}</span>`
+                : `<button class="btn btn-outline ack-btn">Acknowledge</button>`
+            }
+          </div>
+        </div>
+      `;
+    }
+
+    function escapeHtml(s: string): string {
+      const div = document.createElement('div');
+      div.textContent = s ?? '';
+      return div.innerHTML;
+    }
+
+    function render() {
+      if (!alerts.length) {
+        feed.innerHTML = `
+          <div class="glass-card empty-state">
+            <p>No ${currentSeverity ? currentSeverity + '-tier ' : ''}alerts yet. This feed updates live as the system generates them.</p>
+          </div>
+        `;
+        return;
+      }
+      feed.innerHTML = alerts.map(renderAlert).join('');
+      attachAckListeners();
+    }
+
+    function attachAckListeners() {
+      feed.querySelectorAll<HTMLElement>('.alert-item[data-alert-id]').forEach((card) => {
+        const id = card.dataset.alertId!;
+        const btn = card.querySelector<HTMLButtonElement>('.ack-btn');
+        btn?.addEventListener('click', async () => {
+          btn.disabled = true;
+          btn.innerHTML = '<span class="spinner"></span>';
+          try {
+            await apiPatch(`/alerts/${id}/ack`);
+            const alert = alerts.find((a) => a.id === id);
+            if (alert) alert.acknowledgedAt = new Date().toISOString();
+            render();
+          } catch (err) {
+            errorBanner.hidden = false;
+            errorBanner.textContent = err instanceof ApiError ? err.message : 'Failed to acknowledge alert';
+            btn.disabled = false;
+            btn.textContent = 'Acknowledge';
+          }
+        });
+      });
+    }
+
+    async function loadAlerts() {
+      errorBanner.hidden = true;
+      feed.innerHTML = `<div class="glass-card empty-state"><span class="spinner"></span><p>Loading alerts…</p></div>`;
+      try {
+        const query = currentSeverity ? `?severity=${currentSeverity}` : '';
+        alerts = await apiGet<Alert[]>(`/alerts${query}`);
+        render();
+      } catch (err) {
+        errorBanner.hidden = false;
+        errorBanner.textContent = err instanceof ApiError ? err.message : 'Failed to load alerts';
+        feed.innerHTML = '';
+      }
+    }
+
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        tabs.forEach((t) => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentSeverity = tab.dataset.severity || '';
+        loadAlerts();
+      });
+    });
+
+    // Live updates: new alerts pushed from the server get prepended if they match the active filter.
+    onAlertCreated((alert: Alert) => {
+      if (currentSeverity && alert.severity !== currentSeverity) return;
+      if (alerts.some((a) => a.id === alert.id)) return;
+      alerts = [alert, ...alerts];
+      render();
+    });
+
+    loadAlerts();
+  </script>
 </Layout>

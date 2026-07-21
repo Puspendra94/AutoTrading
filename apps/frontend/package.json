@@ -9,6 +9,12 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^4.2.0"
+    "astro": "^4.2.0",
+    "lightweight-charts": "^4.2.0",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "typescript": "^6.0.3"
   }
 }

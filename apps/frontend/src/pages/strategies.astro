@@ -9,33 +9,24 @@ import Layout from '../layouts/Layout.astro';
         <h1 class="page-title">Strategy Engine & Evaluation Center</h1>
         <p class="page-subtitle">Deterministic quantitative evaluation scorecards, walk-forward validation, and LLM token cost analytics.</p>
       </div>
-      <button class="btn btn-primary">+ Run Strategy Generation Pipeline</button>
     </div>
 
-    <!-- Top Quantitative Policy Metrics Bar -->
+    <div id="pageError" class="error-text" hidden></div>
+
+    <!-- Top Quantitative Policy Metrics Bar (GET /strategies/policies) -->
     <div class="glass-card policy-bar">
       <h3 class="card-title">Active Strategy Evaluation Policy Thresholds</h3>
-      <div class="policy-stats-grid">
-        <div class="policy-item">
-          <span class="p-lbl">Min Sharpe Ratio</span>
-          <strong class="p-val mono">≥ 1.00</strong>
-        </div>
-        <div class="policy-item">
-          <span class="p-lbl">Max Drawdown Cap</span>
-          <strong class="p-val mono">≤ 20.0%</strong>
-        </div>
-        <div class="policy-item">
-          <span class="p-lbl">Min Profit Factor</span>
-          <strong class="p-val mono">≥ 1.30</strong>
-        </div>
-        <div class="policy-item">
-          <span class="p-lbl">Min Trade Count</span>
-          <strong class="p-val mono">≥ 100 trades</strong>
-        </div>
-        <div class="policy-item">
-          <span class="p-lbl">OOS Walk-Forward</span>
-          <strong class="p-val text-bull">Mandatory</strong>
-        </div>
+      <div class="policy-stats-grid" id="policyGrid">
+        <p class="hint-text">Loading policy…</p>
+      </div>
+    </div>
+
+    <!-- Per-ticker pipeline runner -->
+    <div class="glass-card runner-card">
+      <h3 class="card-title">Run Strategy Generation Pipeline</h3>
+      <p class="card-subtext">Triggers real LLM-assisted strategy generation + backtest for a given ticker (POST /strategies/ticker/:id/generate).</p>
+      <div class="ticker-runner-list" id="tickerRunnerList">
+        <p class="hint-text">Loading tickers…</p>
       </div>
     </div>
 
@@ -54,53 +45,18 @@ import Layout from '../layouts/Layout.astro';
               <th>Sortino</th>
               <th>Max DD</th>
               <th>Profit Factor</th>
-              <th>Monte Carlo</th>
+              <th>Trades</th>
               <th>Eval Gate</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td><strong class="mono">BTCUSDT</strong></td>
-              <td>v2</td>
-              <td><span class="badge badge-bull">LIVE</span></td>
-              <td>Mode A (Rules)</td>
-              <td class="mono font-bold text-bull">1.84</td>
-              <td class="mono">2.15</td>
-              <td class="mono">8.4%</td>
-              <td class="mono">1.62</td>
-              <td><span class="badge badge-bull">100% Pass</span></td>
-              <td><span class="badge badge-bull">PASSED</span></td>
-            </tr>
-            <tr>
-              <td><strong class="mono">ETHUSDT</strong></td>
-              <td>v1</td>
-              <td><span class="badge badge-bull">LIVE</span></td>
-              <td>Mode A (Rules)</td>
-              <td class="mono font-bold text-bull">1.52</td>
-              <td class="mono">1.78</td>
-              <td class="mono">11.2%</td>
-              <td class="mono">1.45</td>
-              <td><span class="badge badge-bull">96% Pass</span></td>
-              <td><span class="badge badge-bull">PASSED</span></td>
-            </tr>
-            <tr>
-              <td><strong class="mono">SOLUSDT</strong></td>
-              <td>v1</td>
-              <td><span class="badge badge-info">EVALUATED</span></td>
-              <td>Mode A (Rules)</td>
-              <td class="mono">0.82</td>
-              <td class="mono">0.95</td>
-              <td class="mono text-bear">24.5%</td>
-              <td class="mono">1.12</td>
-              <td><span class="badge badge-bear">42% Pass</span></td>
-              <td><span class="badge badge-bear">FAILED</span></td>
-            </tr>
+          <tbody id="strategyTableBody">
+            <tr><td colspan="10" class="hint-text">Loading strategies…</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- LLM Cost Analytics Section (Section 4.10) -->
+    <!-- LLM Cost Analytics Section -->
     <div class="glass-card cost-card">
       <div class="cost-card-header">
         <div>
@@ -109,9 +65,11 @@ import Layout from '../layouts/Layout.astro';
         </div>
         <div class="total-cost-badge">
           <span>Total LLM Spend:</span>
-          <strong class="mono text-bull">$0.042 USD</strong>
+          <strong class="mono text-bull" id="totalCostVal">—</strong>
         </div>
       </div>
+
+      <div id="costError" class="hint-text" hidden></div>
 
       <div class="table-responsive">
         <table class="data-table">
@@ -126,25 +84,8 @@ import Layout from '../layouts/Layout.astro';
               <th>Cost (USD)</th>
             </tr>
           </thead>
-          <tbody>
-            <tr>
-              <td class="mono">2026-07-21 13:05</td>
-              <td>BTCUSDT</td>
-              <td>Strategy Generation</td>
-              <td>claude-3-5-sonnet</td>
-              <td class="mono">210</td>
-              <td class="mono">140</td>
-              <td class="mono text-bull">$0.002730</td>
-            </tr>
-            <tr>
-              <td class="mono">2026-07-21 13:02</td>
-              <td>ETHUSDT</td>
-              <td>Strategy Generation</td>
-              <td>claude-3-5-sonnet</td>
-              <td class="mono">195</td>
-              <td class="mono">130</td>
-              <td class="mono text-bull">$0.002535</td>
-            </tr>
+          <tbody id="costTableBody">
+            <tr><td colspan="7" class="hint-text">Loading LLM cost log…</td></tr>
           </tbody>
         </table>
       </div>
@@ -176,13 +117,18 @@ import Layout from '../layouts/Layout.astro';
       font-weight: 600;
       margin-bottom: 0.85rem;
     }
+    .card-subtext {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.85rem;
+    }
     .policy-bar {
       background: rgba(6, 182, 212, 0.05);
       border-color: rgba(6, 182, 212, 0.2);
     }
     .policy-stats-grid {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 1rem;
     }
     .policy-item {
@@ -196,6 +142,33 @@ import Layout from '../layouts/Layout.astro';
     }
     .p-val {
       font-size: 1rem;
+    }
+    .ticker-runner-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .runner-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+      padding: 0.6rem 0.9rem;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    :root[data-theme='light'] .runner-row {
+      background: rgba(15, 23, 42, 0.04);
+    }
+    .runner-row-info {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .run-btn {
+      padding: 0.35rem 0.9rem;
+      font-size: 0.8rem;
     }
     .table-responsive {
       overflow-x: auto;
@@ -224,6 +197,8 @@ import Layout from '../layouts/Layout.astro';
       justify-content: space-between;
       align-items: flex-start;
       margin-bottom: 1rem;
+      flex-wrap: wrap;
+      gap: 1rem;
     }
     .total-cost-badge {
       display: flex;
@@ -235,4 +210,257 @@ import Layout from '../layouts/Layout.astro';
       font-size: 0.9rem;
     }
   </style>
+
+  <script>
+    import { apiGet, apiPost, requireAuth, ApiError } from '../lib/api';
+
+    requireAuth();
+
+    type Ticker = { id: string; symbol: string; interval: string };
+    type Policy = {
+      id: string;
+      name: string;
+      minSharpe: number;
+      maxDrawdownPct: number;
+      minProfitFactor: number;
+      minTradeCount: number;
+      isActive: boolean;
+    };
+    type Backtest = {
+      sharpe: number;
+      sortino: number;
+      maxDrawdown: number;
+      profitFactor: number;
+      tradeCount: number;
+      passedEvaluationGate: boolean;
+    };
+    type Strategy = {
+      id: string;
+      tickerId: string;
+      version: number;
+      status: string;
+      executionMode: string;
+      createdAt: string;
+    };
+
+    const pageError = document.getElementById('pageError')!;
+
+    function escapeHtml(s: string): string {
+      const div = document.createElement('div');
+      div.textContent = s ?? '';
+      return div.innerHTML;
+    }
+
+    function showError(msg: string) {
+      pageError.hidden = false;
+      pageError.textContent = msg;
+    }
+
+    // --- Policy bar ---
+    async function loadPolicies() {
+      const grid = document.getElementById('policyGrid')!;
+      try {
+        const policies = await apiGet<Policy[]>('/strategies/policies');
+        const active = policies.find((p) => p.isActive) || policies[0];
+        if (!active) {
+          grid.innerHTML = `<p class="hint-text">No evaluation policy configured yet.</p>`;
+          return;
+        }
+        grid.innerHTML = `
+          <div class="policy-item">
+            <span class="p-lbl">Min Sharpe Ratio</span>
+            <strong class="p-val mono">≥ ${Number(active.minSharpe).toFixed(2)}</strong>
+          </div>
+          <div class="policy-item">
+            <span class="p-lbl">Max Drawdown Cap</span>
+            <strong class="p-val mono">≤ ${Number(active.maxDrawdownPct).toFixed(1)}%</strong>
+          </div>
+          <div class="policy-item">
+            <span class="p-lbl">Min Profit Factor</span>
+            <strong class="p-val mono">≥ ${Number(active.minProfitFactor).toFixed(2)}</strong>
+          </div>
+          <div class="policy-item">
+            <span class="p-lbl">Min Trade Count</span>
+            <strong class="p-val mono">≥ ${active.minTradeCount} trades</strong>
+          </div>
+          <div class="policy-item">
+            <span class="p-lbl">Policy</span>
+            <strong class="p-val text-bull">${escapeHtml(active.name)}</strong>
+          </div>
+        `;
+      } catch (err) {
+        grid.innerHTML = `<p class="hint-text">Failed to load policy thresholds.</p>`;
+      }
+    }
+
+    // --- Tickers + per-ticker pipeline runner + scorecard table ---
+    let tickers: Ticker[] = [];
+    const tickerSymbol = (id: string) => tickers.find((t) => t.id === id)?.symbol || id.slice(0, 8);
+
+    async function runPipeline(tickerId: string, btn: HTMLButtonElement) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        await apiPost(`/strategies/ticker/${tickerId}/generate`);
+        await loadStrategyTable();
+      } catch (err) {
+        showError(err instanceof ApiError ? err.message : 'Strategy generation failed');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    async function loadTickerRunner() {
+      const list = document.getElementById('tickerRunnerList')!;
+      try {
+        tickers = await apiGet<Ticker[]>('/market-data/tickers');
+        if (!tickers.length) {
+          list.innerHTML = `<p class="hint-text">No tickers yet — add one from the Dashboard page first.</p>`;
+          return;
+        }
+        list.innerHTML = tickers
+          .map(
+            (t) => `
+              <div class="runner-row" data-ticker-id="${t.id}">
+                <div class="runner-row-info">
+                  <strong class="mono">${escapeHtml(t.symbol)}</strong>
+                  <span class="hint-text">${escapeHtml(t.interval)}</span>
+                </div>
+                <button class="btn btn-primary run-btn">Run Pipeline</button>
+              </div>
+            `,
+          )
+          .join('');
+        list.querySelectorAll<HTMLElement>('.runner-row').forEach((row) => {
+          const id = row.dataset.tickerId!;
+          const btn = row.querySelector('button') as HTMLButtonElement;
+          btn.addEventListener('click', () => runPipeline(id, btn));
+        });
+      } catch (err) {
+        list.innerHTML = `<p class="hint-text">Failed to load tickers.</p>`;
+      }
+    }
+
+    function evalBadge(passed: boolean | undefined): string {
+      if (passed === undefined) return '<span class="badge badge-info">N/A</span>';
+      return passed ? '<span class="badge badge-bull">PASSED</span>' : '<span class="badge badge-bear">FAILED</span>';
+    }
+
+    function statusBadge(status: string): string {
+      const cls = status === 'live' ? 'badge-bull' : status === 'retired' ? 'badge-bear' : 'badge-info';
+      return `<span class="badge ${cls}">${status.toUpperCase()}</span>`;
+    }
+
+    async function loadStrategyTable() {
+      const tbody = document.getElementById('strategyTableBody')!;
+      if (!tickers.length) {
+        tbody.innerHTML = `<tr><td colspan="10" class="hint-text">No tickers yet.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = `<tr><td colspan="10" class="hint-text"><span class="spinner"></span> Loading strategies…</td></tr>`;
+
+      const rows: string[] = [];
+      for (const ticker of tickers) {
+        try {
+          const [all, active] = await Promise.all([
+            apiGet<Strategy[]>(`/strategies/ticker/${ticker.id}/all`),
+            apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${ticker.id}/active`),
+          ]);
+
+          if (!all.length) {
+            rows.push(
+              `<tr><td><strong class="mono">${escapeHtml(ticker.symbol)}</strong></td><td colspan="9" class="hint-text">No strategies generated yet.</td></tr>`,
+            );
+            continue;
+          }
+
+          for (const s of all) {
+            const isActive = active?.strategy?.id === s.id;
+            const bt = isActive ? active?.backtest : undefined;
+            rows.push(`
+              <tr>
+                <td><strong class="mono">${escapeHtml(ticker.symbol)}</strong></td>
+                <td>v${s.version}</td>
+                <td>${statusBadge(s.status)}</td>
+                <td>${s.executionMode === 'mode_a_rules' ? 'Mode A (Rules)' : 'Mode B (AI Live)'}</td>
+                <td class="mono ${bt && Number(bt.sharpe) >= 1 ? 'font-bold text-bull' : ''}">${bt ? Number(bt.sharpe).toFixed(2) : '—'}</td>
+                <td class="mono">${bt ? Number(bt.sortino).toFixed(2) : '—'}</td>
+                <td class="mono ${bt && Number(bt.maxDrawdown) > 20 ? 'text-bear' : ''}">${bt ? Number(bt.maxDrawdown).toFixed(1) + '%' : '—'}</td>
+                <td class="mono">${bt ? Number(bt.profitFactor).toFixed(2) : '—'}</td>
+                <td class="mono">${bt ? bt.tradeCount : '—'}</td>
+                <td>${bt ? evalBadge(bt.passedEvaluationGate) : '<span class="badge badge-info">N/A</span>'}</td>
+              </tr>
+            `);
+          }
+        } catch (err) {
+          rows.push(
+            `<tr><td><strong class="mono">${escapeHtml(ticker.symbol)}</strong></td><td colspan="9" class="hint-text">Failed to load.</td></tr>`,
+          );
+        }
+      }
+      tbody.innerHTML = rows.join('') || `<tr><td colspan="10" class="hint-text">No strategies found.</td></tr>`;
+    }
+
+    // --- LLM cost log ---
+    async function loadCostSummary() {
+      const totalEl = document.getElementById('totalCostVal')!;
+      const tbody = document.getElementById('costTableBody')!;
+      const costError = document.getElementById('costError')!;
+      try {
+        const summary = await apiGet<{
+          totalCostUsd: number;
+          totalCalls: number;
+          logs: Array<{
+            tickerId?: string;
+            purpose: string;
+            model: string;
+            inputTokens: number;
+            outputTokens: number;
+            costUsd: number;
+            calledAt: string;
+          }>;
+        }>('/llm/cost-summary');
+
+        totalEl.textContent = `$${Number(summary.totalCostUsd).toFixed(6)} USD`;
+
+        if (!summary.logs.length) {
+          tbody.innerHTML = `<tr><td colspan="7" class="hint-text">No LLM calls logged yet.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = summary.logs
+          .map(
+            (log) => `
+              <tr>
+                <td class="mono">${new Date(log.calledAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                <td>${log.tickerId ? escapeHtml(tickerSymbol(log.tickerId)) : '—'}</td>
+                <td>${escapeHtml((log.purpose || '').replace(/_/g, ' '))}</td>
+                <td>${escapeHtml(log.model)}</td>
+                <td class="mono">${log.inputTokens}</td>
+                <td class="mono">${log.outputTokens}</td>
+                <td class="mono text-bull">$${Number(log.costUsd).toFixed(6)}</td>
+              </tr>
+            `,
+          )
+          .join('');
+      } catch (err) {
+        totalEl.textContent = 'N/A';
+        costError.hidden = false;
+        costError.textContent =
+          err instanceof ApiError && err.status === 404
+            ? 'LLM cost tracking endpoint is not available on this backend yet.'
+            : 'Failed to load LLM cost log.';
+        tbody.innerHTML = `<tr><td colspan="7" class="hint-text">Unavailable.</td></tr>`;
+      }
+    }
+
+    async function init() {
+      await loadTickerRunner();
+      await Promise.all([loadPolicies(), loadStrategyTable(), loadCostSummary()]);
+    }
+
+    init();
+  </script>
 </Layout>
