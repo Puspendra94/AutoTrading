@@ -9,7 +9,10 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (socket) return socket;
-  const url = import.meta.env.PUBLIC_WS_URL as string;
+  // Default to same origin (empty url) so socket.io connects to the frontend, which
+  // proxies `/socket.io` (HTTP + WS upgrade) through to the backend — same reasoning as
+  // API_URL in api.ts. Override with PUBLIC_WS_URL to hit a backend directly.
+  const url = (import.meta.env.PUBLIC_WS_URL as string) || '';
   socket = io(url, {
     auth: { token: getToken() },
     transports: ['websocket', 'polling'],

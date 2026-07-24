@@ -6,15 +6,17 @@
     "dev": "astro dev --port 4321",
     "start": "astro dev --port 4321",
     "build": "astro build",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "serve": "node server.mjs"
   },
   "dependencies": {
-    "astro": "^4.2.0",
-    "lightweight-charts": "^4.2.0",
+    "http-proxy": "^1.18.1",
+    "sirv": "^2.0.4",
     "socket.io-client": "^4.7.5"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
+    "astro": "^4.2.0",
     "typescript": "^6.0.3"
   }
 }

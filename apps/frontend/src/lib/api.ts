@@ -1,7 +1,12 @@
 // Shared REST client: attaches the JWT, handles JSON, and redirects to /login on 401.
 // Every page's script imports from here instead of calling fetch() directly.
 
-export const API_URL: string = import.meta.env.PUBLIC_API_URL as string;
+// Same-origin `/api` by default: the browser always talks to the frontend's own origin,
+// which proxies `/api/*` to the backend (vite dev proxy locally; server.mjs in Docker).
+// This is what lets the backend run on a fixed internal port while its published host
+// port is random — the browser never needs to know it. Set PUBLIC_API_URL to point the
+// browser straight at a backend URL instead (e.g. for a split deploy).
+export const API_URL: string = (import.meta.env.PUBLIC_API_URL as string) || '/api';
 
 const TOKEN_KEY = 'jwt';
 
