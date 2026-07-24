@@ -27,6 +27,21 @@ export class RiskLimit {
   @Column({ name: 'probation_size_pct', type: 'decimal', precision: 5, scale: 2, default: 25.0 })
   probationSizePct: number;
 
+  // Number of trades a newly-promoted strategy spends at probationSizePct before
+  // scaling to full allocation (spec 2.5/12) — was previously only a read-nowhere
+  // DEFAULT_PROBATION_TRADES_COUNT env var; now a real, per-provider policy value.
+  @Column({ name: 'probation_trades_count', type: 'int', default: 10 })
+  probationTradesCount: number;
+
   @Column({ name: 'reset_boundary', type: 'enum', enum: ResetBoundary, default: ResetBoundary.UTC_MIDNIGHT })
   resetBoundary: ResetBoundary;
+
+  // Hard, provider-level exit guardrails enforced by MarketStreamService on every tick,
+  // independent of any strategy's own stop-loss. Null = no hard cap. Configurable from the
+  // Profile page.
+  @Column({ name: 'hard_stop_loss_pct', type: 'decimal', precision: 5, scale: 2, nullable: true })
+  hardStopLossPct: number | null;
+
+  @Column({ name: 'hard_take_profit_pct', type: 'decimal', precision: 5, scale: 2, nullable: true })
+  hardTakeProfitPct: number | null;
 }

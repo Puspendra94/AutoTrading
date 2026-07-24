@@ -47,8 +47,41 @@ export class ProviderController {
     return this.providerService.getLatestBalance(id);
   }
 
+  // Risk-limit guardrails, read/edited from the Profile page.
+  @Get(':id/risk-limit')
+  async getRiskLimit(@Param('id') id: string) {
+    return this.providerService.getRiskLimit(id);
+  }
+
+  @Patch(':id/risk-limit')
+  async updateRiskLimit(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      dailyLossLimitPct?: number;
+      maxConcurrentPositionsPerTicker?: number;
+      probationSizePct?: number;
+      probationTradesCount?: number;
+      resetBoundary?: any;
+      hardStopLossPct?: number | null;
+      hardTakeProfitPct?: number | null;
+    },
+  ) {
+    return this.providerService.updateRiskLimit(id, body);
+  }
+
   @Post(':id/sync-balance')
   async syncBalance(@Param('id') id: string) {
     return this.providerService.syncBalance(id);
+  }
+
+  @Post(':id/kill-switch')
+  async triggerKillSwitch(@Param('id') id: string, @Body() body: { reason?: string }) {
+    return this.providerService.triggerKillSwitch(id, body.reason || 'Manually triggered via API.');
+  }
+
+  @Post(':id/kill-switch/clear')
+  async clearKillSwitch(@Param('id') id: string) {
+    return this.providerService.clearKillSwitch(id);
   }
 }

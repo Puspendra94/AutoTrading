@@ -1,13 +1,15 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Position, PositionStatus, PositionSide } from '../../entities/position.entity';
 import { Order, OrderSide, OrderType, OrderStatus } from '../../entities/order.entity';
 import { Ticker } from '../../entities/ticker.entity';
 import { Provider, ProviderType, TradingMode } from '../../entities/provider.entity';
+import { RiskLimit } from '../../entities/risk-limit.entity';
 import { RiskGateService } from './risk-gate.service';
 import { BinanceAdapter } from '../provider/adapters/binance.adapter';
 import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets-provider';
+import { ProviderService } from '../provider/provider.service';
 
 @Injectable()
 export class ExecutionService {
@@ -22,9 +24,14 @@ export class ExecutionService {
     private readonly tickerRepo: Repository<Ticker>,
     @InjectRepository(Provider)
     private readonly providerRepo: Repository<Provider>,
+    @InjectRepository(RiskLimit)
+    private readonly riskLimitRepo: Repository<RiskLimit>,
+    @Inject(forwardRef(() => RiskGateService))
     private readonly riskGateService: RiskGateService,
     private readonly binanceAdapter: BinanceAdapter,
     private readonly secretsProvider: PlaintextSecretsProvider,
+    @Inject(forwardRef(() => ProviderService))
+    private readonly providerService: ProviderService,
   ) {}
 
   async executeTradeSignal(tickerId: string, side: PositionSide, price: number, strategyId?: string) {
@@ -74,8 +81,10 @@ export class ExecutionService {
         fillQuantity = result.fillQuantity || riskCheck.allowedQuantity;
         providerOrderId = result.orderId;
         isLiveOrder = true;
+        await this.providerService.recordApiSuccess(provider.id);
       } catch (err) {
         this.logger.error(`Live order placement failed on Binance for ${ticker.symbol}: ${err.message}`);
+        await this.providerService.recordApiFailure(provider.id);
         return { status: 'REJECTED', reason: `Exchange order placement failed: ${err.message}` };
       }
     }
@@ -168,6 +177,81 @@ export class ExecutionService {
     await this.orderRepo.save(closeOrder);
 
     return { position, closeOrder };
+  }
+
+  /**
+   * Spec 5.1 — "On breach: auto-flatten all open managed positions for that provider."
+   * Called by RiskGateService the moment a daily-loss breach is detected, not on a
+   * delay/schedule. Exits each open position at its last-known mark price (updated
+   * live by MarketStreamService) rather than blocking on a fresh price fetch, since
+   * getting out is more urgent than getting the exact last tick.
+   */
+  async flattenAllPositionsForProvider(providerId: string, reason: string) {
+    const openPositions = await this.positionRepo.find({
+      where: { status: PositionStatus.OPEN },
+      relations: ['ticker'],
+    });
+    const providerPositions = openPositions.filter((p) => p.ticker?.providerId === providerId);
+
+    const closed = [];
+    for (const position of providerPositions) {
+      try {
+        const exitPrice = Number(position.currentPrice) || Number(position.entryPrice);
+        const result = await this.closePosition(position.id, exitPrice);
+        closed.push(result.position.id);
+      } catch (err) {
+        this.logger.error(`Auto-flatten failed for position ${position.id} (${reason}): ${err.message}`);
+      }
+    }
+    return { flattenedCount: closed.length, positionIds: closed };
+  }
+
+  /**
+   * Hard exit guardrail (Profile-configurable): closes any open position whose P/L breaches
+   * the provider's hard stop-loss / take-profit cap, independent of the strategy's own exit
+   * logic. Called on every live tick by MarketStreamService, so a runaway loss is cut even
+   * intra-candle. Null caps mean "no hard limit — defer to the strategy".
+   */
+  async enforceHardExits(tickerId: string, lastPrice: number) {
+    const positions = await this.positionRepo.find({
+      where: { tickerId, status: PositionStatus.OPEN },
+      relations: ['ticker'],
+    });
+    if (positions.length === 0) return;
+
+    const limitByProvider = new Map<string, RiskLimit | null>();
+    for (const pos of positions) {
+      const providerId = pos.ticker?.providerId;
+      if (!providerId) continue;
+      if (!limitByProvider.has(providerId)) {
+        limitByProvider.set(providerId, await this.riskLimitRepo.findOne({ where: { providerId } }));
+      }
+      const limit = limitByProvider.get(providerId);
+      if (!limit) continue;
+
+      const sl = limit.hardStopLossPct != null ? Number(limit.hardStopLossPct) : null;
+      const tp = limit.hardTakeProfitPct != null ? Number(limit.hardTakeProfitPct) : null;
+      if (sl == null && tp == null) continue;
+
+      const entry = Number(pos.entryPrice);
+      if (!entry) continue;
+      const pnlPct =
+        pos.side === PositionSide.LONG
+          ? ((lastPrice - entry) / entry) * 100
+          : ((entry - lastPrice) / entry) * 100;
+
+      if (sl != null && pnlPct <= -sl) {
+        this.logger.warn(`Hard stop-loss hit for position ${pos.id} (${pnlPct.toFixed(2)}% ≤ -${sl}%). Closing.`);
+        await this.closePosition(pos.id, lastPrice).catch((e) =>
+          this.logger.error(`Hard stop-loss close failed for ${pos.id}: ${e.message}`),
+        );
+      } else if (tp != null && pnlPct >= tp) {
+        this.logger.warn(`Hard take-profit hit for position ${pos.id} (${pnlPct.toFixed(2)}% ≥ ${tp}%). Closing.`);
+        await this.closePosition(pos.id, lastPrice).catch((e) =>
+          this.logger.error(`Hard take-profit close failed for ${pos.id}: ${e.message}`),
+        );
+      }
+    }
   }
 
   async getOpenPositions() {

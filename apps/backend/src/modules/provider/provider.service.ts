@@ -7,6 +7,10 @@ import { ProviderSchedule } from '../../entities/provider-schedule.entity';
 import { RiskLimit } from '../../entities/risk-limit.entity';
 import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets-provider';
 import { BinanceAdapter } from './adapters/binance.adapter';
+import { NotificationService } from '../notification/notification.service';
+import { AlertSeverity } from '../../entities/alert.entity';
+
+const API_FAILURE_KILL_THRESHOLD = parseInt(process.env.PROVIDER_API_FAILURE_THRESHOLD || '5', 10);
 
 @Injectable()
 export class ProviderService {
@@ -23,6 +27,7 @@ export class ProviderService {
     private readonly riskLimitRepo: Repository<RiskLimit>,
     private readonly secretsProvider: PlaintextSecretsProvider,
     private readonly binanceAdapter: BinanceAdapter,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async createProvider(
@@ -61,6 +66,7 @@ export class ProviderService {
       dailyLossLimitPct: parseFloat(process.env.DEFAULT_DAILY_LOSS_LIMIT_PCT || '2.0'),
       maxConcurrentPositionsPerTicker: parseInt(process.env.DEFAULT_MAX_CONCURRENT_POSITIONS || '1', 10),
       probationSizePct: parseFloat(process.env.DEFAULT_PROBATION_SIZE_PCT || '25.0'),
+      probationTradesCount: parseInt(process.env.DEFAULT_PROBATION_TRADES_COUNT || '10', 10),
     });
     await this.riskLimitRepo.save(riskLimit);
 
@@ -106,6 +112,68 @@ export class ProviderService {
     return this.providerRepo.save(provider);
   }
 
+  /**
+   * Real kill switch (spec 5.4) — a hard stop on all new orders for this provider
+   * until manually cleared, distinct from the daily-loss-limit block (which clears
+   * itself at the next reset boundary). Triggered manually here, or automatically by
+   * ReconciliationService (serious mismatch) / recordApiFailure (repeated failures).
+   */
+  async triggerKillSwitch(providerId: string, reason: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider) throw new NotFoundException('Provider not found');
+    if (provider.killSwitchActive) return provider;
+
+    provider.killSwitchActive = true;
+    provider.killSwitchReason = reason;
+    await this.providerRepo.save(provider);
+
+    await this.notificationService.createAlert(
+      AlertSeverity.CRITICAL,
+      'KILL_SWITCH_TRIGGERED',
+      `Kill switch triggered for provider ${provider.name}: ${reason}. All new orders blocked until manually cleared.`,
+      'Provider',
+      provider.id,
+    );
+
+    return provider;
+  }
+
+  async clearKillSwitch(providerId: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider) throw new NotFoundException('Provider not found');
+    provider.killSwitchActive = false;
+    provider.killSwitchReason = null;
+    provider.apiFailureCount = 0;
+    return this.providerRepo.save(provider);
+  }
+
+  /** Repeated provider API failures auto-trip the kill switch (spec 5.4) rather than
+   * silently retrying forever — call from any provider-API call site's catch block. */
+  async recordApiFailure(providerId: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider || provider.killSwitchActive) return;
+
+    provider.apiFailureCount += 1;
+    if (provider.apiFailureCount >= API_FAILURE_KILL_THRESHOLD) {
+      await this.providerRepo.save(provider);
+      await this.triggerKillSwitch(
+        providerId,
+        `${provider.apiFailureCount} consecutive provider API failures (threshold ${API_FAILURE_KILL_THRESHOLD}).`,
+      );
+    } else {
+      await this.providerRepo.save(provider);
+    }
+  }
+
+  /** Call from any provider-API call site's success path to reset the failure streak. */
+  async recordApiSuccess(providerId: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (provider && provider.apiFailureCount !== 0) {
+      provider.apiFailureCount = 0;
+      await this.providerRepo.save(provider);
+    }
+  }
+
   async updateTradingMode(providerId: string, tradingMode?: TradingMode, useTestnet?: boolean) {
     const provider = await this.providerRepo.findOne({ where: { id: providerId } });
     if (!provider) throw new NotFoundException('Provider not found');
@@ -134,10 +202,17 @@ export class ProviderService {
       throw new BadRequestException(`Balance sync not yet implemented for provider type '${provider.type}'.`);
     }
 
-    const balances = await this.binanceAdapter.getAccountBalance(
-      { apiKey: creds.apiKey, apiSecret: creds.apiSecret },
-      provider.useTestnet,
-    );
+    let balances;
+    try {
+      balances = await this.binanceAdapter.getAccountBalance(
+        { apiKey: creds.apiKey, apiSecret: creds.apiSecret },
+        provider.useTestnet,
+      );
+      await this.recordApiSuccess(providerId);
+    } catch (err) {
+      await this.recordApiFailure(providerId);
+      throw err;
+    }
 
     // "Tradable balance" (spec 2.1) = free USDT (or the primary quote asset). Fall back
     // to summing all free balances only if USDT isn't present, so a non-empty testnet
@@ -152,6 +227,41 @@ export class ProviderService {
       currency,
     });
     return this.balanceRepo.save(snapshot);
+  }
+
+  /** Risk-limit guardrails for a provider (created lazily with defaults if none exist),
+   * surfaced to and edited from the Profile page. */
+  async getRiskLimit(providerId: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider) throw new NotFoundException('Provider not found');
+    let riskLimit = await this.riskLimitRepo.findOne({ where: { providerId } });
+    if (!riskLimit) {
+      riskLimit = this.riskLimitRepo.create({ providerId });
+      await this.riskLimitRepo.save(riskLimit);
+    }
+    return riskLimit;
+  }
+
+  async updateRiskLimit(
+    providerId: string,
+    patch: Partial<Pick<RiskLimit,
+      'dailyLossLimitPct' | 'maxConcurrentPositionsPerTicker' | 'probationSizePct' |
+      'probationTradesCount' | 'resetBoundary' | 'hardStopLossPct' | 'hardTakeProfitPct'>>,
+  ) {
+    const riskLimit = await this.getRiskLimit(providerId);
+    // Only the hard-cap fields are nullable ("blank = no cap"); for the NOT-NULL fields a
+    // null/blank is ignored so a partial save can't wipe a required guardrail.
+    const nullable = new Set(['hardStopLossPct', 'hardTakeProfitPct']);
+    for (const key of [
+      'dailyLossLimitPct', 'maxConcurrentPositionsPerTicker', 'probationSizePct',
+      'probationTradesCount', 'resetBoundary', 'hardStopLossPct', 'hardTakeProfitPct',
+    ] as const) {
+      const val = patch[key];
+      if (val === undefined) continue;
+      if (val === null && !nullable.has(key)) continue;
+      (riskLimit as any)[key] = val;
+    }
+    return this.riskLimitRepo.save(riskLimit);
   }
 
   async getLatestBalance(providerId: string) {

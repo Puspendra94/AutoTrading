@@ -6,6 +6,8 @@ import { Position, PositionStatus, PositionSide } from '../../entities/position.
 import { BinanceAdapter, LiveKlineTick } from '../provider/adapters/binance.adapter';
 import { MarketDataService } from './market-data.service';
 import { TradingGateway } from '../../websockets/trading.gateway';
+import { StrategyEngineService } from '../strategy/strategy-engine.service';
+import { ExecutionService } from '../risk-execution/execution.service';
 
 /**
  * Owns live Binance kline WebSocket subscriptions for every ACTIVE ticker. Runs inside
@@ -24,6 +26,8 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     private readonly binanceAdapter: BinanceAdapter,
     private readonly marketDataService: MarketDataService,
     private readonly tradingGateway: TradingGateway,
+    private readonly strategyEngineService: StrategyEngineService,
+    private readonly executionService: ExecutionService,
   ) {}
 
   async onModuleInit() {
@@ -85,6 +89,41 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.updateOpenPositionsMarkPrice(tickerId, tick.close);
+
+    // Hard stop-loss / take-profit guardrail (Profile-configurable) — checked on every
+    // tick so a runaway loss is cut immediately, not only on candle close.
+    await this.executionService.enforceHardExits(tickerId, tick.close);
+
+    // Live trading loop (spec 2.6/4.4/10) — only evaluated on candle close, never on
+    // every intra-candle tick, so Mode A stays cheap and Mode B's per-decision LLM call
+    // isn't fired multiple times per candle. This is the actual autonomous-trading path;
+    // without it, a promoted LIVE strategy never places a trade on its own.
+    if (tick.isFinal) {
+      await this.evaluateAndExecute(tickerId, candle.close);
+    }
+  }
+
+  private async evaluateAndExecute(tickerId: string, closePrice: number) {
+    try {
+      const { signal, strategyId } = await this.strategyEngineService.evaluateLiveSignal(tickerId, { close: closePrice });
+      if (signal === 'HOLD') return;
+
+      if (signal === 'BUY') {
+        const result = await this.executionService.executeTradeSignal(tickerId, PositionSide.LONG, closePrice, strategyId);
+        if (result.status === 'REJECTED') {
+          this.logger.warn(`Live BUY signal rejected for ticker ${tickerId}: ${result.reason}`);
+        }
+      } else if (signal === 'SELL') {
+        const openPosition = await this.positionRepo.findOne({
+          where: { tickerId, strategyId, status: PositionStatus.OPEN },
+        });
+        if (openPosition) {
+          await this.executionService.closePosition(openPosition.id, closePrice);
+        }
+      }
+    } catch (err) {
+      this.logger.error(`Live signal evaluation/execution failed for ticker ${tickerId}: ${err.message}`);
+    }
   }
 
   private async updateOpenPositionsMarkPrice(tickerId: string, lastPrice: number) {
