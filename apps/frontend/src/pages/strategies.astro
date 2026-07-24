@@ -2,465 +2,293 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="Strategy Engine — AI Algorithmic Trading Platform">
-  <div class="page-container">
-    <div class="page-header">
+<Layout title="Alpha — AI Algorithmic Trading Platform">
+  <div class="alpha-page">
+    <div class="alpha-header">
       <div>
-        <h1 class="page-title">Strategy Engine & Evaluation Center</h1>
-        <p class="page-subtitle">Deterministic quantitative evaluation scorecards, walk-forward validation, and LLM token cost analytics.</p>
+        <h1 class="ah-title">Alpha Strategies</h1>
+        <p class="ah-sub" id="ahSub">Loading…</p>
+      </div>
+      <div class="ah-actions">
+        <span class="spend-chip" id="spendChip" title="Total LLM spend">LLM: —</span>
+        <button class="btn btn-primary" id="genBtn">⚡ Generate New Strategy</button>
       </div>
     </div>
 
-    <div id="pageError" class="error-text" hidden></div>
+    <div id="alphaError" class="error-text" hidden></div>
 
-    <!-- Top Quantitative Policy Metrics Bar (GET /strategies/policies) -->
-    <div class="glass-card policy-bar">
-      <h3 class="card-title">Active Strategy Evaluation Policy Thresholds</h3>
-      <div class="policy-stats-grid" id="policyGrid">
-        <p class="hint-text">Loading policy…</p>
-      </div>
+    <!-- Evaluation policy thresholds -->
+    <div class="glass-card policy-strip" id="policyStrip">
+      <p class="hint-text">Loading policy thresholds…</p>
     </div>
 
-    <!-- Per-ticker pipeline runner -->
-    <div class="glass-card runner-card">
-      <h3 class="card-title">Run Strategy Generation Pipeline</h3>
-      <p class="card-subtext">Triggers real LLM-assisted strategy generation + backtest for a given ticker (POST /strategies/ticker/:id/generate).</p>
-      <div class="ticker-runner-list" id="tickerRunnerList">
-        <p class="hint-text">Loading tickers…</p>
+    <!-- Active strategy -->
+    <div id="activeWrap"></div>
+
+    <!-- All strategies (paginated) -->
+    <div>
+      <div class="list-head">
+        <span class="micro">All Strategies</span>
+        <span class="micro" id="listRange"></span>
       </div>
+      <div class="glass-card list-card" id="listCard">
+        <p class="hint-text pad">Loading strategies…</p>
+      </div>
+      <div class="pager" id="pager"></div>
     </div>
+  </div>
 
-    <!-- Active Strategies Evaluation Table -->
-    <div class="glass-card table-card">
-      <h3 class="card-title">Generated Strategies Evaluation Scorecard</h3>
-      <div class="table-responsive">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Version</th>
-              <th>Status</th>
-              <th>Mode</th>
-              <th>Sharpe</th>
-              <th>Sortino</th>
-              <th>Max DD</th>
-              <th>Profit Factor</th>
-              <th>Trades</th>
-              <th>Eval Gate</th>
-            </tr>
-          </thead>
-          <tbody id="strategyTableBody">
-            <tr><td colspan="10" class="hint-text">Loading strategies…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- LLM Cost Analytics Section -->
-    <div class="glass-card cost-card">
-      <div class="cost-card-header">
-        <div>
-          <h3 class="card-title">LLM Token Cost Analytics & Provider Log</h3>
-          <p class="card-subtext">Tracks prompt token usage and USD cost per strategy generation call.</p>
-        </div>
-        <div class="total-cost-badge">
-          <span>Total LLM Spend:</span>
-          <strong class="mono text-bull" id="totalCostVal">—</strong>
-        </div>
-      </div>
-
-      <div id="costError" class="hint-text" hidden></div>
-
-      <div class="table-responsive">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Ticker</th>
-              <th>Purpose</th>
-              <th>Model</th>
-              <th>Input Tokens</th>
-              <th>Output Tokens</th>
-              <th>Cost (USD)</th>
-            </tr>
-          </thead>
-          <tbody id="costTableBody">
-            <tr><td colspan="7" class="hint-text">Loading LLM cost log…</td></tr>
-          </tbody>
-        </table>
-      </div>
+  <!-- Generation pipeline modal -->
+  <div class="modal-backdrop" id="genModal" hidden>
+    <div class="glass-card modal-card gen-modal">
+      <div class="gen-top"><span class="spinner"></span><span class="gen-eyebrow">Generating Alpha</span></div>
+      <h3 class="gen-name" id="genName">New Strategy</h3>
+      <div class="gen-bar"><div class="gen-bar-fill" id="genBarFill"></div></div>
+      <div class="gen-stages" id="genStages"></div>
+      <p class="hint-text" style="text-align:center">Real LLM generation + backtest running · do not close</p>
     </div>
   </div>
 
   <style>
-    .page-container {
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-    }
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .page-title {
-      font-size: 1.5rem;
-      font-weight: 700;
-    }
-    .page-subtitle {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      margin-top: 0.2rem;
-    }
-    .card-title {
-      font-size: 1.05rem;
-      font-weight: 600;
-      margin-bottom: 0.85rem;
-    }
-    .card-subtext {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-bottom: 0.85rem;
-    }
-    .policy-bar {
-      background: rgba(6, 182, 212, 0.05);
-      border-color: rgba(6, 182, 212, 0.2);
-    }
-    .policy-stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 1rem;
-    }
-    .policy-item {
-      display: flex;
-      flex-direction: column;
-      gap: 0.2rem;
-    }
-    .p-lbl {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-    .p-val {
-      font-size: 1rem;
-    }
-    .ticker-runner-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.6rem;
-    }
-    .runner-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: rgba(0, 0, 0, 0.25);
-      border-radius: 8px;
-      padding: 0.6rem 0.9rem;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    :root[data-theme='light'] .runner-row {
-      background: rgba(15, 23, 42, 0.04);
-    }
-    .runner-row-info {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-    .run-btn {
-      padding: 0.35rem 0.9rem;
-      font-size: 0.8rem;
-    }
-    .table-responsive {
-      overflow-x: auto;
-    }
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-      font-size: 0.875rem;
-    }
-    .data-table th, .data-table td {
-      padding: 0.85rem 1rem;
-      border-bottom: 1px solid var(--border-color);
-    }
-    .data-table th {
-      color: var(--text-muted);
-      font-weight: 500;
-      font-size: 0.75rem;
-      text-transform: uppercase;
-    }
-    .data-table tbody tr:hover {
-      background: rgba(255, 255, 255, 0.02);
-    }
-    .cost-card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 1rem;
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-    .total-cost-badge {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      background: rgba(16, 185, 129, 0.1);
-      padding: 0.5rem 1rem;
-      border-radius: 8px;
-      font-size: 0.9rem;
-    }
+    .alpha-page { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.1rem; }
+    .alpha-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    .ah-title { font-size: 1.2rem; font-weight: 700; }
+    .ah-sub { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
+    .ah-actions { display: flex; align-items: center; gap: 0.75rem; }
+    .spend-chip { font-size: 0.62rem; letter-spacing: 0.06em; color: var(--color-bull); border: 1px solid rgba(0,200,150,0.3); border-radius: 5px; padding: 0.3rem 0.5rem; }
+
+    .policy-strip { display: flex; flex-wrap: wrap; gap: 1.5rem; padding: 0.85rem 1.1rem; }
+    .pol { display: flex; flex-direction: column; gap: 0.1rem; }
+    .pol-lbl { font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
+    .pol-val { font-size: 0.85rem; font-weight: 700; }
+
+    .micro { font-size: 0.58rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); }
+    .list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+    .list-card { padding: 0; overflow: hidden; }
+    .pad { padding: 1rem; }
+
+    .strat-row { padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
+    .strat-row:last-child { border-bottom: none; }
+    .strat-row.active { background: rgba(0, 200, 150, 0.05); }
+    .sr-name { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.82rem; }
+    .sr-desc { font-size: 0.66rem; color: var(--text-muted); margin: 0.25rem 0 0.4rem; }
+    .sr-metrics { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.66rem; color: var(--text-muted); }
+    .sr-metrics .mono { color: var(--text-main); }
+
+    .active-card { border-color: rgba(0, 200, 150, 0.3); }
+
+    .pager { display: flex; justify-content: center; gap: 0.4rem; margin-top: 0.85rem; }
+    .pager button { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-muted); cursor: pointer; font-family: var(--font-mono); font-size: 0.72rem; }
+    .pager button.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,200,150,0.1); }
+    .pager button:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* Modal */
+    .gen-modal { gap: 0.85rem; }
+    .gen-top { display: flex; align-items: center; gap: 0.5rem; }
+    .gen-eyebrow { font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-cyan); }
+    .gen-name { font-size: 1.05rem; font-weight: 700; }
+    .gen-bar { height: 5px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden; }
+    .gen-bar-fill { height: 100%; width: 0%; background: var(--accent-cyan); transition: width 0.4s ease; }
+    .gen-stages { display: flex; flex-direction: column; gap: 0.55rem; }
+    .gen-stage { display: flex; align-items: center; gap: 0.6rem; font-size: 0.75rem; color: var(--text-muted); }
+    .gen-stage.done { color: var(--text-main); }
+    .gen-stage.running { color: var(--color-warning); }
+    .gen-ico { width: 14px; height: 14px; flex-shrink: 0; }
   </style>
 
   <script>
     import { apiGet, apiPost, requireAuth, ApiError } from '../lib/api';
+    import { resolveBtcTicker } from '../lib/ticker';
 
     requireAuth();
 
-    type Ticker = { id: string; symbol: string; interval: string };
-    type Policy = {
-      id: string;
-      name: string;
-      minSharpe: number;
-      maxDrawdownPct: number;
-      minProfitFactor: number;
-      minTradeCount: number;
-      isActive: boolean;
-    };
-    type Backtest = {
-      sharpe: number;
-      sortino: number;
-      maxDrawdown: number;
-      profitFactor: number;
-      tradeCount: number;
-      passedEvaluationGate: boolean;
-    };
-    type Strategy = {
-      id: string;
-      tickerId: string;
-      version: number;
-      status: string;
-      executionMode: string;
-      createdAt: string;
-    };
+    type Policy = { name: string; minSharpe: number; maxDrawdownPct: number; minProfitFactor: number; minTradeCount: number; isActive: boolean };
+    type Backtest = { sharpe: number; sortino: number; maxDrawdown: number; profitFactor: number; tradeCount: number; passedEvaluationGate: boolean };
+    type Strategy = { id: string; version: number; status: string; executionMode: string; createdAt: string; parametersJson?: any };
 
-    const pageError = document.getElementById('pageError')!;
+    const PER_PAGE = 5;
+    const STAGES = ['Checking active trades', 'Generating alpha signals', 'Backtesting historical data', 'Verifying on live data', 'Applying evaluation gate', 'Promoting strategy'];
 
-    function escapeHtml(s: string): string {
-      const div = document.createElement('div');
-      div.textContent = s ?? '';
-      return div.innerHTML;
-    }
+    const alphaError = document.getElementById('alphaError')!;
+    const ahSub = document.getElementById('ahSub')!;
+    const activeWrap = document.getElementById('activeWrap')!;
+    const listCard = document.getElementById('listCard')!;
+    const pager = document.getElementById('pager')!;
+    const listRange = document.getElementById('listRange')!;
 
-    function showError(msg: string) {
-      pageError.hidden = false;
-      pageError.textContent = msg;
-    }
+    let tickerId: string | null = null;
+    let allStrategies: Strategy[] = [];
+    let activeId: string | null = null;
+    let activeBacktest: Backtest | null = null;
+    let pg = 1;
 
-    // --- Policy bar ---
-    async function loadPolicies() {
-      const grid = document.getElementById('policyGrid')!;
+    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+    function nameOf(s: Strategy): string { return s.parametersJson?.strategyName || `Strategy v${s.version}`; }
+    function modeLabel(m: string): string { return m === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live'; }
+
+    // ---- Policy strip ----
+    async function loadPolicy() {
+      const el = document.getElementById('policyStrip')!;
       try {
         const policies = await apiGet<Policy[]>('/strategies/policies');
-        const active = policies.find((p) => p.isActive) || policies[0];
-        if (!active) {
-          grid.innerHTML = `<p class="hint-text">No evaluation policy configured yet.</p>`;
-          return;
-        }
-        grid.innerHTML = `
-          <div class="policy-item">
-            <span class="p-lbl">Min Sharpe Ratio</span>
-            <strong class="p-val mono">≥ ${Number(active.minSharpe).toFixed(2)}</strong>
+        const a = policies.find((p) => p.isActive) || policies[0];
+        if (!a) { el.innerHTML = `<p class="hint-text">No evaluation policy configured.</p>`; return; }
+        el.innerHTML = `
+          <div class="pol"><span class="pol-lbl">Policy</span><span class="pol-val text-bull">${esc(a.name)}</span></div>
+          <div class="pol"><span class="pol-lbl">Min Sharpe</span><span class="pol-val mono">≥ ${Number(a.minSharpe).toFixed(2)}</span></div>
+          <div class="pol"><span class="pol-lbl">Max Drawdown</span><span class="pol-val mono">≤ ${Number(a.maxDrawdownPct).toFixed(1)}%</span></div>
+          <div class="pol"><span class="pol-lbl">Min Profit Factor</span><span class="pol-val mono">≥ ${Number(a.minProfitFactor).toFixed(2)}</span></div>
+          <div class="pol"><span class="pol-lbl">Min Trades</span><span class="pol-val mono">≥ ${a.minTradeCount}</span></div>`;
+      } catch { el.innerHTML = `<p class="hint-text">Failed to load policy thresholds.</p>`; }
+    }
+
+    // ---- LLM spend chip ----
+    async function loadSpend() {
+      const chip = document.getElementById('spendChip')!;
+      try {
+        const s = await apiGet<{ totalCostUsd: number; totalCalls: number }>('/llm/cost-summary');
+        chip.textContent = `LLM: $${Number(s.totalCostUsd).toFixed(4)} · ${s.totalCalls} calls`;
+      } catch { chip.textContent = 'LLM: n/a'; }
+    }
+
+    // ---- Strategies ----
+    function renderActive() {
+      const active = allStrategies.find((s) => s.id === activeId);
+      if (!active) { activeWrap.innerHTML = ''; return; }
+      const bt = activeBacktest;
+      activeWrap.innerHTML = `
+        <div class="list-head"><span class="micro">Active Strategy</span></div>
+        <div class="glass-card active-card">
+          <div class="strat-row active" style="border:none">
+            <div>
+              <div class="sr-name">★ ${esc(nameOf(active))} <span class="badge badge-bull">ACTIVE</span></div>
+              <div class="sr-desc">v${active.version} · ${modeLabel(active.executionMode)}</div>
+              <div class="sr-metrics">
+                ${bt ? `
+                <span>Sharpe <span class="mono">${Number(bt.sharpe).toFixed(2)}</span></span>
+                <span>Sortino <span class="mono">${Number(bt.sortino).toFixed(2)}</span></span>
+                <span>Max DD <span class="mono">${Number(bt.maxDrawdown).toFixed(1)}%</span></span>
+                <span>Profit Factor <span class="mono">${Number(bt.profitFactor).toFixed(2)}</span></span>
+                <span>Trades <span class="mono">${bt.tradeCount}</span></span>
+                <span>Gate <span class="mono ${bt.passedEvaluationGate ? 'text-bull' : 'text-bear'}">${bt.passedEvaluationGate ? 'PASSED' : 'FAILED'}</span></span>
+                ` : '<span>No backtest metrics recorded.</span>'}
+              </div>
+            </div>
           </div>
-          <div class="policy-item">
-            <span class="p-lbl">Max Drawdown Cap</span>
-            <strong class="p-val mono">≤ ${Number(active.maxDrawdownPct).toFixed(1)}%</strong>
-          </div>
-          <div class="policy-item">
-            <span class="p-lbl">Min Profit Factor</span>
-            <strong class="p-val mono">≥ ${Number(active.minProfitFactor).toFixed(2)}</strong>
-          </div>
-          <div class="policy-item">
-            <span class="p-lbl">Min Trade Count</span>
-            <strong class="p-val mono">≥ ${active.minTradeCount} trades</strong>
-          </div>
-          <div class="policy-item">
-            <span class="p-lbl">Policy</span>
-            <strong class="p-val text-bull">${escapeHtml(active.name)}</strong>
-          </div>
-        `;
+        </div>`;
+    }
+
+    function renderList() {
+      const inactive = allStrategies.filter((s) => s.id !== activeId);
+      const totalPages = Math.max(1, Math.ceil(inactive.length / PER_PAGE));
+      if (pg > totalPages) pg = totalPages;
+      const paged = inactive.slice((pg - 1) * PER_PAGE, pg * PER_PAGE);
+
+      listRange.textContent = inactive.length ? `${(pg - 1) * PER_PAGE + 1}–${Math.min(pg * PER_PAGE, inactive.length)} of ${inactive.length}` : '';
+
+      if (!inactive.length) {
+        listCard.innerHTML = `<p class="hint-text pad">No other strategy versions yet.</p>`;
+      } else {
+        listCard.innerHTML = paged.map((s) => `
+          <div class="strat-row">
+            <div>
+              <div class="sr-name">${esc(nameOf(s))}</div>
+              <div class="sr-desc">v${s.version} · ${modeLabel(s.executionMode)} · ${new Date(s.createdAt).toLocaleDateString()}</div>
+            </div>
+            <span class="badge ${s.status === 'live' ? 'badge-bull' : s.status === 'retired' ? 'badge-bear' : 'badge-info'}">${esc(s.status.toUpperCase())}</span>
+          </div>`).join('');
+      }
+
+      pager.innerHTML = totalPages > 1 ? (() => {
+        let h = `<button ${pg === 1 ? 'disabled' : ''} data-pg="${pg - 1}">‹</button>`;
+        for (let n = 1; n <= totalPages; n++) h += `<button class="${n === pg ? 'active' : ''}" data-pg="${n}">${n}</button>`;
+        h += `<button ${pg === totalPages ? 'disabled' : ''} data-pg="${pg + 1}">›</button>`;
+        return h;
+      })() : '';
+      pager.querySelectorAll<HTMLButtonElement>('button[data-pg]').forEach((b) =>
+        b.addEventListener('click', () => { pg = Number(b.dataset.pg); renderList(); }));
+    }
+
+    async function loadStrategies() {
+      if (!tickerId) return;
+      try {
+        const [all, active] = await Promise.all([
+          apiGet<Strategy[]>(`/strategies/ticker/${tickerId}/all`),
+          apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${tickerId}/active`),
+        ]);
+        allStrategies = all.sort((a, b) => b.version - a.version);
+        activeId = active?.strategy?.id ?? null;
+        activeBacktest = active?.backtest ?? null;
+        ahSub.textContent = `${all.length} total · ${activeId ? '1 active' : 'none active'} · BTCUSDT`;
+        renderActive();
+        renderList();
       } catch (err) {
-        grid.innerHTML = `<p class="hint-text">Failed to load policy thresholds.</p>`;
+        listCard.innerHTML = `<p class="hint-text pad">Failed to load strategies.</p>`;
       }
     }
 
-    // --- Tickers + per-ticker pipeline runner + scorecard table ---
-    let tickers: Ticker[] = [];
-    const tickerSymbol = (id: string) => tickers.find((t) => t.id === id)?.symbol || id.slice(0, 8);
+    // ---- Generation pipeline ----
+    const genModal = document.getElementById('genModal')!;
+    const genStagesEl = document.getElementById('genStages')!;
+    const genBarFill = document.getElementById('genBarFill')!;
+    const genNameEl = document.getElementById('genName')!;
+    const genBtn = document.getElementById('genBtn') as HTMLButtonElement;
 
-    async function runPipeline(tickerId: string, btn: HTMLButtonElement) {
-      const original = btn.textContent;
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span>';
+    const checkSvg = '<svg class="gen-ico" viewBox="0 0 24 24" fill="none" stroke="#00c896" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+    const dotSvg = '<svg class="gen-ico" viewBox="0 0 24 24" fill="none" stroke="#3d4d6b" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>';
+    const spinSpan = '<span class="spinner" style="width:14px;height:14px"></span>';
+
+    function paintStages(current: number) {
+      genStagesEl.innerHTML = STAGES.map((label, i) => {
+        const cls = i < current ? 'done' : i === current ? 'running' : '';
+        const ico = i < current ? checkSvg : i === current ? spinSpan : dotSvg;
+        return `<div class="gen-stage ${cls}">${ico}<span>${label}</span></div>`;
+      }).join('');
+      genBarFill.style.width = `${Math.round((current / STAGES.length) * 100)}%`;
+    }
+
+    async function generate() {
+      if (!tickerId) return;
+      alphaError.hidden = true;
+      genNameEl.textContent = 'New Strategy';
+      genModal.hidden = false;
+      genBtn.disabled = true;
+
+      // Staged affordance advances on a timer while the real (single-call) backend
+      // pipeline runs; stalls on the last visible stage until the request resolves.
+      let cur = 0;
+      paintStages(cur);
+      const timer = setInterval(() => { if (cur < STAGES.length - 1) { cur++; paintStages(cur); } }, 1200);
+
       try {
         await apiPost(`/strategies/ticker/${tickerId}/generate`);
-        await loadStrategyTable();
+        clearInterval(timer);
+        paintStages(STAGES.length);
+        await Promise.all([loadStrategies(), loadSpend()]);
+        setTimeout(() => { genModal.hidden = true; genBtn.disabled = false; }, 700);
       } catch (err) {
-        showError(err instanceof ApiError ? err.message : 'Strategy generation failed');
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
+        clearInterval(timer);
+        genModal.hidden = true;
+        genBtn.disabled = false;
+        alphaError.hidden = false;
+        alphaError.textContent = err instanceof ApiError ? err.message : 'Strategy generation failed';
       }
     }
+    genBtn.addEventListener('click', generate);
 
-    async function loadTickerRunner() {
-      const list = document.getElementById('tickerRunnerList')!;
-      try {
-        tickers = await apiGet<Ticker[]>('/market-data/tickers');
-        if (!tickers.length) {
-          list.innerHTML = `<p class="hint-text">No tickers yet — add one from the Dashboard page first.</p>`;
-          return;
-        }
-        list.innerHTML = tickers
-          .map(
-            (t) => `
-              <div class="runner-row" data-ticker-id="${t.id}">
-                <div class="runner-row-info">
-                  <strong class="mono">${escapeHtml(t.symbol)}</strong>
-                  <span class="hint-text">${escapeHtml(t.interval)}</span>
-                </div>
-                <button class="btn btn-primary run-btn">Run Pipeline</button>
-              </div>
-            `,
-          )
-          .join('');
-        list.querySelectorAll<HTMLElement>('.runner-row').forEach((row) => {
-          const id = row.dataset.tickerId!;
-          const btn = row.querySelector('button') as HTMLButtonElement;
-          btn.addEventListener('click', () => runPipeline(id, btn));
-        });
-      } catch (err) {
-        list.innerHTML = `<p class="hint-text">Failed to load tickers.</p>`;
-      }
-    }
-
-    function evalBadge(passed: boolean | undefined): string {
-      if (passed === undefined) return '<span class="badge badge-info">N/A</span>';
-      return passed ? '<span class="badge badge-bull">PASSED</span>' : '<span class="badge badge-bear">FAILED</span>';
-    }
-
-    function statusBadge(status: string): string {
-      const cls = status === 'live' ? 'badge-bull' : status === 'retired' ? 'badge-bear' : 'badge-info';
-      return `<span class="badge ${cls}">${status.toUpperCase()}</span>`;
-    }
-
-    async function loadStrategyTable() {
-      const tbody = document.getElementById('strategyTableBody')!;
-      if (!tickers.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="hint-text">No tickers yet.</td></tr>`;
+    // ---- Init ----
+    (async () => {
+      loadPolicy();
+      loadSpend();
+      const ticker = await resolveBtcTicker();
+      if (!ticker) {
+        genBtn.disabled = true;
+        ahSub.textContent = 'No BTCUSDT ticker — connect Binance first.';
+        listCard.innerHTML = `<p class="hint-text pad">Connect Binance on the Connector page to begin generating strategies.</p>`;
         return;
       }
-      tbody.innerHTML = `<tr><td colspan="10" class="hint-text"><span class="spinner"></span> Loading strategies…</td></tr>`;
-
-      const rows: string[] = [];
-      for (const ticker of tickers) {
-        try {
-          const [all, active] = await Promise.all([
-            apiGet<Strategy[]>(`/strategies/ticker/${ticker.id}/all`),
-            apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${ticker.id}/active`),
-          ]);
-
-          if (!all.length) {
-            rows.push(
-              `<tr><td><strong class="mono">${escapeHtml(ticker.symbol)}</strong></td><td colspan="9" class="hint-text">No strategies generated yet.</td></tr>`,
-            );
-            continue;
-          }
-
-          for (const s of all) {
-            const isActive = active?.strategy?.id === s.id;
-            const bt = isActive ? active?.backtest : undefined;
-            rows.push(`
-              <tr>
-                <td><strong class="mono">${escapeHtml(ticker.symbol)}</strong></td>
-                <td>v${s.version}</td>
-                <td>${statusBadge(s.status)}</td>
-                <td>${s.executionMode === 'mode_a_rules' ? 'Mode A (Rules)' : 'Mode B (AI Live)'}</td>
-                <td class="mono ${bt && Number(bt.sharpe) >= 1 ? 'font-bold text-bull' : ''}">${bt ? Number(bt.sharpe).toFixed(2) : '—'}</td>
-                <td class="mono">${bt ? Number(bt.sortino).toFixed(2) : '—'}</td>
-                <td class="mono ${bt && Number(bt.maxDrawdown) > 20 ? 'text-bear' : ''}">${bt ? Number(bt.maxDrawdown).toFixed(1) + '%' : '—'}</td>
-                <td class="mono">${bt ? Number(bt.profitFactor).toFixed(2) : '—'}</td>
-                <td class="mono">${bt ? bt.tradeCount : '—'}</td>
-                <td>${bt ? evalBadge(bt.passedEvaluationGate) : '<span class="badge badge-info">N/A</span>'}</td>
-              </tr>
-            `);
-          }
-        } catch (err) {
-          rows.push(
-            `<tr><td><strong class="mono">${escapeHtml(ticker.symbol)}</strong></td><td colspan="9" class="hint-text">Failed to load.</td></tr>`,
-          );
-        }
-      }
-      tbody.innerHTML = rows.join('') || `<tr><td colspan="10" class="hint-text">No strategies found.</td></tr>`;
-    }
-
-    // --- LLM cost log ---
-    async function loadCostSummary() {
-      const totalEl = document.getElementById('totalCostVal')!;
-      const tbody = document.getElementById('costTableBody')!;
-      const costError = document.getElementById('costError')!;
-      try {
-        const summary = await apiGet<{
-          totalCostUsd: number;
-          totalCalls: number;
-          logs: Array<{
-            tickerId?: string;
-            purpose: string;
-            model: string;
-            inputTokens: number;
-            outputTokens: number;
-            costUsd: number;
-            calledAt: string;
-          }>;
-        }>('/llm/cost-summary');
-
-        totalEl.textContent = `$${Number(summary.totalCostUsd).toFixed(6)} USD`;
-
-        if (!summary.logs.length) {
-          tbody.innerHTML = `<tr><td colspan="7" class="hint-text">No LLM calls logged yet.</td></tr>`;
-          return;
-        }
-
-        tbody.innerHTML = summary.logs
-          .map(
-            (log) => `
-              <tr>
-                <td class="mono">${new Date(log.calledAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
-                <td>${log.tickerId ? escapeHtml(tickerSymbol(log.tickerId)) : '—'}</td>
-                <td>${escapeHtml((log.purpose || '').replace(/_/g, ' '))}</td>
-                <td>${escapeHtml(log.model)}</td>
-                <td class="mono">${log.inputTokens}</td>
-                <td class="mono">${log.outputTokens}</td>
-                <td class="mono text-bull">$${Number(log.costUsd).toFixed(6)}</td>
-              </tr>
-            `,
-          )
-          .join('');
-      } catch (err) {
-        totalEl.textContent = 'N/A';
-        costError.hidden = false;
-        costError.textContent =
-          err instanceof ApiError && err.status === 404
-            ? 'LLM cost tracking endpoint is not available on this backend yet.'
-            : 'Failed to load LLM cost log.';
-        tbody.innerHTML = `<tr><td colspan="7" class="hint-text">Unavailable.</td></tr>`;
-      }
-    }
-
-    async function init() {
-      await loadTickerRunner();
-      await Promise.all([loadPolicies(), loadStrategyTable(), loadCostSummary()]);
-    }
-
-    init();
+      tickerId = ticker.id;
+      await loadStrategies();
+    })();
   </script>
 </Layout>

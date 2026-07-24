@@ -7,14 +7,34 @@ interface Props {
 
 const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
 
+// Terminal-style left icon rail. "Charts" and "Alerts" intentionally dropped;
+// "Strategy Engine" is now "Alpha" to mirror the reference prototype.
 const navItems = [
-  { href: '/', label: 'Dashboard' },
-  { href: '/providers', label: 'Providers' },
-  { href: '/strategies', label: 'Strategy Engine' },
-  { href: '/alerts', label: 'Alerts' },
+  {
+    href: '/',
+    label: 'Dashboard',
+    icon: '<path d="M3 12 12 3l9 9"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
+  },
+  {
+    href: '/providers',
+    label: 'Connector',
+    icon: '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/>',
+  },
+  {
+    href: '/strategies',
+    label: 'Alpha',
+    icon: '<path d="M9 3h6"/><path d="M10 3v6l-4.5 8A2 2 0 0 0 7.3 20h9.4a2 2 0 0 0 1.8-3L14 9V3"/>',
+  },
+  {
+    href: '/profile',
+    label: 'Profile',
+    icon: '<path d="M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  },
 ];
 
 const currentPath = Astro.url.pathname.replace(/\/+$/, '') || '/';
+const pageTitle =
+  navItems.find((n) => n.href === currentPath)?.label ?? title;
 ---
 
 <!DOCTYPE html>
@@ -37,135 +57,233 @@ const currentPath = Astro.url.pathname.replace(/\/+$/, '') || '/';
     </script>
   </head>
   <body>
-    <div class="app-container">
-      <header class="app-header">
-        <div class="header-left">
-          <div class="logo">
-            <span class="logo-icon">⚡</span>
-            <span class="logo-text">AutoTrade <span class="logo-badge">AI</span></span>
-          </div>
+    <div class="shell">
+      <!-- Left icon rail -->
+      <aside class="rail">
+        <div class="rail-logo" title="ALPHATRADE">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#070b14" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+          </svg>
         </div>
-        <nav class="app-nav">
+        <nav class="rail-nav">
           {navItems.map((item) => (
             <a
               href={item.href}
-              class={`nav-item ${currentPath === item.href ? 'active' : ''}`}
+              class={`rail-item ${currentPath === item.href ? 'active' : ''}`}
+              title={item.label}
+              aria-label={item.label}
             >
-              {item.label}
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" set:html={item.icon} />
+              {currentPath === item.href && <span class="rail-active-bar"></span>}
             </a>
           ))}
         </nav>
-        <div class="header-right">
-          <button id="themeToggleBtn" class="theme-toggle-btn" type="button" title="Toggle theme" aria-label="Toggle theme">🌙</button>
-          <div class="system-status">
-            <span class="status-dot"></span>
-            <span class="status-text">Risk Gate: Active</span>
-          </div>
-          <button id="logoutBtn" class="btn btn-outline" type="button">Logout</button>
+        <div class="rail-bottom">
+          <span class="conn-dot" id="railConnDot" title="Connection status"></span>
+          <button id="themeToggleBtn" class="rail-icon-btn" type="button" title="Toggle theme" aria-label="Toggle theme">🌙</button>
+          <button id="logoutBtn" class="rail-icon-btn logout" type="button" title="Logout" aria-label="Logout">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="M16 17l5-5-5-5" /><path d="M21 12H9" />
+            </svg>
+          </button>
         </div>
-      </header>
+      </aside>
 
-      <main class="main-content">
-        <slot />
-      </main>
+      <!-- Main column -->
+      <div class="col">
+        <header class="topbar">
+          <span class="topbar-title">{pageTitle}</span>
+          <div class="topbar-right">
+            <span class="conn-pill" id="connPill">
+              <span class="conn-ico" id="connIco"></span>
+              <span id="connText">CHECKING…</span>
+            </span>
+            <span class="topbar-clock mono" id="topbarClock">--:--:-- UTC</span>
+            <span class="sys-nominal">
+              <span class="status-dot"></span>
+              <span>SYSTEM NOMINAL</span>
+            </span>
+          </div>
+        </header>
+
+        <main class="main-content">
+          <slot />
+        </main>
+      </div>
     </div>
 
     <style>
-      .app-container {
+      .shell {
         display: flex;
-        flex-direction: column;
         min-height: 100vh;
       }
-      .app-header {
-        height: 64px;
-        background: rgba(13, 18, 30, 0.8);
-        backdrop-filter: blur(16px);
+
+      /* ---- Left icon rail ---- */
+      .rail {
+        width: 56px;
+        flex-shrink: 0;
+        background: var(--bg-panel);
+        border-right: 1px solid var(--border-color);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        height: 100vh;
+      }
+      .rail-logo {
+        height: 56px;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-bottom: 1px solid var(--border-color);
+      }
+      .rail-logo svg { background: var(--accent-cyan); border-radius: 6px; padding: 5px; box-sizing: content-box; width: 18px; height: 18px; box-shadow: 0 2px 8px rgba(0, 200, 150, 0.25); }
+      .rail-nav {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.75rem 0;
+        flex: 1;
+      }
+      .rail-item {
+        position: relative;
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-muted);
+        transition: all 0.15s ease;
+      }
+      .rail-item:hover {
+        color: var(--text-main);
+        background: var(--bg-secondary);
+      }
+      .rail-item.active {
+        color: var(--accent-cyan);
+        background: rgba(0, 200, 150, 0.1);
+      }
+      .rail-active-bar {
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 2px;
+        height: 20px;
+        background: var(--accent-cyan);
+        border-radius: 0 2px 2px 0;
+      }
+      .rail-bottom {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.6rem;
+        padding-bottom: 1rem;
+      }
+      .conn-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--text-dim);
+      }
+      .conn-dot.online { background: var(--color-bull); box-shadow: 0 0 8px var(--color-bull); }
+      .rail-icon-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        transition: all 0.15s ease;
+      }
+      .rail-icon-btn:hover { color: var(--text-main); background: var(--bg-secondary); }
+      .rail-icon-btn.logout:hover { color: var(--color-bear); }
+
+      /* ---- Main column ---- */
+      .col {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .topbar {
+        height: 52px;
+        flex-shrink: 0;
+        background: var(--bg-panel);
         border-bottom: 1px solid var(--border-color);
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0 1.5rem;
+        padding: 0 1.25rem;
         position: sticky;
         top: 0;
-        z-index: 100;
+        z-index: 50;
       }
-      :root[data-theme='light'] .app-header {
-        background: rgba(255, 255, 255, 0.8);
-      }
-      .header-left {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-      }
-      .logo {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-weight: 700;
-        font-size: 1.15rem;
-      }
-      .logo-icon {
-        font-size: 1.25rem;
-      }
-      .logo-badge {
-        font-size: 0.65rem;
-        background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
-        padding: 0.15rem 0.4rem;
-        border-radius: 4px;
-        color: #fff;
-        text-transform: uppercase;
-      }
-      .app-nav {
-        display: flex;
-        gap: 1.5rem;
-      }
-      .nav-item {
-        color: var(--text-muted);
-        text-decoration: none;
+      .topbar-title {
         font-size: 0.9rem;
-        font-weight: 500;
-        padding: 0.4rem 0.8rem;
-        border-radius: 6px;
-        transition: all 0.2s;
-      }
-      .nav-item:hover, .nav-item.active {
+        font-weight: 600;
         color: var(--text-main);
-        background: rgba(255, 255, 255, 0.05);
       }
-      .header-right {
+      .topbar-right {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
+        gap: 1.25rem;
       }
-      .system-status {
+      .conn-pill {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        font-size: 0.8rem;
+        gap: 0.4rem;
+        font-size: 0.65rem;
+        letter-spacing: 0.08em;
         color: var(--text-muted);
-        background: rgba(16, 185, 129, 0.1);
-        border: 1px solid rgba(16, 185, 129, 0.2);
-        padding: 0.35rem 0.75rem;
-        border-radius: 20px;
+      }
+      .conn-ico {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: var(--text-dim);
+      }
+      .conn-pill.online { color: var(--color-bull); }
+      .conn-pill.online .conn-ico { background: var(--color-bull); box-shadow: 0 0 6px var(--color-bull); }
+      .topbar-clock {
+        font-size: 0.65rem;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .sys-nominal {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.65rem;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
       }
       .status-dot {
-        width: 8px;
-        height: 8px;
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
         background-color: var(--color-bull);
-        box-shadow: 0 0 8px var(--color-bull);
+        box-shadow: 0 0 6px var(--color-bull);
+        animation: pulse-subtle 2s infinite ease-in-out;
       }
       .main-content {
         flex: 1;
-        padding: 1.5rem;
-        max-width: 1600px;
-        margin: 0 auto;
+        min-height: 0;
+        padding: 1.25rem;
         width: 100%;
       }
     </style>
 
     <script>
-      import { logout } from '../lib/api';
+      import { logout, apiGet } from '../lib/api';
 
       document.getElementById('logoutBtn')?.addEventListener('click', () => {
         logout();
@@ -184,6 +302,51 @@ const currentPath = Astro.url.pathname.replace(/\/+$/, '') || '/';
         localStorage.setItem('theme', next);
         applyIcon();
       });
+
+      // Live UTC clock in the top bar.
+      const clockEl = document.getElementById('topbarClock');
+      const tick = () => {
+        if (clockEl) {
+          clockEl.textContent =
+            new Date().toLocaleTimeString('en-US', {
+              hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'UTC',
+            }) + ' UTC';
+        }
+      };
+      tick();
+      setInterval(tick, 1000);
+
+      // Shared connection indicator — a Binance provider with stored credentials
+      // means "connected". Result is cached on window so pages (e.g. the dashboard
+      // mode toggle) can reuse it without re-fetching.
+      type ProviderLite = { id: string; type: string; name: string; hasCredentials?: boolean; killSwitchActive?: boolean; tradingMode?: string };
+      const connPill = document.getElementById('connPill');
+      const connText = document.getElementById('connText');
+      const railDot = document.getElementById('railConnDot');
+
+      async function refreshConnection() {
+        // Only meaningful on authed pages; token attach is handled by apiGet.
+        if (!localStorage.getItem('jwt')) return;
+        try {
+          const providers = await apiGet<ProviderLite[]>('/providers');
+          const binance = providers.find((p) => p.type === 'binance' && p.hasCredentials);
+          (window as any).__connection = { connected: !!binance, provider: binance || null };
+          window.dispatchEvent(new CustomEvent('connection-ready', { detail: (window as any).__connection }));
+          if (binance) {
+            connPill?.classList.add('online');
+            if (connText) connText.textContent = 'BINANCE LIVE';
+            railDot?.classList.add('online');
+          } else {
+            connPill?.classList.remove('online');
+            if (connText) connText.textContent = 'NOT CONNECTED';
+            railDot?.classList.remove('online');
+          }
+        } catch {
+          if (connText) connText.textContent = 'NOT CONNECTED';
+        }
+      }
+      refreshConnection();
+      (window as any).refreshConnection = refreshConnection;
     </script>
   </body>
 </html>

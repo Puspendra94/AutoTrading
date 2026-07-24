@@ -3,826 +3,318 @@ import Layout from '../layouts/Layout.astro';
 ---
 
 <Layout title="Dashboard — AI Algorithmic Trading Platform">
-  <div class="dashboard-grid">
-    <!-- Main Left Section: Selected Ticker Detail View -->
-    <div class="main-ticker-view">
-      <!-- Top Bar: Ticker Selector & Stats -->
-      <div class="glass-card ticker-header">
-        <div class="ticker-selector-container">
-          <label for="tickerSelect" class="label">Select Ticker:</label>
-          <select id="tickerSelect" class="select-input">
-            <option value="">Loading tickers…</option>
-          </select>
-          <button class="btn btn-outline" id="addTickerToggleBtn" type="button">+ Add Ticker</button>
+  <div class="dash">
+    <!-- P/L banner + BTCUSDT live price + mode toggle -->
+    <div class="banner glass-card">
+      <div class="banner-metrics">
+        <div class="sym-block">
+          <span class="sym">BTCUSDT</span>
+          <span class="sym-price mono" id="livePrice">—</span>
+          <span class="sym-change mono" id="priceChange">—</span>
         </div>
-
-        <div class="price-stat-group">
-          <div class="stat-item">
-            <span class="stat-label">Live Price</span>
-            <span class="stat-value mono" id="livePrice">—</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Change (window)</span>
-            <span class="stat-value mono" id="priceChange">—</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Volume (window)</span>
-            <span class="stat-value mono" id="priceVolume">—</span>
-          </div>
+        <div class="metric">
+          <span class="metric-lbl">Unrealized P/L</span>
+          <span class="metric-val mono" id="mUnrealized">—</span>
         </div>
-
-        <div class="onboarding-status">
-          <span class="badge badge-info" id="tickerStatusBadge">Status: —</span>
+        <div class="metric">
+          <span class="metric-lbl">Open Positions</span>
+          <span class="metric-val mono" id="mOpen">—</span>
+        </div>
+        <div class="metric">
+          <span class="metric-lbl">Balance</span>
+          <span class="metric-val mono" id="mBalance">—</span>
         </div>
       </div>
 
-      <!-- Add Ticker mini-form -->
-      <div class="glass-card add-ticker-card" id="addTickerCard" hidden>
-        <h3 class="card-heading">Add Ticker</h3>
-        <form id="addTickerForm" class="add-ticker-form">
-          <div class="field">
-            <label for="newTickerProvider">Provider</label>
-            <select class="select-input" id="newTickerProvider" required>
-              <option value="">Loading providers…</option>
-            </select>
+      <div class="banner-actions">
+        <a class="alpha-chip" id="alphaChip" href="/strategies" hidden></a>
+        <div class="mode-toggle" id="modeToggle" data-state="locked">
+          <span class="mode-lbl">Mode</span>
+          <div class="mode-switch">
+            <button type="button" class="mode-btn" data-mode="paper" id="modePaper">PAPER</button>
+            <button type="button" class="mode-btn" data-mode="live" id="modeLive">LIVE</button>
           </div>
-          <div class="field">
-            <label for="newTickerSymbol">Symbol</label>
-            <input class="text-input" id="newTickerSymbol" type="text" placeholder="BTCUSDT" required />
-          </div>
-          <div class="field">
-            <label for="newTickerInterval">Interval</label>
-            <select class="select-input" id="newTickerInterval">
-              <option value="1m">1m</option>
-              <option value="5m">5m</option>
-              <option value="15m">15m</option>
-              <option value="1h">1h</option>
-              <option value="4h">4h</option>
-              <option value="1d">1d</option>
-            </select>
-          </div>
-          <button type="submit" class="btn btn-primary" id="addTickerSubmitBtn">Add & Start Backfill</button>
-        </form>
-        <p class="error-text" id="addTickerError" hidden></p>
-        <p class="hint-text">Adding a ticker kicks off an async historical backfill from the provider's public market data — the chart will populate once candles land.</p>
-      </div>
-
-      <!-- Real-time Candlestick Price Chart -->
-      <div class="glass-card chart-card">
-        <div class="chart-header">
-          <h3 class="chart-title">Real-Time Price & Signal Chart</h3>
-          <div class="chart-actions">
-            <span class="badge badge-info" id="intervalBadge">—</span>
-            <button class="btn btn-outline" id="rebackfillBtn" type="button">Re-run Backfill</button>
-          </div>
+          <span class="mode-locked" id="modeLocked">LOCKED</span>
         </div>
-        <div class="canvas-container">
-          <div id="priceChart" class="price-chart"></div>
-          <div class="empty-state" id="chartEmptyState" hidden>
-            <p>No candle data yet for this ticker. It may still be backfilling — try again shortly, or hit "Re-run Backfill".</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Active Strategy Proposal / Action Card -->
-      <div class="glass-card strategy-card" id="strategyCard">
-        <p class="hint-text">Loading strategy…</p>
       </div>
     </div>
 
-    <!-- Persistent Sidebar: Live Trades Across ALL Tickers & Providers -->
-    <aside class="sidebar-trades-view">
-      <div class="glass-card risk-card">
-        <div class="risk-header">
-          <h4>Provider Risk Gate</h4>
+    <!-- Main: Live Trades + Active Alpha -->
+    <div class="dash-grid">
+      <section class="glass-card panel">
+        <div class="panel-head">
+          <span class="panel-title">Live Trades</span>
+          <span class="live-tag"><span class="status-dot"></span> LIVE</span>
         </div>
-        <p class="risk-sub">Hard risk-gate enforcement is active on every order submission across all connected providers. Daily loss limits reset 00:00 UTC.</p>
-      </div>
-
-      <!-- Live Open Positions Sidebar List -->
-      <div class="glass-card live-positions-card">
-        <div class="sidebar-title-row">
-          <h3>Live Trades Across All Tickers</h3>
-          <span class="pulse-tag"><span class="status-dot"></span> Streaming</span>
-        </div>
-        <p class="sidebar-hint">Real-time status across all connected provider accounts</p>
-
         <div class="positions-list" id="positionsList">
-          <p class="hint-text">Loading positions…</p>
+          <p class="hint-text pad">Loading positions…</p>
         </div>
-      </div>
-    </aside>
+      </section>
+
+      <aside class="glass-card panel">
+        <div class="panel-head">
+          <span class="panel-title">Active Alpha</span>
+        </div>
+        <div id="alphaBody">
+          <p class="hint-text pad">Loading strategy…</p>
+        </div>
+      </aside>
+    </div>
   </div>
 
   <style>
-    .dashboard-grid {
-      display: grid;
-      grid-template-columns: 1fr 380px;
-      gap: 1.5rem;
-    }
-    @media (max-width: 1100px) {
-      .dashboard-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-    .main-ticker-view {
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-    }
-    .ticker-header {
+    .dash { display: flex; flex-direction: column; gap: 1rem; max-width: 1500px; margin: 0 auto; }
+
+    /* Banner */
+    .banner {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 1.5rem;
       flex-wrap: wrap;
+      padding: 0.9rem 1.25rem;
     }
-    .ticker-selector-container {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-    .ticker-selector-container .select-input {
-      width: auto;
-      min-width: 220px;
-    }
-    .label {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-    }
-    .price-stat-group {
-      display: flex;
-      gap: 2rem;
-    }
-    .stat-item {
-      display: flex;
-      flex-direction: column;
-    }
-    .stat-label {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-    .stat-value {
-      font-weight: 600;
-      font-size: 1.1rem;
-    }
+    .banner-metrics { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
+    .sym-block { display: flex; align-items: baseline; gap: 0.6rem; }
+    .sym { font-weight: 700; font-size: 0.95rem; letter-spacing: 0.03em; }
+    .sym-price { font-size: 1.05rem; font-weight: 700; }
+    .sym-change { font-size: 0.8rem; }
+    .metric { display: flex; flex-direction: column; gap: 0.15rem; }
+    .metric-lbl { font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
+    .metric-val { font-size: 0.95rem; font-weight: 700; }
     .text-bull { color: var(--color-bull); }
     .text-bear { color: var(--color-bear); }
 
-    .add-ticker-card {
-      display: flex;
-      flex-direction: column;
-      gap: 0.85rem;
-    }
-    .add-ticker-form {
-      display: grid;
-      grid-template-columns: 1.5fr 1fr 1fr auto;
-      gap: 0.75rem;
-      align-items: end;
-    }
-    @media (max-width: 800px) {
-      .add-ticker-form { grid-template-columns: 1fr; }
-    }
-
-    .chart-card {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-    .chart-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-    }
-    .chart-title {
-      font-size: 1rem;
-      font-weight: 600;
-    }
-    .chart-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-    .chart-actions .btn {
-      padding: 0.3rem 0.75rem;
-      font-size: 0.75rem;
-    }
-    .canvas-container {
-      width: 100%;
-      background: rgba(0, 0, 0, 0.3);
-      border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.04);
-      padding: 0.5rem;
-      overflow: hidden;
-      position: relative;
-      min-height: 380px;
-    }
-    :root[data-theme='light'] .canvas-container {
-      background: rgba(15, 23, 42, 0.03);
-    }
-    .price-chart {
-      width: 100%;
-      height: 380px;
-    }
-    .canvas-container .empty-state {
-      position: absolute;
-      inset: 0;
-    }
-
-    .strategy-card {
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-    }
-    .strategy-card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-    }
-    .card-heading {
-      font-size: 1rem;
-      font-weight: 600;
-    }
-    .card-subtext {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-top: 0.2rem;
-    }
-    .strategy-details-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 1rem;
-      background: rgba(0, 0, 0, 0.25);
-      padding: 1rem;
-      border-radius: 8px;
-    }
-    :root[data-theme='light'] .strategy-details-grid {
-      background: rgba(15, 23, 42, 0.04);
-    }
-    .detail-box {
-      display: flex;
-      flex-direction: column;
-      gap: 0.2rem;
-    }
-    .detail-label {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-    .detail-val {
-      font-weight: 600;
-      font-size: 0.95rem;
-    }
-    .strategy-metrics-row {
-      display: flex;
-      gap: 1.5rem;
-      flex-wrap: wrap;
-      border-top: 1px solid var(--border-color);
-      padding-top: 0.75rem;
-    }
-    .mini-metric {
-      display: flex;
-      gap: 0.5rem;
-      font-size: 0.825rem;
-      color: var(--text-muted);
-    }
-    .mini-metric strong {
-      color: var(--text-main);
-    }
-
-    /* Sidebar Styles */
-    .sidebar-trades-view {
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-    }
-    .risk-card {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      background: rgba(239, 68, 68, 0.05);
-      border-color: rgba(239, 68, 68, 0.2);
-    }
-    .risk-header {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-    .risk-sub {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-    }
-
-    .live-positions-card {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-    .sidebar-title-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .sidebar-title-row h3 {
-      font-size: 1rem;
-      font-weight: 600;
-    }
-    .pulse-tag {
-      font-size: 0.75rem;
-      color: var(--color-bull);
-      display: flex;
-      align-items: center;
-      gap: 0.3rem;
-    }
-    .sidebar-hint {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      margin-top: -0.5rem;
-    }
-    .positions-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.85rem;
-    }
-    .position-item {
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 0.85rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      transition: all 0.2s ease;
-    }
-    :root[data-theme='light'] .position-item {
-      background: rgba(15, 23, 42, 0.04);
-    }
-    .position-item:hover {
-      border-color: var(--accent-cyan);
-    }
-    .pos-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .pos-symbol {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .provider-tag {
-      font-size: 0.65rem;
-      background: rgba(255, 255, 255, 0.08);
-      padding: 0.1rem 0.4rem;
-      border-radius: 4px;
-      color: var(--text-muted);
-    }
-    .pos-mid {
-      display: flex;
-      justify-content: space-between;
-      background: rgba(255, 255, 255, 0.02);
-      padding: 0.4rem 0.6rem;
-      border-radius: 6px;
-    }
-    .pos-stat {
-      display: flex;
-      flex-direction: column;
-    }
-    .pos-lbl {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-    }
-    .pos-val {
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-    .pos-bot {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.7rem;
-      color: var(--text-dim);
-    }
-    .probation-badge {
+    .banner-actions { display: flex; align-items: center; gap: 1rem; }
+    .alpha-chip {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      font-size: 0.65rem; letter-spacing: 0.06em;
       color: var(--accent-cyan);
-      font-weight: 500;
+      border: 1px solid rgba(0, 200, 150, 0.3);
+      border-radius: 5px; padding: 0.3rem 0.55rem; text-decoration: none;
     }
+    .alpha-chip:hover { background: rgba(0, 200, 150, 0.06); }
+
+    /* Mode toggle */
+    .mode-toggle { display: flex; align-items: center; gap: 0.6rem; }
+    .mode-lbl { font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
+    .mode-switch { display: flex; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; }
+    .mode-btn {
+      padding: 0.35rem 0.8rem; font-size: 0.7rem; font-weight: 700; font-family: var(--font-mono);
+      background: transparent; border: none; color: var(--text-muted); cursor: pointer; border-radius: 5px;
+      transition: all 0.15s ease;
+    }
+    .mode-btn.active[data-mode="paper"] { background: var(--accent-cyan); color: #070b14; }
+    .mode-btn.active[data-mode="live"] { background: var(--color-bear); color: #fff; }
+    .mode-locked { font-size: 0.6rem; letter-spacing: 0.1em; color: var(--color-warning); animation: pulse-subtle 2s infinite ease-in-out; }
+    .mode-toggle[data-state="ready"] { }
+    .mode-toggle[data-state="ready"] .mode-locked { display: none; }
+    .mode-toggle[data-state="locked"] .mode-switch { opacity: 0.5; pointer-events: none; }
+
+    /* Grid */
+    .dash-grid { display: grid; grid-template-columns: 1fr 360px; gap: 1rem; align-items: start; }
+    @media (max-width: 1000px) { .dash-grid { grid-template-columns: 1fr; } }
+
+    .panel { padding: 0; overflow: hidden; }
+    .panel-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.7rem 1rem; border-bottom: 1px solid var(--border-color);
+    }
+    .panel-title { font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); }
+    .live-tag { display: flex; align-items: center; gap: 0.35rem; font-size: 0.6rem; letter-spacing: 0.1em; color: var(--color-bull); }
+    .pad { padding: 1rem; }
+
+    /* Positions */
+    .positions-list { display: flex; flex-direction: column; }
+    .pos-row { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); transition: background 0.15s ease; }
+    .pos-row:hover { background: var(--bg-card-hover); }
+    .pos-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; }
+    .pos-sym { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.8rem; }
+    .side-tag { font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; }
+    .side-long { background: rgba(0, 200, 150, 0.12); color: var(--color-bull); }
+    .side-short { background: rgba(255, 59, 107, 0.12); color: var(--color-bear); }
+    .pos-line { display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted); margin-top: 0.15rem; }
+    .pos-line .mono { color: var(--text-main); }
+
+    /* Alpha body */
+    .alpha-inner { padding: 1rem; display: flex; flex-direction: column; gap: 0.9rem; }
+    .alpha-name { font-size: 0.9rem; font-weight: 700; }
+    .alpha-sub { font-size: 0.65rem; color: var(--text-muted); margin-top: 0.15rem; }
+    .alpha-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .am { display: flex; flex-direction: column; gap: 0.1rem; background: var(--bg-secondary); border-radius: 6px; padding: 0.5rem 0.6rem; }
+    .am-lbl { font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
+    .am-val { font-size: 0.85rem; font-weight: 700; }
   </style>
 
   <script>
-    import { createChart, ColorType, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
-    import { apiGet, apiPost, requireAuth, ApiError } from '../lib/api';
-    import { subscribeTicker, unsubscribeTicker, onPriceUpdate, onPositionsUpdate } from '../lib/ws';
+    import { apiGet, apiPatch, requireAuth, ApiError } from '../lib/api';
+    import { resolveBtcTicker } from '../lib/ticker';
+    import { subscribeTicker, onPriceUpdate, onPositionsUpdate } from '../lib/ws';
 
     requireAuth();
 
-    type Ticker = {
-      id: string;
-      symbol: string;
-      interval: string;
-      status: string;
-      onboardingStage: string;
-      provider?: { id: string; name: string };
-    };
-    type Provider = { id: string; name: string; type: string };
-    type Candle = { timestamp: string; open: number; high: number; low: number; close: number; volume: number };
-    type Backtest = {
-      sharpe: number;
-      sortino: number;
-      maxDrawdown: number;
-      profitFactor: number;
-      tradeCount: number;
-      passedEvaluationGate: boolean;
-    };
-    type Strategy = { id: string; version: number; status: string; executionMode: string; parametersJson: any };
     type Position = {
-      id: string;
-      ticker: { symbol: string };
-      strategy?: { id: string } | null;
-      side: 'long' | 'short';
-      entryPrice: number;
-      currentPrice: number;
-      quantity: number;
-      unrealizedPl: number;
-      realizedPl: number;
-      isProbation: boolean;
-      openedAt: string;
+      id: string; ticker: { symbol: string }; side: 'long' | 'short';
+      entryPrice: number; currentPrice: number; quantity: number;
+      unrealizedPl: number; realizedPl: number; isProbation: boolean; openedAt: string;
     };
+    type Provider = { id: string; type: string; tradingMode: 'paper' | 'live'; hasCredentials?: boolean; killSwitchActive?: boolean; tradableBalance: number | null; currency: string | null };
+    type Strategy = { id: string; version: number; status: string; executionMode: string; parametersJson: any };
+    type Backtest = { sharpe: number; profitFactor: number; maxDrawdown: number; tradeCount: number; passedEvaluationGate: boolean };
 
-    let tickers: Ticker[] = [];
-    let currentTickerId: string | null = null;
-    let chart: IChartApi | null = null;
-    let candleSeries: ISeriesApi<'Candlestick'> | null = null;
-
-    const tickerSelect = document.getElementById('tickerSelect') as HTMLSelectElement;
-    const chartContainer = document.getElementById('priceChart') as HTMLDivElement;
-    const chartEmptyState = document.getElementById('chartEmptyState')!;
     const livePriceEl = document.getElementById('livePrice')!;
     const priceChangeEl = document.getElementById('priceChange')!;
-    const priceVolumeEl = document.getElementById('priceVolume')!;
-    const tickerStatusBadge = document.getElementById('tickerStatusBadge')!;
-    const intervalBadge = document.getElementById('intervalBadge')!;
-    const strategyCard = document.getElementById('strategyCard')!;
+    const mUnrealized = document.getElementById('mUnrealized')!;
+    const mOpen = document.getElementById('mOpen')!;
+    const mBalance = document.getElementById('mBalance')!;
     const positionsList = document.getElementById('positionsList')!;
+    const alphaBody = document.getElementById('alphaBody')!;
+    const alphaChip = document.getElementById('alphaChip') as HTMLAnchorElement;
 
-    function escapeHtml(s: string): string {
-      const div = document.createElement('div');
-      div.textContent = s ?? '';
-      return div.innerHTML;
-    }
+    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+    function fmt(n: number, d = 2): string { return Number(n).toLocaleString(undefined, { maximumFractionDigits: d }); }
 
-    // --- Chart setup ---
-    function initChart() {
-      chart = createChart(chartContainer, {
-        layout: {
-          background: { type: ColorType.Solid, color: 'transparent' },
-          textColor: '#9ca3af',
-        },
-        grid: {
-          vertLines: { color: 'rgba(255,255,255,0.05)' },
-          horzLines: { color: 'rgba(255,255,255,0.05)' },
-        },
-        timeScale: { timeVisible: true, secondsVisible: false },
-        width: chartContainer.clientWidth,
-        height: 380,
-      });
-      candleSeries = chart.addCandlestickSeries({
-        upColor: '#10b981',
-        downColor: '#ef4444',
-        borderVisible: false,
-        wickUpColor: '#10b981',
-        wickDownColor: '#ef4444',
-      });
-
-      new ResizeObserver(() => {
-        if (chart) chart.applyOptions({ width: chartContainer.clientWidth });
-      }).observe(chartContainer);
-    }
-
-    function toChartTime(iso: string | number): UTCTimestamp {
-      const ms = typeof iso === 'number' ? (iso > 1e12 ? iso : iso * 1000) : new Date(iso).getTime();
-      return Math.floor(ms / 1000) as UTCTimestamp;
-    }
-
-    function normalizeCandle(raw: any) {
-      const rawTime = raw.timestamp ?? raw.time ?? raw.t ?? raw.openTime;
-      return {
-        time: toChartTime(rawTime),
-        open: Number(raw.open ?? raw.o),
-        high: Number(raw.high ?? raw.h),
-        low: Number(raw.low ?? raw.l),
-        close: Number(raw.close ?? raw.c),
-        volume: Number(raw.volume ?? raw.v ?? 0),
-      };
-    }
-
-    function updateStatsFromCandles(candles: ReturnType<typeof normalizeCandle>[]) {
-      if (!candles.length) {
-        livePriceEl.textContent = '—';
-        priceChangeEl.textContent = '—';
-        priceVolumeEl.textContent = '—';
-        return;
-      }
-      const first = candles[0];
-      const last = candles[candles.length - 1];
-      livePriceEl.textContent = `$${last.close.toLocaleString(undefined, { maximumFractionDigits: 8 })}`;
-
-      const changePct = first.open ? ((last.close - first.open) / first.open) * 100 : 0;
-      priceChangeEl.textContent = `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`;
-      priceChangeEl.classList.toggle('text-bull', changePct >= 0);
-      priceChangeEl.classList.toggle('text-bear', changePct < 0);
-
-      const totalVolume = candles.reduce((sum, c) => sum + c.volume, 0);
-      priceVolumeEl.textContent = totalVolume.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    }
-
-    let loadedCandles: ReturnType<typeof normalizeCandle>[] = [];
-
-    async function loadCandles(tickerId: string) {
-      try {
-        const raw = await apiGet<Candle[]>(`/market-data/tickers/${tickerId}/candles?limit=200`);
-        loadedCandles = raw.map(normalizeCandle);
-        chartEmptyState.hidden = loadedCandles.length > 0;
-        candleSeries?.setData(loadedCandles);
-        updateStatsFromCandles(loadedCandles);
-      } catch (err) {
-        chartEmptyState.hidden = false;
-        loadedCandles = [];
-      }
-    }
-
-    // --- Strategy card ---
-    async function loadStrategyCard(tickerId: string) {
-      strategyCard.innerHTML = `<p class="hint-text"><span class="spinner"></span> Loading strategy…</p>`;
-      try {
-        const result = await apiGet<{ strategy: Strategy; backtest: Backtest } | null>(
-          `/strategies/ticker/${tickerId}/active`,
-        );
-        if (!result) {
-          strategyCard.innerHTML = `
-            <div class="empty-state">
-              <p>No active (LIVE) strategy for this ticker yet. Run the generation pipeline to have the LLM propose one, backtest it, and auto-promote it if it clears the evaluation gate.</p>
-              <button class="btn btn-primary" id="generateStrategyBtn">Generate Strategy</button>
-            </div>
-          `;
-          document.getElementById('generateStrategyBtn')?.addEventListener('click', async (e) => {
-            const btn = e.currentTarget as HTMLButtonElement;
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span> Generating…';
-            try {
-              await apiPost(`/strategies/ticker/${tickerId}/generate`);
-              await loadStrategyCard(tickerId);
-            } catch (err) {
-              strategyCard.innerHTML = `<p class="error-text">${err instanceof ApiError ? escapeHtml(err.message) : 'Strategy generation failed'}</p>`;
-            }
-          });
-          return;
-        }
-
-        const { strategy, backtest } = result;
-        const params = strategy.parametersJson || {};
-        const strategyName = params.strategyName || 'Generated Strategy';
-
-        strategyCard.innerHTML = `
-          <div class="strategy-card-header">
-            <div>
-              <h3 class="card-heading">Active Strategy Signal & Execution Mode</h3>
-              <p class="card-subtext">${escapeHtml(strategyName)} — v${strategy.version} (${strategy.executionMode === 'mode_a_rules' ? 'Mode A: Rules Engine' : 'Mode B: AI Live'})</p>
-            </div>
-            <span class="badge badge-bull">Status: ${escapeHtml(strategy.status.toUpperCase())}</span>
-          </div>
-
-          ${
-            backtest
-              ? `
-          <div class="strategy-metrics-row">
-            <div class="mini-metric">
-              <span>Backtest Sharpe</span>
-              <strong class="mono">${Number(backtest.sharpe).toFixed(2)}</strong>
-            </div>
-            <div class="mini-metric">
-              <span>Profit Factor</span>
-              <strong class="mono">${Number(backtest.profitFactor).toFixed(2)}</strong>
-            </div>
-            <div class="mini-metric">
-              <span>Max Drawdown</span>
-              <strong class="mono">${Number(backtest.maxDrawdown).toFixed(1)}%</strong>
-            </div>
-            <div class="mini-metric">
-              <span>Trade Count</span>
-              <strong class="mono">${backtest.tradeCount}</strong>
-            </div>
-            <div class="mini-metric">
-              <span>Eval Gate</span>
-              <strong class="mono ${backtest.passedEvaluationGate ? 'text-bull' : 'text-bear'}">${backtest.passedEvaluationGate ? 'PASSED' : 'FAILED'}</strong>
-            </div>
-          </div>`
-              : `<p class="hint-text">No backtest metrics recorded for this strategy version.</p>`
-          }
-        `;
-      } catch (err) {
-        strategyCard.innerHTML = `<p class="error-text">${err instanceof ApiError ? escapeHtml(err.message) : 'Failed to load strategy'}</p>`;
-      }
-    }
-
-    // --- Ticker switching ---
-    async function selectTicker(tickerId: string) {
-      if (currentTickerId) unsubscribeTicker(currentTickerId);
-      currentTickerId = tickerId;
-      localStorage.setItem('lastTickerId', tickerId);
-
-      const ticker = tickers.find((t) => t.id === tickerId);
-      if (ticker) {
-        tickerStatusBadge.textContent = `Status: ${ticker.status} / ${ticker.onboardingStage}`;
-        intervalBadge.textContent = `Interval: ${ticker.interval}`;
-      }
-
-      await loadCandles(tickerId);
-      await loadStrategyCard(tickerId);
-      subscribeTicker(tickerId);
-    }
-
-    function populateTickerSelect() {
-      if (!tickers.length) {
-        tickerSelect.innerHTML = `<option value="">No tickers yet — add one</option>`;
-        return;
-      }
-      tickerSelect.innerHTML = tickers
-        .map((t) => `<option value="${t.id}">${escapeHtml(t.symbol)} — ${escapeHtml(t.provider?.name || 'Unknown')} (${escapeHtml(t.interval)})</option>`)
-        .join('');
-    }
-
-    async function loadTickers() {
-      try {
-        tickers = await apiGet<Ticker[]>('/market-data/tickers');
-        populateTickerSelect();
-        if (!tickers.length) return;
-        const remembered = localStorage.getItem('lastTickerId');
-        const initial = tickers.find((t) => t.id === remembered)?.id || tickers[0].id;
-        tickerSelect.value = initial;
-        await selectTicker(initial);
-      } catch (err) {
-        tickerSelect.innerHTML = `<option value="">Failed to load tickers</option>`;
-      }
-    }
-
-    tickerSelect.addEventListener('change', () => {
-      if (tickerSelect.value) selectTicker(tickerSelect.value);
+    // ---- BTCUSDT live price (number only, no chart) ----
+    let firstOpen: number | null = null;
+    onPriceUpdate(({ candle }) => {
+      const close = Number(candle.close ?? candle.c);
+      if (!Number.isFinite(close)) return;
+      if (firstOpen === null) firstOpen = Number(candle.open ?? candle.o) || close;
+      livePriceEl.textContent = `$${fmt(close, 2)}`;
+      const chg = firstOpen ? ((close - firstOpen) / firstOpen) * 100 : 0;
+      priceChangeEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+      priceChangeEl.classList.toggle('text-bull', chg >= 0);
+      priceChangeEl.classList.toggle('text-bear', chg < 0);
     });
 
-    // --- Add ticker mini-form ---
-    const addTickerCard = document.getElementById('addTickerCard')!;
-    const addTickerToggleBtn = document.getElementById('addTickerToggleBtn')!;
-    const addTickerForm = document.getElementById('addTickerForm') as HTMLFormElement;
-    const addTickerError = document.getElementById('addTickerError')!;
-    const newTickerProviderSelect = document.getElementById('newTickerProvider') as HTMLSelectElement;
-
-    addTickerToggleBtn.addEventListener('click', () => {
-      addTickerCard.hidden = !addTickerCard.hidden;
-    });
-
-    async function loadProvidersIntoForm() {
-      try {
-        const providers = await apiGet<Provider[]>('/providers');
-        if (!providers.length) {
-          newTickerProviderSelect.innerHTML = `<option value="">No providers — connect one first</option>`;
-          return;
-        }
-        newTickerProviderSelect.innerHTML = providers
-          .map((p) => `<option value="${p.id}">${escapeHtml(p.name)} (${escapeHtml(p.type)})</option>`)
-          .join('');
-      } catch {
-        newTickerProviderSelect.innerHTML = `<option value="">Failed to load providers</option>`;
-      }
-    }
-
-    addTickerForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      addTickerError.hidden = true;
-      const providerId = newTickerProviderSelect.value;
-      const symbol = (document.getElementById('newTickerSymbol') as HTMLInputElement).value.trim().toUpperCase();
-      const interval = (document.getElementById('newTickerInterval') as HTMLSelectElement).value;
-
-      if (!providerId) {
-        addTickerError.hidden = false;
-        addTickerError.textContent = 'Select a provider first (connect one on the Providers page if the list is empty).';
-        return;
-      }
-
-      const submitBtn = document.getElementById('addTickerSubmitBtn') as HTMLButtonElement;
-      submitBtn.disabled = true;
-      const original = submitBtn.textContent;
-      submitBtn.innerHTML = '<span class="spinner"></span>';
-
-      try {
-        const created = await apiPost<Ticker>('/market-data/tickers', { providerId, symbol, interval });
-        addTickerForm.reset();
-        addTickerCard.hidden = true;
-        await loadTickers();
-        if (created?.id) {
-          tickerSelect.value = created.id;
-          await selectTicker(created.id);
-        }
-      } catch (err) {
-        addTickerError.hidden = false;
-        addTickerError.textContent = err instanceof ApiError ? err.message : 'Failed to add ticker';
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = original;
-      }
-    });
-
-    // --- Re-run backfill ---
-    document.getElementById('rebackfillBtn')?.addEventListener('click', async (e) => {
-      if (!currentTickerId) return;
-      const btn = e.currentTarget as HTMLButtonElement;
-      btn.disabled = true;
-      const original = btn.textContent;
-      btn.innerHTML = '<span class="spinner"></span>';
-      try {
-        await apiPost(`/market-data/tickers/${currentTickerId}/backfill`);
-        await loadCandles(currentTickerId);
-      } catch (err) {
-        // non-fatal, chart just stays as-is
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
-      }
-    });
-
-    // --- Live price updates via WS ---
-    onPriceUpdate(({ tickerId, candle }) => {
-      if (tickerId !== currentTickerId || !candleSeries) return;
-      const bar = normalizeCandle(candle);
-      candleSeries.update(bar);
-      if (loadedCandles.length && loadedCandles[loadedCandles.length - 1].time === bar.time) {
-        loadedCandles[loadedCandles.length - 1] = bar;
-      } else {
-        loadedCandles.push(bar);
-      }
-      updateStatsFromCandles(loadedCandles);
-    });
-
-    // --- Live positions sidebar ---
+    // ---- Live trades ----
     function renderPositions(positions: Position[]) {
+      mOpen.textContent = String(positions.length);
+      const unreal = positions.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
+      mUnrealized.textContent = `${unreal >= 0 ? '+' : ''}$${fmt(unreal, 2)}`;
+      mUnrealized.classList.toggle('text-bull', unreal >= 0);
+      mUnrealized.classList.toggle('text-bear', unreal < 0);
+
       if (!positions.length) {
-        positionsList.innerHTML = `<p class="hint-text">No open positions right now.</p>`;
+        positionsList.innerHTML = `<p class="hint-text pad">No open positions right now.</p>`;
         return;
       }
-      positionsList.innerHTML = positions
-        .map((p) => {
-          const plPct = p.entryPrice ? (Number(p.unrealizedPl) / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
-          const isBull = Number(p.unrealizedPl) >= 0;
-          const openedMs = Date.now() - new Date(p.openedAt).getTime();
-          const openedMins = Math.floor(openedMs / 60000);
-          const openedLabel = openedMins < 60 ? `${openedMins}m` : `${Math.floor(openedMins / 60)}h ${openedMins % 60}m`;
-          return `
-            <div class="position-item">
-              <div class="pos-top">
-                <div class="pos-symbol">
-                  <strong class="mono">${escapeHtml(p.ticker?.symbol || '—')}</strong>
-                </div>
-                <span class="badge ${p.side === 'long' ? 'badge-bull' : 'badge-bear'}">${p.side.toUpperCase()}</span>
-              </div>
-              <div class="pos-mid">
-                <div class="pos-stat">
-                  <span class="pos-lbl">Entry</span>
-                  <span class="pos-val mono">$${Number(p.entryPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })}</span>
-                </div>
-                <div class="pos-stat">
-                  <span class="pos-lbl">Current P/L</span>
-                  <span class="pos-val mono ${isBull ? 'text-bull' : 'text-bear'}">${isBull ? '+' : ''}$${Number(p.unrealizedPl).toFixed(2)} (${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%)</span>
-                </div>
-              </div>
-              <div class="pos-bot">
-                <span class="pos-time">Open: ${openedLabel}</span>
-                <span class="probation-badge">${p.isProbation ? 'Probation' : 'Full Size'}</span>
-              </div>
+      positionsList.innerHTML = positions.map((p) => {
+        const bull = Number(p.unrealizedPl) >= 0;
+        const plPct = p.entryPrice ? (Number(p.unrealizedPl) / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
+        const mins = Math.floor((Date.now() - new Date(p.openedAt).getTime()) / 60000);
+        const age = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+        return `
+          <div class="pos-row">
+            <div class="pos-top">
+              <span class="pos-sym">${esc(p.ticker?.symbol || 'BTCUSDT')}
+                <span class="side-tag ${p.side === 'long' ? 'side-long' : 'side-short'}">${p.side.toUpperCase()}</span>
+              </span>
+              <span class="mono ${bull ? 'text-bull' : 'text-bear'}" style="font-weight:700;font-size:0.8rem">${bull ? '+' : ''}$${fmt(Number(p.unrealizedPl), 2)}</span>
             </div>
-          `;
-        })
-        .join('');
+            <div class="pos-line"><span>Entry</span><span class="mono">$${fmt(Number(p.entryPrice), 2)}</span></div>
+            <div class="pos-line"><span>P/L %</span><span class="mono ${bull ? 'text-bull' : 'text-bear'}">${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%</span></div>
+            <div class="pos-line"><span>Size ${fmt(Number(p.quantity), 6)}</span><span>${p.isProbation ? 'Probation' : 'Full'} · ${age}</span></div>
+          </div>`;
+      }).join('');
     }
 
     async function loadPositions() {
+      try { renderPositions(await apiGet<Position[]>('/execution/positions/open')); }
+      catch { positionsList.innerHTML = `<p class="hint-text pad">Failed to load positions.</p>`; }
+    }
+    onPositionsUpdate((positions) => renderPositions(positions as Position[]));
+
+    // ---- Active Alpha ----
+    async function loadAlpha(tickerId: string) {
       try {
-        const positions = await apiGet<Position[]>('/execution/positions/open');
-        renderPositions(positions);
+        const result = await apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${tickerId}/active`);
+        if (!result) {
+          alphaBody.innerHTML = `<div class="alpha-inner"><p class="hint-text">No active strategy yet. Generate one on the Alpha page.</p><a href="/strategies" class="btn btn-primary" style="width:fit-content">Go to Alpha</a></div>`;
+          alphaChip.hidden = true;
+          return;
+        }
+        const { strategy, backtest } = result;
+        const name = strategy.parametersJson?.strategyName || 'Generated Strategy';
+        alphaChip.hidden = false;
+        alphaChip.textContent = `⚡ ${name}`;
+        alphaBody.innerHTML = `
+          <div class="alpha-inner">
+            <div>
+              <div class="alpha-name">${esc(name)}</div>
+              <div class="alpha-sub">v${strategy.version} · ${strategy.executionMode === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live'} · ${esc(strategy.status.toUpperCase())}</div>
+            </div>
+            ${backtest ? `
+            <div class="alpha-metrics">
+              <div class="am"><span class="am-lbl">Sharpe</span><span class="am-val mono">${Number(backtest.sharpe).toFixed(2)}</span></div>
+              <div class="am"><span class="am-lbl">Profit Factor</span><span class="am-val mono">${Number(backtest.profitFactor).toFixed(2)}</span></div>
+              <div class="am"><span class="am-lbl">Max Drawdown</span><span class="am-val mono">${Number(backtest.maxDrawdown).toFixed(1)}%</span></div>
+              <div class="am"><span class="am-lbl">Trades</span><span class="am-val mono">${backtest.tradeCount}</span></div>
+              <div class="am" style="grid-column:1/-1"><span class="am-lbl">Eval Gate</span><span class="am-val mono ${backtest.passedEvaluationGate ? 'text-bull' : 'text-bear'}">${backtest.passedEvaluationGate ? 'PASSED' : 'FAILED'}</span></div>
+            </div>` : `<p class="hint-text">No backtest metrics recorded.</p>`}
+          </div>`;
       } catch (err) {
-        positionsList.innerHTML = `<p class="hint-text">Failed to load positions.</p>`;
+        alphaBody.innerHTML = `<p class="hint-text pad">${err instanceof ApiError ? esc(err.message) : 'Failed to load strategy'}</p>`;
       }
     }
 
-    onPositionsUpdate((positions) => renderPositions(positions));
+    // ---- Mode toggle (change #3) ----
+    const modeToggle = document.getElementById('modeToggle')!;
+    const modePaper = document.getElementById('modePaper') as HTMLButtonElement;
+    const modeLive = document.getElementById('modeLive') as HTMLButtonElement;
+    let boundProvider: Provider | null = null;
 
-    // --- Init ---
-    initChart();
-    loadTickers();
-    loadProvidersIntoForm();
-    loadPositions();
+    function paintMode(mode: 'paper' | 'live', locked: boolean) {
+      modeToggle.dataset.state = locked ? 'locked' : 'ready';
+      modePaper.classList.toggle('active', mode === 'paper');
+      modeLive.classList.toggle('active', mode === 'live');
+    }
+
+    function applyProviderState(provider: Provider | null) {
+      boundProvider = provider;
+      const connected = !!provider && !!provider.hasCredentials;
+      if (!connected) { paintMode('paper', true); mBalance.textContent = '—'; return; }
+      paintMode(provider!.tradingMode || 'paper', false);
+      mBalance.textContent = provider!.tradableBalance != null ? `${fmt(provider!.tradableBalance, 2)} ${provider!.currency || ''}`.trim() : '—';
+    }
+
+    async function switchMode(mode: 'paper' | 'live') {
+      if (!boundProvider || !boundProvider.hasCredentials) return;
+      if (mode === boundProvider.tradingMode) return;
+      paintMode(mode, false);
+      try {
+        const updated = await apiPatch<Provider>(`/providers/${boundProvider.id}/trading-mode`, { tradingMode: mode });
+        boundProvider.tradingMode = updated.tradingMode;
+      } catch (err) {
+        // revert on failure
+        paintMode(boundProvider.tradingMode, false);
+      }
+    }
+    modePaper.addEventListener('click', () => switchMode('paper'));
+    modeLive.addEventListener('click', () => switchMode('live'));
+
+    // Reuse the Layout's shared connection probe when available, else fetch directly.
+    async function loadProvider() {
+      try {
+        const providers = await apiGet<Provider[]>('/providers');
+        applyProviderState(providers.find((p) => p.type === 'binance' && p.hasCredentials) || providers.find((p) => p.type === 'binance') || null);
+      } catch { applyProviderState(null); }
+    }
+    window.addEventListener('connection-ready', (e: any) => {
+      if (e.detail?.provider) applyProviderState(e.detail.provider as Provider);
+    });
+
+    // ---- Init ----
+    (async () => {
+      loadProvider();
+      loadPositions();
+      const ticker = await resolveBtcTicker();
+      if (ticker) {
+        subscribeTicker(ticker.id);
+        loadAlpha(ticker.id);
+      } else {
+        alphaBody.innerHTML = `<div class="alpha-inner"><p class="hint-text">No BTCUSDT ticker yet — connect Binance on the Connector page to begin.</p></div>`;
+      }
+    })();
   </script>
 </Layout>

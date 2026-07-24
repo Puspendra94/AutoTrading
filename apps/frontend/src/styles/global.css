@@ -1,24 +1,32 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  --bg-dark: #090d16;
-  --bg-card: rgba(17, 24, 39, 0.7);
-  --bg-card-hover: rgba(31, 41, 55, 0.8);
-  --border-color: rgba(255, 255, 255, 0.08);
-  --border-highlight: rgba(6, 182, 212, 0.3);
+  /* Terminal palette — mirrors the reference "ALPHATRADE" prototype:
+     near-black background, thin borders, green primary / red bear / amber warning.
+     Variable names are kept identical to the previous theme so every existing
+     component that reads var(--accent-cyan)/etc. re-skins with no per-file change. */
+  --bg-dark: #070b14;
+  --bg-panel: #060a11;      /* sidebar / top-bar chrome (darker than content) */
+  --bg-card: #0b1120;
+  --bg-card-hover: #111a2e;
+  --bg-secondary: #0f1626;  /* inputs, inset rows */
+  --border-color: #1b2740;
+  --border-highlight: rgba(0, 200, 150, 0.35);
 
-  --text-main: #f3f4f6;
-  --text-muted: #9ca3af;
-  --text-dim: #6b7280;
+  --text-main: #e6edf7;
+  --text-muted: #6b7f9e;
+  --text-dim: #3d4d6b;
 
-  --accent-cyan: #06b6d4;
-  --accent-violet: #8b5cf6;
-  --color-bull: #10b981;
-  --color-bear: #ef4444;
-  --color-warning: #f59e0b;
+  /* --accent-cyan is the app-wide "primary/active" token; repointed to the
+     reference green so active nav, focus rings and primary buttons read green. */
+  --accent-cyan: #00c896;
+  --accent-violet: #00c896;
+  --color-bull: #00c896;
+  --color-bear: #ff3b6b;
+  --color-warning: #f0b429;
 
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 * {
@@ -31,25 +39,26 @@ body {
   background-color: var(--bg-dark);
   color: var(--text-main);
   font-family: var(--font-sans);
+  font-size: 13px;
   min-height: 100vh;
   overflow-x: hidden;
-  background-image: 
-    radial-gradient(circle at 15% 15%, rgba(6, 182, 212, 0.05) 0%, transparent 40%),
-    radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.05) 0%, transparent 40%);
+  /* faint terminal grid, like the reference auth screen */
+  background-image:
+    linear-gradient(rgba(0, 200, 150, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 200, 150, 0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
 .glass-card {
   background: var(--bg-card);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 1.25rem;
   transition: all 0.2s ease;
 }
 
 .glass-card:hover {
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: #24365a;
 }
 
 .btn {
@@ -68,13 +77,14 @@ body {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
-  color: #fff;
-  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.25);
+  background: var(--accent-cyan);
+  color: #070b14;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(0, 200, 150, 0.15);
 }
 
 .btn-primary:hover {
-  opacity: 0.92;
+  background: #00b084;
   transform: translateY(-1px);
 }
 
@@ -138,21 +148,28 @@ body {
 /* already reads var(--...) picks this up with no per-component changes. */
 /* ---------------------------------------------------------------------- */
 :root[data-theme='light'] {
-  --bg-dark: #f3f4f6;
-  --bg-card: rgba(255, 255, 255, 0.75);
-  --bg-card-hover: rgba(255, 255, 255, 0.92);
-  --border-color: rgba(15, 23, 42, 0.1);
-  --border-highlight: rgba(6, 182, 212, 0.35);
+  --bg-dark: #eef1f6;
+  --bg-panel: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f6f8fb;
+  --bg-secondary: #f1f4f9;
+  --border-color: rgba(15, 23, 42, 0.12);
+  --border-highlight: rgba(0, 168, 126, 0.4);
 
   --text-main: #0f172a;
-  --text-muted: #4b5563;
-  --text-dim: #6b7280;
+  --text-muted: #55627a;
+  --text-dim: #8492aa;
+
+  --accent-cyan: #00a87e;
+  --accent-violet: #00a87e;
+  --color-bull: #00a87e;
 }
 
 :root[data-theme='light'] body {
   background-image:
-    radial-gradient(circle at 15% 15%, rgba(6, 182, 212, 0.08) 0%, transparent 40%),
-    radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.08) 0%, transparent 40%);
+    linear-gradient(rgba(0, 168, 126, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 168, 126, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -173,20 +190,15 @@ body {
 
 .text-input,
 .select-input {
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   color: var(--text-main);
   padding: 0.55rem 0.85rem;
-  border-radius: 8px;
-  font-family: var(--font-sans);
-  font-size: 0.9rem;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
   outline: none;
   width: 100%;
-}
-
-:root[data-theme='light'] .text-input,
-:root[data-theme='light'] .select-input {
-  background: rgba(15, 23, 42, 0.04);
 }
 
 .text-input:focus,

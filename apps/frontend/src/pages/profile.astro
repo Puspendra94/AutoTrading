@@ -1,0 +1,159 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Profile — AI Algorithmic Trading Platform">
+  <div class="profile-page" id="profilePage">
+    <div class="empty-state glass-card" id="profLoading">
+      <span class="spinner"></span>
+      <p>Loading risk guardrails…</p>
+    </div>
+  </div>
+
+  <style>
+    .profile-page { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
+    .prof-head { }
+    .prof-title { font-size: 1.2rem; font-weight: 700; }
+    .prof-sub { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
+
+    .guard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 640px) { .guard-grid { grid-template-columns: 1fr; } }
+    .guard { display: flex; flex-direction: column; gap: 0.4rem; }
+    .guard-lbl { font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
+    .guard-hint { font-size: 0.62rem; color: var(--text-dim); }
+    .guard-input-row { display: flex; align-items: center; gap: 0.4rem; }
+    .guard-input-row .text-input { max-width: 130px; }
+    .guard-suffix { font-size: 0.7rem; color: var(--text-muted); }
+
+    .prof-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem; }
+    .ok-text { color: var(--color-bull); font-size: 0.72rem; }
+    .section-title { font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; }
+  </style>
+
+  <script>
+    import { apiGet, apiPatch, requireAuth, ApiError } from '../lib/api';
+
+    requireAuth();
+
+    type Provider = { id: string; type: string; hasCredentials?: boolean };
+    type RiskLimit = {
+      id: string; providerId: string;
+      dailyLossLimitPct: number | string;
+      maxConcurrentPositionsPerTicker: number;
+      probationSizePct: number | string;
+      probationTradesCount: number;
+      resetBoundary: string;
+      hardStopLossPct: number | string | null;
+      hardTakeProfitPct: number | string | null;
+    };
+
+    const page = document.getElementById('profilePage')!;
+    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+    const num = (v: number | string | null | undefined) => (v == null || v === '' ? '' : String(Number(v)));
+
+    async function load() {
+      try {
+        const providers = await apiGet<Provider[]>('/providers');
+        const provider = providers.find((p) => p.type === 'binance') || providers[0];
+        if (!provider) {
+          page.innerHTML = `<div class="glass-card empty-state"><p>No provider yet. Connect Binance on the Connector page first — risk guardrails are configured per provider.</p><a class="btn btn-primary" href="/providers" style="width:fit-content">Go to Connector</a></div>`;
+          return;
+        }
+        const rl = await apiGet<RiskLimit>(`/providers/${provider.id}/risk-limit`);
+        render(provider, rl);
+      } catch (err) {
+        page.innerHTML = `<div class="glass-card empty-state"><p class="error-text">${err instanceof ApiError ? esc(err.message) : 'Failed to load risk guardrails'}</p></div>`;
+      }
+    }
+
+    function field(id: string, label: string, value: string, suffix: string, hint: string, opts = 'step="0.1" min="0"') {
+      return `
+        <div class="guard">
+          <span class="guard-lbl">${label}</span>
+          <div class="guard-input-row">
+            <input class="text-input" id="${id}" type="number" ${opts} value="${esc(value)}" />
+            <span class="guard-suffix">${suffix}</span>
+          </div>
+          <span class="guard-hint">${hint}</span>
+        </div>`;
+    }
+
+    function render(provider: Provider, rl: RiskLimit) {
+      page.innerHTML = `
+        <div class="prof-head">
+          <h1 class="prof-title">Risk Guardrails</h1>
+          <p class="prof-sub">Hard limits enforced on every order and every live tick for your Binance account. Changes apply immediately.</p>
+        </div>
+
+        <div class="glass-card">
+          <div class="section-title">Loss & Exposure Limits</div>
+          <div class="guard-grid">
+            ${field('dailyLossLimitPct', 'Max Daily Loss', num(rl.dailyLossLimitPct), '%', 'All trading halts for the day once realized+unrealized loss hits this % of balance.')}
+            ${field('maxConcurrentPositionsPerTicker', 'Max Concurrent Positions', String(rl.maxConcurrentPositionsPerTicker), 'per ticker', 'New entries are rejected beyond this many open positions per ticker.', 'step="1" min="1"')}
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <div class="section-title">Hard Stop-Loss / Take-Profit (per position)</div>
+          <div class="guard-grid">
+            ${field('hardStopLossPct', 'Hard Stop-Loss', num(rl.hardStopLossPct), '%', 'Any open position is force-closed at this loss %, regardless of strategy. Blank = no hard cap.')}
+            ${field('hardTakeProfitPct', 'Hard Take-Profit', num(rl.hardTakeProfitPct), '%', 'Any open position is force-closed at this gain %. Blank = let the strategy decide.')}
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <div class="section-title">New-Strategy Probation</div>
+          <div class="guard-grid">
+            ${field('probationSizePct', 'Probation Size', num(rl.probationSizePct), '% of full', 'Newly promoted strategies trade at this fraction of full size during probation.')}
+            ${field('probationTradesCount', 'Probation Trades', String(rl.probationTradesCount), 'trades', 'Number of trades a new strategy stays at probation size before scaling up.', 'step="1" min="0"')}
+          </div>
+        </div>
+
+        <div class="prof-actions">
+          <button class="btn btn-primary" id="saveBtn">Save Guardrails</button>
+          <p class="error-text" id="saveErr" hidden></p>
+          <p class="ok-text" id="saveOk" hidden></p>
+        </div>`;
+
+      document.getElementById('saveBtn')!.addEventListener('click', () => save(provider.id));
+    }
+
+    function readNum(id: string): number | null {
+      const v = (document.getElementById(id) as HTMLInputElement).value.trim();
+      return v === '' ? null : Number(v);
+    }
+
+    async function save(providerId: string) {
+      const errEl = document.getElementById('saveErr')!;
+      const okEl = document.getElementById('saveOk')!;
+      const btn = document.getElementById('saveBtn') as HTMLButtonElement;
+      errEl.hidden = true; okEl.hidden = true;
+
+      const payload = {
+        dailyLossLimitPct: readNum('dailyLossLimitPct'),
+        maxConcurrentPositionsPerTicker: readNum('maxConcurrentPositionsPerTicker'),
+        probationSizePct: readNum('probationSizePct'),
+        probationTradesCount: readNum('probationTradesCount'),
+        // null clears the hard cap; a number sets it.
+        hardStopLossPct: readNum('hardStopLossPct'),
+        hardTakeProfitPct: readNum('hardTakeProfitPct'),
+      };
+
+      btn.disabled = true;
+      const label = btn.textContent;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        await apiPatch(`/providers/${providerId}/risk-limit`, payload);
+        okEl.hidden = false; okEl.textContent = 'Guardrails saved.';
+      } catch (err) {
+        errEl.hidden = false;
+        errEl.textContent = err instanceof ApiError ? err.message : 'Failed to save guardrails';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    }
+
+    load();
+  </script>
+</Layout>

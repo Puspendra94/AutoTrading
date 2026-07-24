@@ -2,227 +2,48 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="Providers — AI Algorithmic Trading Platform">
-  <div class="page-container">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">Provider & Account Management</h1>
-        <p class="page-subtitle">Connect exchange accounts, monitor tradable balances, and configure trading schedules.</p>
-      </div>
-      <button class="btn btn-primary" id="openAddModalBtn">+ Connect New Provider</button>
-    </div>
-
-    <div id="providersError" class="error-text" hidden></div>
-
-    <!-- Provider Cards Grid (rendered client-side from GET /providers) -->
-    <div class="providers-grid" id="providersGrid">
-      <div class="empty-state glass-card" id="providersLoading">
-        <span class="spinner"></span>
-        <p>Loading providers…</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- Connect Provider Modal -->
-  <div class="modal-backdrop" id="addModalBackdrop" hidden>
-    <div class="glass-card modal-card">
-      <div class="modal-header">
-        <h3 class="card-title">Connect New Provider</h3>
-        <button class="modal-close" id="closeAddModalBtn" type="button" aria-label="Close">&times;</button>
-      </div>
-
-      <form id="addProviderForm" class="auth-form">
-        <div class="field">
-          <label for="providerName">Display Name</label>
-          <input class="text-input" id="providerName" name="name" type="text" placeholder="e.g. My Binance Account" required />
-        </div>
-
-        <div class="field">
-          <label for="providerType">Provider Type</label>
-          <select class="select-input" id="providerType" name="type">
-            <option value="binance">Binance (Spot)</option>
-            <option value="zerodha" disabled>Zerodha / Kite — Coming Soon</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="apiKey">API Key <span class="hint-text">(optional — leave blank to add the provider now, connect keys later)</span></label>
-          <input class="text-input" id="apiKey" name="apiKey" type="text" autocomplete="off" />
-        </div>
-
-        <div class="field">
-          <label for="apiSecret">API Secret</label>
-          <input class="text-input" id="apiSecret" name="apiSecret" type="password" autocomplete="off" />
-        </div>
-
-        <div class="field">
-          <label for="tradingMode">Trading Mode</label>
-          <select class="select-input" id="tradingMode" name="tradingMode">
-            <option value="paper" selected>Paper — simulated fills using real live prices</option>
-            <option value="live">Live — places real orders with real capital</option>
-          </select>
-        </div>
-
-        <label class="checkbox-field">
-          <input type="checkbox" id="useTestnet" name="useTestnet" checked />
-          Use exchange testnet (recommended until you've verified Live mode end-to-end)
-        </label>
-
-        <p class="hint-text">
-          Paper mode never sends orders to the exchange — it simulates fills against real, live market prices so you can
-          validate a strategy risk-free. Live mode places real orders and requires real API credentials; it only activates
-          once you explicitly select it here (or flip it later) and only if valid credentials are on file.
-        </p>
-
-        <p class="error-text" id="addProviderError" hidden></p>
-
-        <button type="submit" class="btn btn-primary submit-btn" id="addProviderSubmitBtn">Connect Provider</button>
-      </form>
+<Layout title="Connector — AI Algorithmic Trading Platform">
+  <div class="conn-page" id="connPage">
+    <div class="empty-state glass-card" id="connLoading">
+      <span class="spinner"></span>
+      <p>Loading connector…</p>
     </div>
   </div>
 
   <style>
-    .page-container {
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-    }
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .page-title {
-      font-size: 1.5rem;
-      font-weight: 700;
-    }
-    .page-subtitle {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      margin-top: 0.2rem;
-    }
-    .providers-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
-      gap: 1.5rem;
-    }
-    .provider-card {
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-    }
-    .provider-card-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-    }
-    .provider-brand {
-      display: flex;
-      align-items: center;
-      gap: 0.85rem;
-    }
-    .brand-icon {
-      width: 42px;
-      height: 42px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 1.2rem;
-      flex-shrink: 0;
-    }
-    .brand-icon.binance {
-      background: rgba(243, 186, 27, 0.15);
-      color: #f3ba1b;
-      border: 1px solid rgba(243, 186, 27, 0.3);
-    }
-    .brand-icon.zerodha {
-      background: rgba(56, 126, 209, 0.15);
-      color: #387ed1;
-      border: 1px solid rgba(56, 126, 209, 0.3);
-    }
-    .provider-name {
-      font-size: 1.05rem;
-      font-weight: 600;
-    }
-    .provider-type {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-    .provider-badges {
-      display: flex;
-      gap: 0.4rem;
-      margin-top: 0.35rem;
-      flex-wrap: wrap;
-    }
-    .toggle-container {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.8rem;
-    }
+    .conn-page { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
 
-    /* Switch */
-    .switch {
-      position: relative;
-      display: inline-block;
-      width: 38px;
-      height: 22px;
-    }
-    .switch input { opacity: 0; width: 0; height: 0; }
-    .slider {
-      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
-      background-color: #374151; transition: .3s; border-radius: 22px;
-    }
-    .slider:before {
-      position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px;
-      background-color: white; transition: .3s; border-radius: 50%;
-    }
-    input:checked + .slider { background-color: var(--color-bull); }
-    input:checked + .slider:before { transform: translateX(16px); }
+    /* --- Connect form (disconnected state) --- */
+    .connect-card { display: flex; flex-direction: column; gap: 1rem; }
+    .connect-eyebrow { font-size: 0.6rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--color-warning); display: flex; align-items: center; gap: 0.4rem; }
+    .connect-title { font-size: 1.3rem; font-weight: 700; }
+    .connect-desc { font-size: 0.78rem; color: var(--text-muted); }
+    .connect-form { display: flex; flex-direction: column; gap: 0.85rem; }
+    .warn-box { display: flex; gap: 0.6rem; align-items: flex-start; background: rgba(240, 180, 41, 0.06); border: 1px solid rgba(240, 180, 41, 0.2); border-radius: 6px; padding: 0.7rem; }
+    .warn-box span { font-size: 0.68rem; color: var(--text-muted); }
 
-    .provider-balance-section {
-      background: rgba(0, 0, 0, 0.25);
-      padding: 1rem;
-      border-radius: 8px;
-      display: flex;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-    :root[data-theme='light'] .provider-balance-section {
-      background: rgba(15, 23, 42, 0.04);
-    }
-    .balance-item {
-      display: flex;
-      flex-direction: column;
-      gap: 0.2rem;
-    }
-    .lbl { font-size: 0.75rem; color: var(--text-muted); }
-    .val { font-weight: 600; font-size: 1.1rem; }
+    /* --- Connected state --- */
+    .status-bar { display: flex; align-items: center; justify-content: space-between; padding: 0.85rem 1.1rem; }
+    .status-left { display: flex; align-items: center; gap: 0.55rem; }
+    .status-left .status-dot { width: 8px; height: 8px; }
+    .status-name { font-size: 0.85rem; font-weight: 600; }
+    .status-key { font-size: 0.65rem; color: var(--text-muted); }
 
-    .provider-meta {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-    .note {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-    }
-    .action-buttons {
-      display: flex;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-    }
-    .cs-text {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-    }
-    .submit-btn { width: 100%; }
+    .cards-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; }
+    .info-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.9rem 1rem; }
+    .info-lbl { font-size: 0.58rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
+    .info-val { font-size: 1rem; font-weight: 700; margin-top: 0.25rem; }
+    .info-sub { font-size: 0.6rem; color: var(--text-dim); margin-top: 0.2rem; }
+
+    .ctrl-card { display: flex; flex-direction: column; gap: 0.9rem; }
+    .ctrl-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    .ctrl-lbl { font-size: 0.7rem; color: var(--text-muted); }
+    .seg { display: flex; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; }
+    .seg button { padding: 0.35rem 0.8rem; font-size: 0.7rem; font-weight: 700; font-family: var(--font-mono); background: transparent; border: none; color: var(--text-muted); cursor: pointer; border-radius: 5px; }
+    .seg button.active[data-mode="paper"], .seg button.active[data-tn="true"] { background: var(--accent-cyan); color: #070b14; }
+    .seg button.active[data-mode="live"], .seg button.active[data-tn="false"] { background: var(--color-bear); color: #fff; }
+    .ks-box { border-color: rgba(255, 59, 107, 0.3); background: rgba(255, 59, 107, 0.05); }
+    .row-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
   </style>
 
   <script>
@@ -231,221 +52,174 @@ import Layout from '../layouts/Layout.astro';
     requireAuth();
 
     type Provider = {
-      id: string;
-      name: string;
-      type: string;
-      status: string;
-      tradingEnabled: boolean;
-      tradingMode?: 'paper' | 'live';
-      useTestnet?: boolean;
-      hasCredentials?: boolean;
-      tradableBalance?: number | string;
-      currency?: string;
+      id: string; name: string; type: string; status: string;
+      tradingEnabled: boolean; tradingMode?: 'paper' | 'live'; useTestnet?: boolean;
+      hasCredentials?: boolean; killSwitchActive?: boolean; killSwitchReason?: string | null;
+      tradableBalance?: number | null; currency?: string | null; lastSyncedAt?: string | null;
     };
 
-    const grid = document.getElementById('providersGrid')!;
-    const errorBanner = document.getElementById('providersError')!;
+    const page = document.getElementById('connPage')!;
+    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
 
-    function formatBalance(p: Provider): string {
-      if (!p.hasCredentials) return 'Not synced — no API credentials on file';
-      const amount = Number(p.tradableBalance ?? 0);
-      if (Number.isNaN(amount)) return 'Not synced';
-      return `$${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${p.currency || 'USDT'}`;
-    }
-
-    function renderProviderCard(p: Provider): string {
-      const isBinance = p.type === 'binance';
-      const brandLetter = isBinance ? 'B' : p.type?.[0]?.toUpperCase() || '?';
-      const brandClass = isBinance ? 'binance' : 'zerodha';
-      const mode = p.tradingMode || 'paper';
-      const testnet = p.useTestnet !== false;
-
-      return `
-        <div class="glass-card provider-card" data-provider-id="${p.id}">
-          <div class="provider-card-top">
-            <div class="provider-brand">
-              <div class="brand-icon ${brandClass}">${brandLetter}</div>
-              <div>
-                <h3 class="provider-name">${escapeHtml(p.name)}</h3>
-                <span class="provider-type">Type: ${escapeHtml(p.type)} · Status: ${escapeHtml(p.status)}</span>
-                <div class="provider-badges">
-                  <span class="badge ${mode === 'live' ? 'badge-bear' : 'badge-info'}">${mode === 'live' ? 'LIVE TRADING' : 'PAPER MODE'}</span>
-                  ${testnet ? '<span class="badge badge-info">Testnet</span>' : '<span class="badge badge-bear">Mainnet</span>'}
-                  ${p.hasCredentials ? '<span class="badge badge-bull">Credentials Set</span>' : '<span class="badge badge-info">No Credentials</span>'}
-                </div>
-              </div>
-            </div>
-            <div class="toggle-container">
-              <label class="switch">
-                <input type="checkbox" class="toggle-trading-input" ${p.tradingEnabled ? 'checked' : ''} />
-                <span class="slider round"></span>
-              </label>
-              <span class="toggle-lbl">Trading Enabled</span>
-            </div>
-          </div>
-
-          <div class="provider-balance-section">
-            <div class="balance-item">
-              <span class="lbl">Available Tradable Balance</span>
-              <span class="val mono ${p.hasCredentials ? 'text-bull' : ''}">${formatBalance(p)}</span>
-            </div>
-          </div>
-
-          <div class="provider-meta">
-            <p class="note">Platform only manages capital explicitly allocated to algorithm trading. Pre-existing holdings are untouched. ${mode === 'live' ? 'This provider places real orders.' : 'This provider only simulates fills — no real orders are sent.'}</p>
-            <div class="action-buttons">
-              <button class="btn btn-outline sync-balance-btn">Sync Balance Now</button>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderZerodhaComingSoon(): string {
-      return `
-        <div class="glass-card provider-card coming-soon">
-          <div class="provider-card-top">
-            <div class="provider-brand">
-              <div class="brand-icon zerodha">Z</div>
-              <div>
-                <h3 class="provider-name">Zerodha / Kite</h3>
-                <span class="provider-type">Type: Equity & Derivatives</span>
-              </div>
-            </div>
-            <span class="badge badge-info">Coming Soon</span>
-          </div>
-          <div class="provider-balance-section">
-            <p class="cs-text">Zerodha Kite API connector integration template ready. Starting with Binance first per implementation roadmap.</p>
-          </div>
-        </div>
-      `;
-    }
-
-    function escapeHtml(s: string): string {
-      const div = document.createElement('div');
-      div.textContent = s ?? '';
-      return div.innerHTML;
-    }
-
-    async function loadProviders() {
-      errorBanner.hidden = true;
+    async function load() {
       try {
         const providers = await apiGet<Provider[]>('/providers');
-        if (!providers.length) {
-          grid.innerHTML = `
-            <div class="glass-card empty-state">
-              <p>No providers connected yet. Click "+ Connect New Provider" to add your first exchange account.</p>
-            </div>
-            ${renderZerodhaComingSoon()}
-          `;
-        } else {
-          grid.innerHTML = providers.map(renderProviderCard).join('') + renderZerodhaComingSoon();
-        }
-        attachCardListeners();
+        const connected = providers.find((p) => p.type === 'binance' && p.hasCredentials);
+        if (connected) renderConnected(connected);
+        else renderConnectForm();
       } catch (err) {
-        errorBanner.hidden = false;
-        errorBanner.textContent = err instanceof ApiError ? err.message : 'Failed to load providers';
+        page.innerHTML = `<div class="glass-card empty-state"><p class="error-text">${err instanceof ApiError ? esc(err.message) : 'Failed to load connector'}</p></div>`;
       }
     }
 
-    function attachCardListeners() {
-      grid.querySelectorAll<HTMLElement>('.provider-card[data-provider-id]').forEach((card) => {
-        const providerId = card.dataset.providerId!;
+    // ---------- Disconnected: connect form ----------
+    function renderConnectForm() {
+      page.innerHTML = `
+        <div class="glass-card connect-card">
+          <div>
+            <div class="connect-eyebrow">◆ Binance API</div>
+            <h1 class="connect-title">Connect to Binance</h1>
+            <p class="connect-desc">Enter your API credentials to enable balance sync and live trading for BTCUSDT. Until connected, the platform stays locked to paper mode.</p>
+          </div>
+          <form class="connect-form" id="connForm">
+            <div class="field">
+              <label for="apiKey">API Key</label>
+              <input class="text-input" id="apiKey" type="text" autocomplete="off" placeholder="vmPUZELF…" required />
+            </div>
+            <div class="field">
+              <label for="apiSecret">Secret Key</label>
+              <input class="text-input" id="apiSecret" type="password" autocomplete="off" placeholder="NhqpR29Lp…" required />
+            </div>
+            <label class="checkbox-field">
+              <input type="checkbox" id="useTestnet" checked />
+              Use Binance testnet (recommended until Live mode is verified end-to-end)
+            </label>
+            <div class="warn-box">
+              <span>🛡️ Keys are stored server-side and used only to sync balance and place orders you authorize. Use API keys scoped to spot trading only. Live mode still requires you to explicitly flip the toggle after connecting.</span>
+            </div>
+            <p class="error-text" id="connErr" hidden></p>
+            <button type="submit" class="btn btn-primary" id="connSubmit">Connect to Binance</button>
+          </form>
+        </div>`;
 
-        const toggleInput = card.querySelector<HTMLInputElement>('.toggle-trading-input');
-        toggleInput?.addEventListener('change', async () => {
-          const enabled = toggleInput.checked;
-          toggleInput.disabled = true;
-          try {
-            await apiPatch(`/providers/${providerId}/toggle`, { enabled });
-          } catch (err) {
-            toggleInput.checked = !enabled;
-            errorBanner.hidden = false;
-            errorBanner.textContent = err instanceof ApiError ? err.message : 'Failed to toggle trading';
-          } finally {
-            toggleInput.disabled = false;
-          }
-        });
+      const form = document.getElementById('connForm') as HTMLFormElement;
+      const errEl = document.getElementById('connErr')!;
+      const submit = document.getElementById('connSubmit') as HTMLButtonElement;
 
-        const syncBtn = card.querySelector<HTMLButtonElement>('.sync-balance-btn');
-        syncBtn?.addEventListener('click', async () => {
-          const original = syncBtn.textContent;
-          syncBtn.disabled = true;
-          syncBtn.innerHTML = '<span class="spinner"></span>';
-          try {
-            await apiPost(`/providers/${providerId}/sync-balance`);
-            await loadProviders();
-          } catch (err) {
-            errorBanner.hidden = false;
-            errorBanner.textContent = err instanceof ApiError ? err.message : 'Failed to sync balance';
-            syncBtn.disabled = false;
-            syncBtn.textContent = original;
-          }
-        });
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errEl.hidden = true;
+        const apiKey = (document.getElementById('apiKey') as HTMLInputElement).value.trim();
+        const apiSecret = (document.getElementById('apiSecret') as HTMLInputElement).value.trim();
+        const useTestnet = (document.getElementById('useTestnet') as HTMLInputElement).checked;
+        submit.disabled = true;
+        const label = submit.textContent;
+        submit.innerHTML = '<span class="spinner"></span>';
+        try {
+          await apiPost('/providers', { name: 'Binance', type: 'binance', tradingMode: 'paper', useTestnet, apiKey, apiSecret });
+          (window as any).refreshConnection?.();
+          await load();
+        } catch (err) {
+          errEl.hidden = false;
+          errEl.textContent = err instanceof ApiError ? err.message : 'Failed to connect';
+          submit.disabled = false;
+          submit.textContent = label;
+        }
       });
     }
 
-    // --- Connect Provider modal ---
-    const modalBackdrop = document.getElementById('addModalBackdrop')!;
-    const openBtn = document.getElementById('openAddModalBtn')!;
-    const closeBtn = document.getElementById('closeAddModalBtn')!;
-    const form = document.getElementById('addProviderForm') as HTMLFormElement;
-    const submitBtn = document.getElementById('addProviderSubmitBtn') as HTMLButtonElement;
-    const addError = document.getElementById('addProviderError')!;
+    // ---------- Connected: status view ----------
+    function renderConnected(p: Provider) {
+      const mode = p.tradingMode || 'paper';
+      const testnet = p.useTestnet !== false;
+      const bal = p.tradableBalance != null ? `${Number(p.tradableBalance).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—';
+      const synced = p.lastSyncedAt ? new Date(p.lastSyncedAt).toLocaleString() : 'never';
 
-    function openModal() {
-      modalBackdrop.hidden = false;
+      page.innerHTML = `
+        <div class="glass-card" style="padding:0">
+          <div class="status-bar">
+            <div class="status-left">
+              <span class="status-dot"></span>
+              <span class="status-name">Binance Connected</span>
+              <span class="status-key">${testnet ? 'Testnet' : 'Mainnet'} · spot</span>
+            </div>
+            <button class="btn btn-outline sync-btn" id="syncBtn">Sync Balance</button>
+          </div>
+        </div>
+
+        <div class="cards-row">
+          <div class="info-card">
+            <div class="info-lbl">Tradable Balance</div>
+            <div class="info-val mono text-bull">${bal} ${esc(p.currency || 'USDT')}</div>
+            <div class="info-sub">Last synced: ${esc(synced)}</div>
+          </div>
+          <div class="info-card">
+            <div class="info-lbl">Trading Mode</div>
+            <div class="info-val mono ${mode === 'live' ? 'text-bear' : 'text-bull'}">${mode.toUpperCase()}</div>
+            <div class="info-sub">${mode === 'live' ? 'Places real orders' : 'Simulated fills, real prices'}</div>
+          </div>
+          <div class="info-card">
+            <div class="info-lbl">Status</div>
+            <div class="info-val mono">${esc((p.status || 'active').toUpperCase())}</div>
+            <div class="info-sub">Trading ${p.tradingEnabled ? 'enabled' : 'disabled'}</div>
+          </div>
+        </div>
+
+        <div class="glass-card ctrl-card">
+          <div class="ctrl-row">
+            <span class="ctrl-lbl">Trading Mode</span>
+            <div class="seg" id="modeSeg">
+              <button data-mode="paper" class="${mode === 'paper' ? 'active' : ''}">PAPER</button>
+              <button data-mode="live" class="${mode === 'live' ? 'active' : ''}">LIVE</button>
+            </div>
+          </div>
+          <div class="ctrl-row">
+            <span class="ctrl-lbl">Network</span>
+            <div class="seg" id="tnSeg">
+              <button data-tn="true" class="${testnet ? 'active' : ''}">TESTNET</button>
+              <button data-tn="false" class="${!testnet ? 'active' : ''}">MAINNET</button>
+            </div>
+          </div>
+          <p class="error-text" id="ctrlErr" hidden></p>
+        </div>
+
+        ${p.killSwitchActive ? `
+        <div class="glass-card ctrl-card ks-box">
+          <div class="ctrl-row">
+            <div>
+              <div class="info-lbl" style="color:var(--color-bear)">Kill Switch Active</div>
+              <div class="info-sub">${esc(p.killSwitchReason || 'Manually triggered')}</div>
+            </div>
+            <button class="btn btn-outline" id="clearKsBtn">Clear Kill Switch</button>
+          </div>
+        </div>` : ''}`;
+
+      const ctrlErr = document.getElementById('ctrlErr')!;
+      const patchMode = async (tradingMode: 'paper' | 'live') => {
+        try { await apiPatch(`/providers/${p.id}/trading-mode`, { tradingMode }); (window as any).refreshConnection?.(); await load(); }
+        catch (err) { ctrlErr.hidden = false; ctrlErr.textContent = err instanceof ApiError ? err.message : 'Failed to update mode'; }
+      };
+      const patchNet = async (useTestnet: boolean) => {
+        try { await apiPatch(`/providers/${p.id}/trading-mode`, { useTestnet }); await load(); }
+        catch (err) { ctrlErr.hidden = false; ctrlErr.textContent = err instanceof ApiError ? err.message : 'Failed to update network'; }
+      };
+      document.getElementById('modeSeg')!.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+        b.addEventListener('click', () => patchMode(b.dataset.mode as 'paper' | 'live')));
+      document.getElementById('tnSeg')!.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+        b.addEventListener('click', () => patchNet(b.dataset.tn === 'true')));
+
+      document.getElementById('syncBtn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.disabled = true; const l = btn.textContent; btn.innerHTML = '<span class="spinner"></span>';
+        try { await apiPost(`/providers/${p.id}/sync-balance`); await load(); }
+        catch (err) { ctrlErr.hidden = false; ctrlErr.textContent = err instanceof ApiError ? err.message : 'Failed to sync balance'; btn.disabled = false; btn.textContent = l; }
+      });
+
+      document.getElementById('clearKsBtn')?.addEventListener('click', async () => {
+        try { await apiPost(`/providers/${p.id}/kill-switch/clear`); await load(); } catch { /* surfaced on reload */ }
+      });
     }
-    function closeModal() {
-      modalBackdrop.hidden = true;
-      addError.hidden = true;
-      form.reset();
-    }
 
-    openBtn.addEventListener('click', openModal);
-    closeBtn.addEventListener('click', closeModal);
-    modalBackdrop.addEventListener('click', (e) => {
-      if (e.target === modalBackdrop) closeModal();
-    });
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      addError.hidden = true;
-
-      const name = (document.getElementById('providerName') as HTMLInputElement).value.trim();
-      const type = (document.getElementById('providerType') as HTMLSelectElement).value;
-      const apiKey = (document.getElementById('apiKey') as HTMLInputElement).value.trim();
-      const apiSecret = (document.getElementById('apiSecret') as HTMLInputElement).value.trim();
-      const tradingMode = (document.getElementById('tradingMode') as HTMLSelectElement).value;
-      const useTestnet = (document.getElementById('useTestnet') as HTMLInputElement).checked;
-
-      if (type === 'zerodha') {
-        addError.hidden = false;
-        addError.textContent = 'Zerodha / Kite is not available yet — choose Binance.';
-        return;
-      }
-
-      const payload: Record<string, unknown> = { name, type, tradingMode, useTestnet };
-      if (apiKey) payload.apiKey = apiKey;
-      if (apiSecret) payload.apiSecret = apiSecret;
-
-      submitBtn.disabled = true;
-      const originalLabel = submitBtn.textContent;
-      submitBtn.innerHTML = '<span class="spinner"></span>';
-
-      try {
-        await apiPost('/providers', payload);
-        closeModal();
-        await loadProviders();
-      } catch (err) {
-        addError.hidden = false;
-        addError.textContent = err instanceof ApiError ? err.message : 'Failed to create provider';
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = originalLabel;
-      }
-    });
-
-    loadProviders();
+    load();
   </script>
 </Layout>
