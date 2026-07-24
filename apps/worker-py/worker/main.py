@@ -1,0 +1,98 @@
+"""Entry point for the standalone Python Data + AI worker (runs 24/7 in its own container).
+
+It is now the single background scheduler for the whole platform — the NestJS worker has
+been retired. Responsibilities:
+
+  * DATA (native here): full-history archive backfill from data.binance.vision + a daily
+    gap-fill, plus a gap-fill on every startup.
+  * ALL former Node-worker jobs (balance-sync, reconciliation, allocation-rebalance,
+    alert-digest, strategy re-evaluation/regeneration, data-quality): scheduled here and
+    executed by the backend's guarded /internal/jobs/* endpoints (worker/backend_jobs.py),
+    at the same cadences the old @Cron/@Interval decorators used. The trading/AI logic
+    stays in the single, proven backend implementation — this process owns the *when*.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import signal
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
+from . import backend_jobs
+from .binance_archive import backfill_all
+from .config import config
+from .db import close_pool
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+log = logging.getLogger("worker.main")
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    return os.getenv(name, str(default)).lower() in ("1", "true", "yes", "on")
+
+
+async def _daily_backfill() -> None:
+    log.info("Scheduled archive gap-fill starting…")
+    results = await backfill_all()
+    log.info("Scheduled archive gap-fill done: %s", results)
+
+
+async def main() -> None:
+    log.info("Python Data+AI worker starting (sole background scheduler).")
+
+    # Backfill missing data on every startup (cheap — resumes from the last stored month).
+    if _bool_env("BACKFILL_ON_START", default=True):
+        log.info("Running startup archive gap-fill…")
+        try:
+            results = await backfill_all()
+            log.info("Startup backfill complete: %s", results)
+        except Exception:  # noqa: BLE001
+            log.exception("Startup backfill failed")
+
+    scheduler = AsyncIOScheduler(timezone="UTC")
+
+    # --- Data ingestion (native) ---
+    scheduler.add_job(_daily_backfill, CronTrigger(hour=0, minute=30), id="archive_backfill", max_instances=1)
+
+    # --- Former Node-worker jobs, same cadences, executed by the backend ---
+    scheduler.add_job(
+        backend_jobs.balance_sync,
+        IntervalTrigger(minutes=config.balance_sync_interval_minutes),
+        id="balance_sync", max_instances=1,
+    )
+    scheduler.add_job(backend_jobs.reconciliation, CronTrigger(minute=0), id="reconciliation", max_instances=1)  # hourly
+    scheduler.add_job(backend_jobs.data_quality, CronTrigger(hour="*/6", minute=15), id="data_quality", max_instances=1)
+    scheduler.add_job(backend_jobs.alert_digest, CronTrigger(hour="*/4", minute=5), id="alert_digest", max_instances=1)
+    scheduler.add_job(backend_jobs.strategy_reevaluation, CronTrigger(hour=1, minute=0), id="strategy_reevaluation", max_instances=1)
+    scheduler.add_job(backend_jobs.allocation_rebalance, CronTrigger(hour=2, minute=0), id="allocation_rebalance", max_instances=1)
+
+    scheduler.start()
+    log.info("Scheduler started. Jobs: %s", [j.id for j in scheduler.get_jobs()])
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:  # pragma: no cover — e.g. Windows
+            pass
+    await stop.wait()
+
+    log.info("Shutting down…")
+    scheduler.shutdown(wait=False)
+    await close_pool()
+
+
+def run() -> None:
+    asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()

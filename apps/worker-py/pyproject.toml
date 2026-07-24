@@ -1,0 +1,26 @@
+[project]
+name = "algo-trading-worker"
+version = "0.1.0"
+description = "Standalone Python Data + AI worker for the AutoTrading platform (24/7)."
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    "apscheduler>=3.10",
+    "python-dotenv>=1.0",
+    # AI section (strategy generation) — added when the LLM port lands:
+    # "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+# `python -m worker.backfill BTCUSDT 1m` etc. — see worker/backfill.py
+worker = "worker.main:run"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
