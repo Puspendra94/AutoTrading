@@ -3,9 +3,8 @@ import { TradingGateway } from './trading.gateway';
 import { RedisAlertsBridgeService } from './redis-alerts-bridge.service';
 import { RiskExecutionModule } from '../modules/risk-execution/risk-execution.module';
 
-// API-process-only module (never imported by the worker — see worker.module.ts):
-// a Socket.IO gateway has no meaningful server to bind to under
-// NestFactory.createApplicationContext, since that bootstrap never starts an HTTP adapter.
+// Socket.IO gateway module — belongs to the API process (app.module.ts), which starts the
+// HTTP adapter the gateway binds its server to.
 @Module({
   imports: [RiskExecutionModule],
   providers: [TradingGateway, RedisAlertsBridgeService],

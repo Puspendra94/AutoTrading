@@ -9,9 +9,10 @@ import { MarketDataService } from './market-data.service';
 import { ProviderModule } from '../provider/provider.module';
 
 // Deliberately minimal — no controller, no MarketStreamService, no WebsocketsModule.
-// This is what the worker process imports (via JobsModule) for the data-quality sweep;
-// live streaming lives in MarketStreamModule, imported only by app.module.ts (API
-// process) — see that module's comment for why the split exists.
+// Provides plain MarketDataService (incl. the data-quality sweep) to consumers like
+// StrategyModule and InternalJobsModule. Live streaming lives in MarketStreamModule.
+// (The former separate Node worker process is retired — background jobs now run as
+// InternalJobsModule endpoints, scheduled by the Python worker.)
 @Module({
   imports: [
     TypeOrmModule.forFeature([Ticker, OhlcvData, DataQualityFlag, Provider, MarketType]),

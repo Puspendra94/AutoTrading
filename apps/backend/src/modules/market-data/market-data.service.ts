@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Ticker, TickerStatus, OnboardingStage } from '../../entities/ticker.entity';
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { DataQualityFlag, FlagType } from '../../entities/data-quality-flag.entity';
@@ -108,6 +108,26 @@ export class MarketDataService {
       return { tickerId: ticker.id, candlesFetched: 0, failed: true };
     }
 
+    // Duplicate-timestamp check within this single fetch batch (spec 4.7) — a genuine
+    // upstream data-quality issue, distinct from the harmless unique-key conflict that
+    // happens on every re-backfill of an already-stored range (still safely ignored
+    // below, since that's expected, not a quality problem).
+    const seenTimestamps = new Map<number, number>();
+    for (const candle of candles) {
+      const t = new Date(candle.timestamp).getTime();
+      seenTimestamps.set(t, (seenTimestamps.get(t) || 0) + 1);
+    }
+    const duplicateTimestamps = [...seenTimestamps.entries()].filter(([, count]) => count > 1);
+    if (duplicateTimestamps.length > 0) {
+      await this.flagRepo.save(
+        this.flagRepo.create({
+          tickerId: ticker.id,
+          flagType: FlagType.DUPLICATE,
+          detailJson: { duplicateCount: duplicateTimestamps.length, timestamps: duplicateTimestamps.map(([t]) => new Date(t)) },
+        }),
+      );
+    }
+
     for (const candle of candles) {
       const entity = this.ohlcvRepo.create({ tickerId: ticker.id, ...candle });
       await this.ohlcvRepo.save(entity).catch(() => {}); // duplicate primary key on re-backfill, safe to ignore
@@ -118,7 +138,21 @@ export class MarketDataService {
     return { tickerId: ticker.id, candlesFetched: candles.length, failed: false };
   }
 
+  /** Parses '1m'/'5m'/'15m'/'1h'/'4h'/'1d'-style interval strings into milliseconds —
+   * used to make gap detection and timestamp-alignment checks interval-aware instead of
+   * a fixed constant that only happened to fit 1-minute tickers. */
+  private intervalToMs(interval: string): number {
+    const match = interval.match(/^(\d+)([mhdw])$/i);
+    if (!match) return 60 * 1000; // unrecognized — fall back to 1m rather than throwing
+    const value = parseInt(match[1], 10);
+    const unitMs: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+    return value * (unitMs[match[2].toLowerCase()] || 60_000);
+  }
+
   async auditDataQuality(tickerId: string) {
+    const ticker = await this.tickerRepo.findOne({ where: { id: tickerId } });
+    const intervalMs = this.intervalToMs(ticker?.interval || '1m');
+
     const candles = await this.ohlcvRepo.find({
       where: { tickerId },
       order: { timestamp: 'ASC' },
@@ -132,7 +166,10 @@ export class MarketDataService {
       const curr = candles[i];
       const timeDiff = curr.timestamp.getTime() - prev.timestamp.getTime();
 
-      if (timeDiff > 3 * 60 * 1000) {
+      // Gap threshold scales with the ticker's own interval (previously a fixed 3
+      // minutes regardless of interval, which false-positived on anything slower than
+      // ~1m and missed real gaps on anything slower than 3m).
+      if (timeDiff > intervalMs * 2) {
         await this.flagRepo.save(
           this.flagRepo.create({
             tickerId,
@@ -152,7 +189,34 @@ export class MarketDataService {
           }),
         );
       }
+
+      // Timezone/DST inconsistency (spec 4.7) — every candle's timestamp should land
+      // exactly on its interval's boundary (e.g. a 1m candle at :00 seconds/ms); a
+      // misaligned timestamp is the signature of a timezone-conversion bug upstream.
+      if (curr.timestamp.getTime() % intervalMs !== 0) {
+        await this.flagRepo.save(
+          this.flagRepo.create({
+            tickerId,
+            flagType: FlagType.TZ_MISMATCH,
+            detailJson: { timestamp: curr.timestamp, intervalMs, remainderMs: curr.timestamp.getTime() % intervalMs },
+          }),
+        );
+      }
     }
+  }
+
+  /** Spec 4.7 — "strategy generation and backtesting should refuse to proceed... if the
+   * underlying data has unresolved quality flags." Only GAP and SPIKE are treated as
+   * generation-blocking here; DUPLICATE/TZ_MISMATCH alone don't necessarily invalidate
+   * the closes used for backtesting, so they're recorded but non-blocking. */
+  async hasUnresolvedBlockingFlags(tickerId: string): Promise<boolean> {
+    const count = await this.flagRepo.count({
+      where: [
+        { tickerId, flagType: FlagType.GAP, resolvedAt: IsNull() },
+        { tickerId, flagType: FlagType.SPIKE, resolvedAt: IsNull() },
+      ],
+    });
+    return count > 0;
   }
 
   async getCandles(tickerId: string, limit = 200) {
@@ -166,11 +230,10 @@ export class MarketDataService {
   }
 
   async upsertLiveCandle(tickerId: string, candle: { timestamp: Date; open: number; high: number; low: number; close: number; volume: number }) {
-    const existing = await this.ohlcvRepo.findOne({ where: { tickerId, timestamp: candle.timestamp } });
-    if (existing) {
-      await this.ohlcvRepo.update({ tickerId, timestamp: candle.timestamp }, candle);
-    } else {
-      await this.ohlcvRepo.save(this.ohlcvRepo.create({ tickerId, ...candle }));
-    }
+    // Atomic upsert on the (ticker_id, timestamp) unique key. The previous find-then-insert
+    // raced with any concurrent writer of the same candle — notably the Python worker's 1m
+    // archive backfill, which overlaps the live stream's current minute — throwing a
+    // duplicate-key error that, unhandled in the tick handler, crashed the process.
+    await this.ohlcvRepo.upsert({ tickerId, ...candle }, ['tickerId', 'timestamp']);
   }
 }

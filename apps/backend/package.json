@@ -11,9 +11,6 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
-    "worker": "nest start --entryFile worker",
-    "worker:dev": "nest start --entryFile worker --watch",
-    "worker:prod": "node dist/worker",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:generate": "npm run typeorm migration:generate",
     "migration:run": "npm run typeorm migration:run",
@@ -21,9 +18,11 @@
     "test": "jest"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.32.0",
-    "@anthropic-ai/sdk": "^0.112.4",
     "@binance/connector": "^3.6.1",
+    "@langchain/anthropic": "^1.5.1",
+    "@langchain/aws": "^1.4.3",
+    "@langchain/core": "^1.2.3",
+    "@langchain/deepseek": "^1.1.5",
     "@nestjs/common": "^10.3.0",
     "@nestjs/config": "^3.1.1",
     "@nestjs/core": "^10.3.0",

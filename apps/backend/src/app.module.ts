@@ -11,6 +11,7 @@ import { AllocationModule } from './modules/allocation/allocation.module';
 import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { LlmModule } from './modules/llm/llm.module';
+import { InternalJobsModule } from './modules/internal-jobs/internal-jobs.module';
 import { WebsocketsModule } from './websockets/websockets.module';
 import { RedisModule } from './common/redis/redis.module';
 import dataSource from './database/data-source';
@@ -29,6 +30,7 @@ import dataSource from './database/data-source';
     ReconciliationModule,
     NotificationModule,
     LlmModule,
+    InternalJobsModule,
     WebsocketsModule,
   ],
 })

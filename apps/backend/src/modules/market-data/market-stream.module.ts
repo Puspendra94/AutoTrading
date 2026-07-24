@@ -7,15 +7,22 @@ import { MarketStreamService } from './market-stream.service';
 import { MarketDataController } from './market-data.controller';
 import { ProviderModule } from '../provider/provider.module';
 import { WebsocketsModule } from '../../websockets/websockets.module';
+import { StrategyModule } from '../strategy/strategy.module';
+import { RiskExecutionModule } from '../risk-execution/risk-execution.module';
 
-// API-process-only (imported by app.module.ts, never by worker.module.ts/JobsModule):
-// MarketStreamService.onModuleInit() opens live Binance WebSocket streams and pushes
-// through TradingGateway, which has no real Socket.IO server to bind to under the
-// worker's createApplicationContext bootstrap (no HTTP adapter) — importing this in
-// the worker crashes it the moment the first tick arrives. MarketDataModule (plain
-// MarketDataService, no streaming) is what the worker uses instead.
+// Live streaming: MarketStreamService.onModuleInit() opens live Binance WebSocket streams
+// and pushes through TradingGateway. Imported by app.module.ts (the API process, which has
+// the Socket.IO server bound). MarketDataModule (plain MarketDataService, no streaming) is
+// the lighter dependency used by strategy/internal-jobs consumers.
 @Module({
-  imports: [TypeOrmModule.forFeature([Position, Ticker]), MarketDataModule, ProviderModule, WebsocketsModule],
+  imports: [
+    TypeOrmModule.forFeature([Position, Ticker]),
+    MarketDataModule,
+    ProviderModule,
+    WebsocketsModule,
+    StrategyModule,
+    RiskExecutionModule,
+  ],
   providers: [MarketStreamService],
   controllers: [MarketDataController],
   exports: [MarketStreamService],
