@@ -1,63 +1,58 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { LlmCostLog, LlmPurpose } from '../../entities/llm-cost-log.entity';
 import { LLMProvider, LlmCompletionResponse } from './llm-provider.interface';
+import { DirectAnthropicProvider } from './providers/direct-anthropic.provider';
+import { BedrockProvider } from './providers/bedrock.provider';
 
+type ProviderKind = 'direct_api' | 'bedrock';
+
+/**
+ * Spec 9.2 — LLM provider is configurable via LLM_PROVIDER (direct_api | bedrock),
+ * never hardcoded. Every strategy-generation/re-evaluation/live-decision call goes
+ * through this single service regardless of which backend actually serves it.
+ */
 @Injectable()
 export class LlmService implements LLMProvider {
+  private readonly logger = new Logger(LlmService.name);
+  private readonly providerKind: ProviderKind;
+  private readonly directProvider: DirectAnthropicProvider;
+  private readonly bedrockProvider: BedrockProvider;
+
   constructor(
     @InjectRepository(LlmCostLog)
     private readonly costLogRepo: Repository<LlmCostLog>,
-  ) {}
+    directProvider: DirectAnthropicProvider,
+    bedrockProvider: BedrockProvider,
+  ) {
+    const configured = (process.env.LLM_PROVIDER || 'direct_api').trim().toLowerCase();
+    this.providerKind = configured === 'bedrock' ? 'bedrock' : 'direct_api';
+    this.directProvider = directProvider;
+    this.bedrockProvider = bedrockProvider;
+  }
 
   async generateCompletion(prompt: string, options?: any): Promise<LlmCompletionResponse> {
-    let rawApiKey = process.env.ANTHROPIC_API_KEY || '';
-    const apiKey = rawApiKey.replace(/^["']|["']$/g, '').trim();
-    const modelName = options?.model || 'claude-3-5-sonnet-20241022';
+    const provider = this.providerKind === 'bedrock' ? this.bedrockProvider : this.directProvider;
 
-    if (apiKey && apiKey.length > 10) {
-      try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: modelName,
-            max_tokens: options?.maxTokens || 1024,
-            messages: [{ role: 'user', content: prompt }],
-          }),
-        });
-
-        if (response.ok) {
-          const resData = await response.json();
-          const text = resData.content?.[0]?.text || '';
-          const inputTokens = resData.usage?.input_tokens || 150;
-          const outputTokens = resData.usage?.output_tokens || 300;
-
-          // Cost estimation: Claude 3.5 Sonnet = $3/1M input, $15/1M output
-          const costUsd = (inputTokens * 3) / 1000000 + (outputTokens * 15) / 1000000;
-
-          return {
-            content: text,
-            inputTokens,
-            outputTokens,
-            costUsd,
-            model: modelName,
-          };
-        } else {
-          const errBody = await response.text();
-          console.warn(`Anthropic API HTTP ${response.status}: ${errBody}`);
-        }
-      } catch (err) {
-        console.warn('Anthropic API call exception, using quantitative engine fallback:', err.message);
-      }
+    try {
+      return await provider.generateCompletion(prompt, options);
+    } catch (err) {
+      this.logger.warn(
+        `LLM call via '${this.providerKind}' failed (${err.message}) — using quantitative fallback.`,
+      );
+      return this.syntheticFallback(options?.model);
     }
+  }
 
-    // Quantitative strategy proposal fallback if API call fails or key unreadable
+  /**
+   * Deterministic fallback used only when the configured LLM provider is
+   * unreachable/misconfigured (no credentials, no credits, network failure) — never
+   * used silently for a successful call. Always labeled with a `-fallback` suffix on
+   * the model field so it's never mistaken for a real LLM response downstream.
+   */
+  private syntheticFallback(requestedModel?: string): LlmCompletionResponse {
+    const modelName = requestedModel || 'claude-opus-4-8';
     const syntheticResponse = JSON.stringify({
       strategyName: 'Adaptive Trend Breakout + RSI Filter',
       indicatorConfig: {
@@ -74,7 +69,7 @@ export class LlmService implements LLMProvider {
 
     const inputTokens = 210;
     const outputTokens = 140;
-    const costUsd = (inputTokens * 3 + outputTokens * 15) / 1000000;
+    const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
 
     return {
       content: syntheticResponse,
@@ -90,7 +85,7 @@ export class LlmService implements LLMProvider {
       tickerId,
       strategyId,
       purpose,
-      llmProvider: 'direct_api',
+      llmProvider: response.model.endsWith('-fallback') ? 'fallback' : this.providerKind,
       model: response.model,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,

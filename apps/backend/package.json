@@ -21,6 +21,8 @@
     "test": "jest"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.32.0",
+    "@anthropic-ai/sdk": "^0.112.4",
     "@binance/connector": "^3.6.1",
     "@nestjs/common": "^10.3.0",
     "@nestjs/config": "^3.1.1",

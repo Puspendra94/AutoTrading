@@ -13,12 +13,26 @@ apps/*/.env
 *.env.test.local
 *.env.production.local
 
+# Downloaded cloud-provider credential exports (e.g. AWS "Access keys" CSV) —
+# never belongs in the repo regardless of directory.
+*accessKeys*.csv
+*access-keys*.csv
+*api-keys*.csv
+*_keys.csv
+
 # Build Outputs
 dist/
 build/
 apps/*/dist/
 apps/*/build/
 .astro/
+
+# Python worker
+.venv/
+apps/*/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # Logs
 logs
@@ -35,3 +49,6 @@ yarn-error.log*
 .DS_Store
 .vscode/
 .idea/
+
+# Claude Code local settings (personal, per-machine)
+.claude/settings.local.json
