@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Skill(run)",
+      "Bash(docker info *)",
+      "Bash(lsof -nP -iTCP:3010 -sTCP:LISTEN)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3010/auth/register)",
+      "Bash(lsof -nP -iTCP -sTCP:LISTEN)",
+      "Bash(ps -o pid,ppid,command -p 81896 82093)",
+      "Bash(curl *)",
+      "Bash(node /private/tmp/claude-501/-Users-puspendrapandey-Documents-AutoTrading/2750dd86-2ece-44c1-9a82-b6bfb91f9e60/scratchpad/ws-test.mjs 47d0e3fd-9c77-4c5a-a1d2-e267b7fca09a 1h)",
+      "Bash(cp /private/tmp/claude-501/-Users-puspendrapandey-Documents-AutoTrading/2750dd86-2ece-44c1-9a82-b6bfb91f9e60/scratchpad/ws-test.mjs /Users/puspendrapandey/Documents/AutoTrading/apps/frontend/ws-test.mjs)",
+      "Bash(node ws-test.mjs 47d0e3fd-9c77-4c5a-a1d2-e267b7fca09a 1h)",
+      "Bash(kill 94446 94081 163)",
+      "Bash(lsof -nP -iTCP:3009 -sTCP:LISTEN)",
+      "Bash(find '/Users/puspendrapandey/Documents/Learning/AI/Algo Trading Platform/src' -type f '\\(' -name *.tsx -o -name *.ts '\\)')"
+    ]
+  }
+}
