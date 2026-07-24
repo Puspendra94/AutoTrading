@@ -22,6 +22,7 @@ export interface BacktestPerformanceMetrics {
     };
   };
   regimeBreakdown: { trending: number; choppy: number; highVol: number };
+  parameterCount: number;
   passedEvaluationGate: boolean;
 }
 
@@ -64,6 +65,7 @@ export class StrategyEvaluatorService {
         walkForward: { inSampleTradeCount: 0, outOfSampleTradeCount: 0, inSampleSharpe: 0, outOfSampleSharpe: 0 },
       },
       regimeBreakdown: { trending: 0, choppy: 0, highVol: 0 },
+      parameterCount: 0,
       passedEvaluationGate: false,
     };
 
@@ -98,7 +100,14 @@ export class StrategyEvaluatorService {
     // original implementation used, now applied to the out-of-sample fold specifically.
     const passedTradeCount = tradeCount >= Number(policy.minTradeCount) || tradeCount >= 5;
 
-    const passedEvaluationGate = passedSharpe && passedDrawdown && passedProfitFactor && passedTradeCount;
+    // Overfitting check (spec 7.2) — count actual tunable parameters the LLM proposed
+    // (indicatorConfig's own keys) against the policy's cap, and factor it into the
+    // gate itself rather than just logging it as a warning.
+    const parameterCount = this.countTunableParameters(params);
+    const passedParameterCount = parameterCount <= Number(policy.maxParameterCount);
+
+    const passedEvaluationGate =
+      passedSharpe && passedDrawdown && passedProfitFactor && passedTradeCount && passedParameterCount;
 
     return {
       sharpe: oosMetrics.sharpe,
@@ -118,8 +127,17 @@ export class StrategyEvaluatorService {
         },
       },
       regimeBreakdown,
+      parameterCount,
       passedEvaluationGate,
     };
+  }
+
+  /** Counts the strategy's actual tunable knobs (indicatorConfig's own defined keys) —
+   * more parameters means more ways to have overfit the in-sample window. */
+  private countTunableParameters(params: any): number {
+    const indicatorConfig = params?.indicatorConfig;
+    if (!indicatorConfig || typeof indicatorConfig !== 'object') return 0;
+    return Object.values(indicatorConfig).filter((v) => v !== undefined && v !== null).length;
   }
 
   /** Average ms between consecutive candles, converted to periods/year — used to

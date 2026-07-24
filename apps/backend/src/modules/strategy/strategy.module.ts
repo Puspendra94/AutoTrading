@@ -9,6 +9,7 @@ import { LiveVsBacktestDivergence } from '../../entities/live-vs-backtest-diverg
 import { Position } from '../../entities/position.entity';
 import { AiLessonLearned } from '../../entities/ai-lesson-learned.entity';
 import { LlmModule } from '../llm/llm.module';
+import { MarketDataModule } from '../market-data/market-data.module';
 import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyController } from './strategy.controller';
@@ -27,6 +28,7 @@ import { AiLessonsService } from './ai-lessons.service';
       AiLessonLearned,
     ]),
     LlmModule,
+    MarketDataModule,
   ],
   providers: [StrategyEvaluatorService, StrategyEngineService, AiLessonsService],
   controllers: [StrategyController],

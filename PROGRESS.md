@@ -1,6 +1,36 @@
 # Progress
 
-## Status: Real integrations wired end-to-end; ready for the user to supply real Binance credentials for live-account testing
+## Status (latest session): Closed the safety-critical gaps found auditing the running system against the spec — see "Round 2" below. Prior status retained beneath it.
+
+## Round 2 — LLM provider rewrite + spec-compliance audit + fixes
+
+Since the "Round 1" status below was written, two more rounds of work happened:
+
+**LLM provider rewrite.** `LLM_PROVIDER`/direct-Anthropic-only was replaced with a real provider-agnostic, config-driven fallback chain (`LLM_MODELS` env var, `provider:modelId` pairs tried in order) built on LangChain.js (`@langchain/core`/`anthropic`/`aws`/`deepseek`) — supports Anthropic direct API, AWS Bedrock (any Converse-API model — Claude, DeepSeek, gpt-oss, MiniMax), and DeepSeek's own direct API. `LlmChainBuilder`/`LlmService` (`apps/backend/src/modules/llm/`) replaced the old `DirectAnthropicProvider`/`BedrockProvider` classes. Added `LlmService.generateStructuredCompletion()` using LangChain's `withStructuredOutput()` (Zod schemas in `modules/llm/schemas/`) so strategy-generation and live-decision output is forced into the exact shape callers expect regardless of which provider answers — fixes a real bug where different providers returned differently-shaped JSON and the evaluator silently fell back to hardcoded defaults. Two provider-specific quirks handled: DeepSeek's reasoning models need `method: 'jsonMode'` (forced `tool_choice` 400s on them) while Bedrock rejects `jsonMode` outright, so the method is picked per-provider; OpenAI-style `json_object` response format requires the literal word "json" somewhere in the prompt.
+
+**Spec-compliance audit.** Read the full spec fresh and compared it against actual running code (not just this file). Found and fixed:
+
+- **Risk gate never actually read the Allocation Module's ceiling** (`risk-gate.service.ts` hardcoded `cumBase * 0.2` instead of the daily-computed `AllocationSnapshot`) — spec 5.3/Section 6 require the gate to enforce, not compute, allocation. Fixed: `resolveAllocationCeiling()` reads the latest snapshot, falls back to an even split across active tickers if no rebalance has run yet. Verified live (inserted a test snapshot, confirmed order sizing changed accordingly).
+- **Probation sizing was permanently hardcoded `true`** — never scaled to full allocation (spec 2.5/12). Fixed: new `risk_limits.probation_trades_count` policy column; `isStrategyStillInProbation()` counts real positions opened against the strategy since promotion.
+- **No auto-flatten on daily-loss breach** (spec 5.1 requires it, only new orders were blocked before). Fixed: `ExecutionService.flattenAllPositionsForProvider()`, called by `RiskGateService` the moment a breach is detected (via `forwardRef` — see CONVENTIONS.md). Verified live: simulated a breach, confirmed the one open position was auto-closed and a Critical alert fired.
+- **No real kill switch** (spec 5.4) — only the daily-loss block existed. Fixed: `providers.kill_switch_active`/`kill_switch_reason`/`api_failure_count` columns; `ProviderService.triggerKillSwitch()`/`clearKillSwitch()` (manual, via new `POST /providers/:id/kill-switch[/clear]`), auto-triggered by `ReconciliationService` on a >20% quantity mismatch and by `recordApiFailure()` after 5 consecutive provider-API failures (balance sync, live order placement, reconciliation). Verified live: trigger → order rejected → clear → order resumes.
+- **Provider schedule and trading-enabled toggle were decorative** — created in the DB but never read before executing a trade. Fixed: both are now checked in `RiskGateService.evaluateOrderRiskGate()`; schedule uses `Intl.DateTimeFormat` with the provider's configured IANA timezone (no extra dependency) rather than assuming UTC.
+- **The live rules-engine execution path never actually ran** — `evaluateRulesSignal()` existed but nothing ever called it; the only way an order got placed was the manual/UI endpoint. This means Mode A (the default, spec-mandated execution mode) never autonomously traded on its own. Also, the live signal logic itself (a naive ±0.2% momentum check) didn't match what the backtest evaluated (EMA fast/slow crossover + stop-loss/take-profit) — what got promoted was never what would have executed live. Fixed: `MarketStreamService` now calls `StrategyEngineService.evaluateLiveSignal()` on every final candle close and executes BUY/SELL through `ExecutionService`; Mode A's logic was rewritten to exactly mirror the backtest's EMA-crossover + SL/TP rules.
+- **Mode B (AI live-decision execution) didn't exist at all** — only the enum value was defined (spec 2.6/4.4). Implemented: `evaluateModeBLiveDecision()` calls the LLM with a compact, summarized market/lesson context (never raw candles, per spec 2.7/9.3) via a structured `LiveDecisionSchema`, logs cost under `LlmPurpose.LIVE_DECISION`.
+- **Overfitting check was unused** — `strategy_evaluation_policy.max_parameter_count` existed but nothing read it (spec 7.2). Fixed: `countTunableParameters()` counts the LLM's proposed `indicatorConfig` keys and factors into the promotion gate (AND-ed with the other thresholds, not just a warning). Verified live (a 7-parameter DeepSeek proposal correctly failed against the default 5-parameter cap).
+- **Data quality monitoring only checked GAP and SPIKE** — `DUPLICATE`/`TZ_MISMATCH` were defined enum values never actually detected, and the GAP threshold was a fixed 3 minutes regardless of ticker interval (spec 4.7). Fixed: interval-aware gap threshold, within-batch duplicate-timestamp detection on backfill, interval-boundary-alignment check for TZ_MISMATCH. Also: strategy generation now refuses to proceed if unresolved GAP/SPIKE flags exist for the ticker (spec 4.7's explicit requirement, previously unenforced) — verified live.
+
+New migrations: `1700000003000-AddKillSwitchAndProbationCount`, `1700000004000-AddParameterCountToBacktestResults` (additive-only, per spec 14.1 — the two already-applied prior migrations were never edited).
+
+**Still not done / lower priority** (flagged during the audit, not addressed this round): win rate isn't tracked as a stored metric (spec says "tracked but never used alone" — currently just absent); drawdown duration/frequency don't factor into the pass/fail gate, only max drawdown does; LLM per-ticker/day budget cap (spec marks this explicitly optional); Zerodha/Kite integration (explicitly deferred to spec Phase 5).
+
+**User note:** told me before this round that they'll be making "some major changes" of their own after this — treat the above as the current real state, not a finished/closed-out system.
+
+---
+
+## Round 1 status (superseded by Round 2 above, kept for history)
+
+Real integrations wired end-to-end; ready for the user to supply real Binance credentials for live-account testing
 
 A prior agent (Gemini 3.5 Flash) built the initial `apps/backend`/`apps/frontend` scaffold from `algo-trading-platform-tech-spec.md`, but most integration points were faked (see git history / this file's prior revision for the full before-state audit). This session replaced the fakes with real integrations end-to-end and verified them by actually running the backend + worker against the live Postgres/Redis containers and Binance's public API — this is not just "should work," it was booted and hit with real requests during this session.
 

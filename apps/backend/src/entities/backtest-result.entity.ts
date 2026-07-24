@@ -40,6 +40,9 @@ export class BacktestResult {
   @Column({ name: 'regime_breakdown_json', type: 'jsonb', nullable: true })
   regimeBreakdownJson: Record<string, any>;
 
+  @Column({ name: 'parameter_count', type: 'int', default: 0 })
+  parameterCount: number;
+
   @Column({ name: 'passed_evaluation_gate', default: false })
   passedEvaluationGate: boolean;
 

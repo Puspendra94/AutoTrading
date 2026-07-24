@@ -7,6 +7,9 @@ import { Order } from '../../entities/order.entity';
 import { Ticker } from '../../entities/ticker.entity';
 import { Provider } from '../../entities/provider.entity';
 import { ProviderBalanceSnapshot } from '../../entities/provider-balance-snapshot.entity';
+import { ProviderSchedule } from '../../entities/provider-schedule.entity';
+import { AllocationSnapshot } from '../../entities/allocation-snapshot.entity';
+import { Strategy } from '../../entities/strategy.entity';
 import { Alert } from '../../entities/alert.entity';
 import { RiskGateService } from './risk-gate.service';
 import { ExecutionService } from './execution.service';
@@ -23,6 +26,9 @@ import { ProviderModule } from '../provider/provider.module';
       Ticker,
       Provider,
       ProviderBalanceSnapshot,
+      ProviderSchedule,
+      AllocationSnapshot,
+      Strategy,
       Alert,
     ]),
     ProviderModule,

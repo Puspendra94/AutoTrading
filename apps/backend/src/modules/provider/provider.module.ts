@@ -9,6 +9,7 @@ import { ProviderService } from './provider.service';
 import { ProviderController } from './provider.controller';
 import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets-provider';
 import { BinanceAdapter } from './adapters/binance.adapter';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { BinanceAdapter } from './adapters/binance.adapter';
       ProviderSchedule,
       RiskLimit,
     ]),
+    NotificationModule,
   ],
   providers: [ProviderService, PlaintextSecretsProvider, BinanceAdapter],
   controllers: [ProviderController],

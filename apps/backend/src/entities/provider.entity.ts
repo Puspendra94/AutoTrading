@@ -53,6 +53,19 @@ export class Provider {
   @Column({ name: 'use_testnet', default: true })
   useTestnet: boolean;
 
+  // Real kill switch (spec 5.4) — distinct from the daily-loss-limit block, which only
+  // halts until the next reset boundary. This is a hard stop until manually cleared,
+  // triggered by a serious reconciliation mismatch or repeated provider API failures
+  // (see RiskGateService/ReconciliationService), or manually via the API.
+  @Column({ name: 'kill_switch_active', default: false })
+  killSwitchActive: boolean;
+
+  @Column({ name: 'kill_switch_reason', type: 'text', nullable: true })
+  killSwitchReason: string | null;
+
+  @Column({ name: 'api_failure_count', type: 'int', default: 0 })
+  apiFailureCount: number;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

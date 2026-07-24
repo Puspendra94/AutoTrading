@@ -8,6 +8,11 @@ import { AlertSeverity } from '../../entities/alert.entity';
 import { BinanceAdapter } from '../provider/adapters/binance.adapter';
 import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets-provider';
 import { NotificationService } from '../notification/notification.service';
+import { ProviderService } from '../provider/provider.service';
+
+// A mismatch this large is treated as "serious/unexplained" (spec 5.4) rather than
+// ordinary fee/rounding/timing noise, and trips the kill switch rather than just alerting.
+const KILL_SWITCH_MISMATCH_THRESHOLD_PCT = 20;
 
 const MISMATCH_TOLERANCE_PCT = 5; // allows for fees/rounding noise, not a real discrepancy
 
@@ -25,6 +30,7 @@ export class ReconciliationService {
     private readonly binanceAdapter: BinanceAdapter,
     private readonly secretsProvider: PlaintextSecretsProvider,
     private readonly notificationService: NotificationService,
+    private readonly providerService: ProviderService,
   ) {}
 
   /**
@@ -90,9 +96,11 @@ export class ReconciliationService {
             });
           }
         }
+        await this.providerService.recordApiSuccess(providerId);
       } catch (err) {
         this.logger.error(`Reconciliation exchange call failed for provider ${providerId}: ${err.message}`);
         mismatches.push({ type: 'exchange_api_error', detail: err.message });
+        await this.providerService.recordApiFailure(providerId);
       }
     }
 
@@ -109,6 +117,19 @@ export class ReconciliationService {
         'ReconciliationReport',
         report.id,
       );
+
+      // Serious/unexplained discrepancy (spec 5.4) — a large quantity mismatch means the
+      // platform's recorded positions no longer reliably reflect the exchange's actual
+      // state, which is exactly the condition the kill switch exists for.
+      const seriousMismatch = mismatches.find(
+        (m) => m.type === 'quantity_mismatch' && m.divergencePct >= KILL_SWITCH_MISMATCH_THRESHOLD_PCT,
+      );
+      if (seriousMismatch) {
+        await this.providerService.triggerKillSwitch(
+          providerId,
+          `Reconciliation found a ${seriousMismatch.divergencePct}% quantity mismatch on ${seriousMismatch.asset} — exceeds the ${KILL_SWITCH_MISMATCH_THRESHOLD_PCT}% serious-discrepancy threshold.`,
+        );
+      }
     }
 
     return report;
