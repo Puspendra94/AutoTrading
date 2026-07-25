@@ -145,7 +145,7 @@ npm run dev:frontend
 # or: cd apps/frontend && npm install && npm run dev
 ```
 
-Runs on `http://localhost:4321`.
+Runs on `http://localhost:4331`.
 
 ### 5. Start the data worker (backfill + scheduler)
 
