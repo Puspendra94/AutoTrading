@@ -16,7 +16,9 @@ export const dataSourceOptions: DataSourceOptions = {
   entities: [path.join(__dirname, '../entities/*.entity{.ts,.js}')],
   migrations: [path.join(__dirname, '../migrations/*{.ts,.js}')],
   synchronize: false,
-  logging: process.env.NODE_ENV === 'development',
+  // ORM query logging is off by default (it drowns out app/API logs with insert spam from
+  // the data pipeline). Set TYPEORM_LOGGING=true to turn it back on when debugging SQL.
+  logging: process.env.TYPEORM_LOGGING === 'true',
 };
 
 const dataSource = new DataSource(dataSourceOptions);
