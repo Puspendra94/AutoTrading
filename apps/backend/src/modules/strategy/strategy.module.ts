@@ -16,6 +16,7 @@ import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
 import { StrategyController } from './strategy.controller';
 import { AiLessonsService } from './ai-lessons.service';
+import { StrategyRegenerateConsumer } from './strategy-regenerate.consumer';
 
 @Module({
   imports: [
@@ -33,7 +34,7 @@ import { AiLessonsService } from './ai-lessons.service';
     LlmModule,
     MarketDataModule,
   ],
-  providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService],
+  providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService, StrategyRegenerateConsumer],
   controllers: [StrategyController],
   exports: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService],
 })

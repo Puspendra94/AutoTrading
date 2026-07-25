@@ -73,6 +73,18 @@ async def main() -> None:
     scheduler.add_job(backend_jobs.strategy_reevaluation, CronTrigger(hour=1, minute=0), id="strategy_reevaluation", max_instances=1)
     scheduler.add_job(backend_jobs.allocation_rebalance, CronTrigger(hour=2, minute=0), id="allocation_rebalance", max_instances=1)
 
+    # --- Strategy Supervisor (Phase 3a) — continuous deterministic guardrail monitor. When
+    # enabled it is the responsive replacement for the daily strategy_reevaluation trigger.
+    if config.supervisor_enabled:
+        from . import supervisor
+
+        scheduler.add_job(
+            supervisor.run_supervisor_once,
+            IntervalTrigger(minutes=config.supervisor_interval_minutes),
+            id="strategy_supervisor", max_instances=1,
+        )
+        log.info("Strategy Supervisor enabled (every %d min).", config.supervisor_interval_minutes)
+
     scheduler.start()
     log.info("Scheduler started. Jobs: %s", [j.id for j in scheduler.get_jobs()])
 

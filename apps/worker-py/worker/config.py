@@ -57,6 +57,21 @@ class Config:
     # Binance spot BTCUSDT history starts 2017-08. Override to shrink for testing.
     backfill_start: str = os.getenv("BACKFILL_START", "2017-08")
 
+    # --- Strategy Supervisor (Phase 3a) — deterministic, no-AI health monitor that watches
+    # live strategies against guardrails and, on a trip, asks the backend to regenerate.
+    # Off by default (dark launch); when on, the daily strategy-reevaluation job is redundant.
+    supervisor_enabled: bool = os.getenv("SUPERVISOR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+    supervisor_interval_minutes: int = int(os.getenv("SUPERVISOR_INTERVAL_MINUTES", "5"))
+    supervisor_min_closed_trades: int = int(os.getenv("SUPERVISOR_MIN_CLOSED_TRADES", "5"))
+    # Live-vs-backtest profit-factor divergence %, matching the backend's threshold (spec 7.5).
+    supervisor_divergence_pct: float = float(os.getenv("SUPERVISOR_DIVERGENCE_PCT", "30"))
+    supervisor_max_consecutive_losses: int = int(os.getenv("SUPERVISOR_MAX_CONSECUTIVE_LOSSES", "5"))
+    supervisor_max_drawdown_pct: float = float(os.getenv("SUPERVISOR_MAX_DRAWDOWN_PCT", "20"))
+    supervisor_min_win_rate_pct: float = float(os.getenv("SUPERVISOR_MIN_WIN_RATE_PCT", "30"))
+    # Notional account base drawdown is measured against — matches StrategyPerformance's
+    # notionalUsd default, so a small PnL dip isn't misread as a huge % drawdown.
+    supervisor_notional_base: float = float(os.getenv("SUPERVISOR_NOTIONAL_BASE", "10000"))
+
     @property
     def dsn(self) -> str:
         return (

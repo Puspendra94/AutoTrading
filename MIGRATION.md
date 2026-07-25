@@ -64,8 +64,8 @@ streams to Redis Streams later if at-least-once delivery is needed.
 | ------------------ | --------- | -------- | ------- |
 | `market:tick`      | worker    | backend  | `{ tickerId, symbol, interval, openTime, closeTime, open, high, low, close, volume, isFinal }` |
 | `alerts:created`   | backend/worker | backend | existing alert JSON (already live) |
-| `positions:update` | worker (P3) | backend | `{ tickerId }` (backend re-reads open positions) |
-| `strategy:regenerate` | supervisor (P3) | worker gen | `{ tickerId, reason, triggeredBy }` |
+| `positions:update` | worker (P3c) | backend | `{ tickerId }` (backend re-reads open positions) |
+| `strategy:regenerate` | supervisor (P3a) | backend gen | `{ tickerId, strategyId, reason, triggeredBy }` |
 
 ## Phases (shipped in sequence)
 
@@ -101,9 +101,23 @@ streams to Redis Streams later if at-least-once delivery is needed.
 - **Completes problem 2** (independent deploy + async comms).
 
 ### Phase 3 — Strategy analysis, guardrails, execution, and the Strategy Supervisor → worker
-- Port strategy generation (LLM), evaluation, the risk gate, and order execution into the
-  worker, run as parallel pipelines (process pool for CPU-heavy stages).
-- Add the **Strategy Supervisor** pipeline (below).
+Split into sub-phases by risk (money/AI logic last):
+
+- **3a — Strategy Supervisor (deterministic trigger)  ✅ (this change).** No AI, no
+  execution: the worker computes live guardrail metrics (PF divergence, consecutive losses,
+  drawdown, win-rate decay) per LIVE strategy and, on a trip, publishes `strategy:regenerate`.
+  The backend's `StrategyRegenerateConsumer` runs the existing, audited
+  `generateStrategyForTicker` (one generation implementation, unchanged). Purely additive and
+  flag-gated (`SUPERVISOR_ENABLED`, default off); when on, it is the responsive replacement
+  for the daily `strategy_reevaluation` trigger. The decision math is pure functions with unit
+  tests (`tests/test_supervisor.py`).
+- **3b — LLM strategy generation → worker.** Port `generateStrategyForTicker` (prompt build,
+  structured parsing, backtest, evaluation gate) into Python behind a parity harness; the
+  supervisor then generates in-process instead of publishing to the backend. Feeds Tier-1
+  knowledge + prior lessons into the prompt (below). Higher risk (LLM output parity).
+- **3c — Risk gate + execution → worker.** Port the risk gate and order execution as parallel
+  pipelines (process pool for CPU-heavy stages); worker publishes `positions:update` /
+  fills to Redis, backend forwards to browsers. Highest risk (real orders).
 - **Solves problem 4.**
 
 ## Strategy Supervisor (Phase 3) — deterministic memory + gated regeneration

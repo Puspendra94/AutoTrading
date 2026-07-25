@@ -16,8 +16,9 @@ from .config import config
 log = logging.getLogger("worker.redis")
 
 # Channel names — must match the backend's constants.
-MARKET_TICK_CHANNEL = "market:tick"        # market-stream.service.ts
-JOBS_TRIGGER_CHANNEL = "jobs:trigger"      # internal-jobs-redis.consumer.ts
+MARKET_TICK_CHANNEL = "market:tick"          # market-stream.service.ts
+JOBS_TRIGGER_CHANNEL = "jobs:trigger"        # internal-jobs-redis.consumer.ts
+STRATEGY_REGENERATE_CHANNEL = "strategy:regenerate"  # strategy-regenerate.consumer.ts
 
 _client: redis.Redis | None = None
 
