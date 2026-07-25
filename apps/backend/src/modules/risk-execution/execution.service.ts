@@ -262,6 +262,77 @@ export class ExecutionService {
     });
   }
 
+  /**
+   * Open positions annotated against the real exchange so the dashboard reflects Binance
+   * reality (spec: no ghost trades). `source` is 'paper' (simulated fill, SIM_* order — never
+   * on Binance) or 'live'. For live positions on a connected Binance provider, `exchangeVerified`
+   * is true when the account actually holds the position's base asset, false when it doesn't
+   * (a stale/ghost trade to flag), or null when it can't be checked (no creds / API error).
+   */
+  async getOpenPositionsReconciled() {
+    const positions = await this.positionRepo.find({
+      where: { status: PositionStatus.OPEN },
+      relations: ['ticker', 'strategy', 'orders'],
+      order: { openedAt: 'DESC' },
+    });
+
+    const providerCache = new Map<string, Provider | null>();
+    const accountCache = new Map<string, { asset: string; free: number; locked: number }[] | null>();
+
+    const results = [];
+    for (const p of positions) {
+      const providerId = p.ticker?.providerId;
+      const isSim = (p.orders || []).some((o) => (o.providerOrderId || '').startsWith('SIM_'));
+      const source: 'paper' | 'live' = isSim ? 'paper' : 'live';
+      let exchangeVerified: boolean | null = null;
+
+      if (source === 'live' && providerId) {
+        if (!providerCache.has(providerId)) {
+          providerCache.set(providerId, await this.providerRepo.findOne({ where: { id: providerId } }));
+        }
+        const provider = providerCache.get(providerId);
+        if (provider && provider.tradingMode === TradingMode.LIVE && provider.type === ProviderType.BINANCE) {
+          if (!accountCache.has(providerId)) {
+            let balances: { asset: string; free: number; locked: number }[] | null = null;
+            try {
+              const creds = await this.secretsProvider.getCredential(providerId, provider.useTestnet);
+              if (creds?.apiKey && creds?.apiSecret) {
+                const account = await this.binanceAdapter.getOpenPositionsAndBalance(
+                  { apiKey: creds.apiKey, apiSecret: creds.apiSecret },
+                  provider.useTestnet,
+                );
+                balances = account.balances;
+              }
+            } catch (err) {
+              this.logger.warn(`Position reconciliation: account fetch failed for provider ${providerId}: ${err.message}`);
+            }
+            accountCache.set(providerId, balances);
+          }
+          const balances = accountCache.get(providerId);
+          if (balances && p.side === PositionSide.LONG) {
+            const base = this.baseAsset(p.ticker.symbol);
+            const bal = balances.find((b) => b.asset === base);
+            const held = bal ? bal.free + bal.locked : 0;
+            // Real fills lose a little to fees, so require ~90% of the position size on hand.
+            exchangeVerified = held >= Number(p.quantity) * 0.9;
+          }
+        }
+      }
+
+      const { orders, ...rest } = p; // orders were only needed to detect SIM_* (paper) fills
+      results.push({ ...rest, source, exchangeVerified });
+    }
+    return results;
+  }
+
+  /** Base asset from a spot symbol (BTCUSDT -> BTC), stripping the common quote assets. */
+  private baseAsset(symbol: string): string {
+    for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD', 'TUSD', 'USD']) {
+      if (symbol.endsWith(quote)) return symbol.slice(0, -quote.length);
+    }
+    return symbol;
+  }
+
   async getAllPositions() {
     return this.positionRepo.find({
       relations: ['ticker', 'strategy'],

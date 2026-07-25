@@ -128,6 +128,9 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
               <button id="netTestnet" type="button" class="rounded px-2 py-1 text-muted transition-colors" title="Binance testnet (paper funds)">Testnet</button>
             </div>
             <a id="netKeysPrompt" href="/profile" hidden class="text-[0.7rem] font-semibold text-amber-400 hover:underline" title="This network has no API keys yet — live orders are blocked until you add them">+ add keys</a>
+            <button id="netPending" type="button" hidden class="inline-flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[0.7rem] font-semibold text-amber-400" title="Waiting for open trades to close, then switching automatically. Click to cancel.">
+              <span class="live-dot"></span><span id="netPendingText">Switch pending</span>
+            </button>
           </div>
           <span id="connPill" class="flex items-center gap-2 text-xs tracking-wide text-muted">
             <span id="connIco" class="h-2 w-2 rounded-full bg-dim"></span>
@@ -145,8 +148,25 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
       </main>
     </div>
 
+    <!-- Network-switch guard modal: shown when switching networks while trades are open. -->
+    <div id="netModal" hidden class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div class="w-full max-w-md rounded-xl border border-border bg-panel p-6 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.8)]">
+        <div class="mb-2 flex items-center gap-2">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-amber-400" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <h3 class="text-base font-bold">Open trades detected</h3>
+        </div>
+        <p id="netModalMsg" class="text-sm text-muted">You have open trades. Switching networks now can leave positions stranded on the other network.</p>
+        <div class="mt-5 flex flex-col gap-2.5">
+          <button id="netModalClose" type="button" class="btn btn-warn w-full">Close all trades now &amp; switch</button>
+          <button id="netModalWait" type="button" class="btn btn-primary w-full">Wait for trades to close, then switch</button>
+          <button id="netModalCancel" type="button" class="btn btn-ghost w-full">Cancel</button>
+        </div>
+        <p id="netModalErr" class="mt-3 text-sm text-bear" hidden></p>
+      </div>
+    </div>
+
     <script>
-      import { logout, apiGet, apiPatch } from '../lib/api';
+      import { logout, apiGet, apiPatch, apiPost, ApiError } from '../lib/api';
       import { resolveBtcTicker } from '../lib/ticker';
 
       document.getElementById('logoutBtn')?.addEventListener('click', () => logout());
@@ -208,11 +228,18 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
       let switching = false;
 
       function paintNetToggle(useTestnet: boolean, networks?: NetInfo) {
-        const on = 'bg-brand/15 text-brand';
-        const off = 'text-muted';
-        [netMainnet, netTestnet].forEach((b) => b?.classList.remove('bg-brand/15', 'text-brand', 'text-muted'));
-        (useTestnet ? netTestnet : netMainnet)?.classList.add(...on.split(' '));
-        (useTestnet ? netMainnet : netTestnet)?.classList.add(off);
+        // Distinct colors per network so the mode is identifiable at a glance:
+        // Mainnet = amber (real funds, caution), Testnet = sky-blue (paper/safe).
+        const ALL = ['bg-amber-500/20', 'text-amber-400', 'bg-sky-500/20', 'text-sky-400', 'text-muted'];
+        netMainnet?.classList.remove(...ALL);
+        netTestnet?.classList.remove(...ALL);
+        if (useTestnet) {
+          netTestnet?.classList.add('bg-sky-500/20', 'text-sky-400');
+          netMainnet?.classList.add('text-muted');
+        } else {
+          netMainnet?.classList.add('bg-amber-500/20', 'text-amber-400');
+          netTestnet?.classList.add('text-muted');
+        }
         // Prompt to add keys when the SELECTED network has none (live orders blocked).
         const activeHasKeys = useTestnet ? networks?.testnet : networks?.mainnet;
         if (netKeysPrompt) {
@@ -221,7 +248,17 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
         }
       }
 
-      async function switchNetwork(useTestnet: boolean) {
+      type PositionLite = { id: string; currentPrice?: number; entryPrice: number };
+      let currentUseTestnet = false;
+      let pendingTarget: boolean | null = null;
+      let pendingTimer: number | null = null;
+
+      async function getOpenPositions(): Promise<PositionLite[]> {
+        try { return await apiGet<PositionLite[]>('/execution/positions/open'); } catch { return []; }
+      }
+
+      // The actual network flip (PATCH + re-render). Guarded entry point is switchNetwork().
+      async function doSwitch(useTestnet: boolean) {
         if (!netProviderId || switching) return;
         switching = true;
         try {
@@ -230,8 +267,92 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
         } catch (e) { console.error('Network switch failed', e); }
         finally { switching = false; }
       }
+
+      // Guard: switching with open trades prompts to close-now or wait-and-switch. Applies to
+      // BOTH directions — any open trade can desync when the account/keys change under it.
+      async function switchNetwork(useTestnet: boolean) {
+        if (!netProviderId || switching || useTestnet === currentUseTestnet) return;
+        const open = await getOpenPositions();
+        if (open.length > 0) { openNetModal(useTestnet, open); return; }
+        clearPending();
+        await doSwitch(useTestnet);
+      }
       netMainnet?.addEventListener('click', () => switchNetwork(false));
       netTestnet?.addEventListener('click', () => switchNetwork(true));
+
+      // ---- Switch-guard modal ----
+      const netModal = document.getElementById('netModal');
+      const netModalMsg = document.getElementById('netModalMsg');
+      const netModalErr = document.getElementById('netModalErr');
+      const netModalCloseBtn = document.getElementById('netModalClose') as HTMLButtonElement | null;
+      const netModalWaitBtn = document.getElementById('netModalWait');
+      const netModalCancelBtn = document.getElementById('netModalCancel');
+      let modalTarget = false;
+      let modalPositions: PositionLite[] = [];
+
+      function openNetModal(useTestnet: boolean, positions: PositionLite[]) {
+        modalTarget = useTestnet; modalPositions = positions;
+        const net = useTestnet ? 'Testnet' : 'Mainnet';
+        const n = positions.length; const one = n === 1;
+        if (netModalMsg) netModalMsg.textContent = `You have ${n} open trade${one ? '' : 's'}. Switching to ${net} now can leave ${one ? 'it' : 'them'} stranded on the current network. Close ${one ? 'it' : 'them all'} now and switch, or wait until ${one ? 'it closes' : 'they close'} and switch automatically?`;
+        if (netModalErr) netModalErr.hidden = true;
+        if (netModal) netModal.hidden = false;
+      }
+      function closeNetModal() { if (netModal) netModal.hidden = true; }
+      netModalCancelBtn?.addEventListener('click', closeNetModal);
+
+      netModalCloseBtn?.addEventListener('click', async () => {
+        if (!netModalCloseBtn) return;
+        netModalCloseBtn.disabled = true; const l = netModalCloseBtn.innerHTML; netModalCloseBtn.innerHTML = '<span class="spinner"></span>';
+        try {
+          for (const p of modalPositions) {
+            await apiPost(`/execution/positions/${p.id}/close`, { exitPrice: Number(p.currentPrice) || Number(p.entryPrice) });
+          }
+          closeNetModal();
+          clearPending();
+          await doSwitch(modalTarget);
+        } catch (e) {
+          if (netModalErr) { netModalErr.hidden = false; netModalErr.textContent = e instanceof ApiError ? e.message : 'Failed to close trades'; }
+        } finally { netModalCloseBtn.disabled = false; netModalCloseBtn.innerHTML = l; }
+      });
+
+      netModalWaitBtn?.addEventListener('click', () => { setPending(modalTarget); closeNetModal(); });
+
+      // ---- Wait-and-switch: persist the intent and flip once open trades reach zero ----
+      const netPending = document.getElementById('netPending');
+      const netPendingText = document.getElementById('netPendingText');
+      function renderPending() {
+        if (!netPending) return;
+        netPending.hidden = pendingTarget === null;
+        if (netPendingText && pendingTarget !== null) netPendingText.textContent = `Switch to ${pendingTarget ? 'Testnet' : 'Mainnet'} pending`;
+      }
+      function setPending(useTestnet: boolean) {
+        pendingTarget = useTestnet;
+        localStorage.setItem('pendingNetworkSwitch', JSON.stringify({ providerId: netProviderId, useTestnet }));
+        renderPending(); startPendingWatch();
+      }
+      function clearPending() {
+        pendingTarget = null;
+        localStorage.removeItem('pendingNetworkSwitch');
+        if (pendingTimer) { clearInterval(pendingTimer); pendingTimer = null; }
+        renderPending();
+      }
+      async function checkPending() {
+        if (pendingTarget === null) return;
+        if (pendingTarget === currentUseTestnet) { clearPending(); return; } // already switched
+        const open = await getOpenPositions();
+        if (open.length === 0) { const target = pendingTarget; clearPending(); await doSwitch(target); }
+      }
+      function startPendingWatch() { if (!pendingTimer) pendingTimer = window.setInterval(checkPending, 6000); }
+      netPending?.addEventListener('click', clearPending); // click the chip to cancel
+
+      // Restore a pending switch across reloads.
+      (() => {
+        const raw = localStorage.getItem('pendingNetworkSwitch');
+        if (!raw) return;
+        try { const j = JSON.parse(raw); pendingTarget = !!j.useTestnet; renderPending(); startPendingWatch(); }
+        catch { localStorage.removeItem('pendingNetworkSwitch'); }
+      })();
 
       async function refreshConnection() {
         if (!localStorage.getItem('jwt')) return;
@@ -257,8 +378,10 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
           // Show the network toggle once a trading provider exists.
           if (trading && netToggle) {
             netProviderId = trading.id;
+            currentUseTestnet = !!trading.useTestnet;
             netToggle.hidden = false;
-            paintNetToggle(!!trading.useTestnet, trading.networks);
+            paintNetToggle(currentUseTestnet, trading.networks);
+            if (pendingTarget !== null) checkPending(); // provider now known — resume a pending switch
           } else if (netToggle) {
             netToggle.hidden = true;
           }

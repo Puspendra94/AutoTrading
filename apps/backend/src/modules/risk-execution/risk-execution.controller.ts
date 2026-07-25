@@ -13,6 +13,14 @@ export class RiskExecutionController {
     return this.executionService.getOpenPositions();
   }
 
+  // Open positions annotated against the live Binance account (paper/live + exchangeVerified)
+  // so the dashboard can flag simulated and stale/ghost trades. Hits the exchange, so the
+  // dashboard polls this on a slow interval rather than per-tick.
+  @Get('positions/open/reconciled')
+  async getOpenPositionsReconciled() {
+    return this.executionService.getOpenPositionsReconciled();
+  }
+
   @Get('positions/all')
   async getAllPositions() {
     return this.executionService.getAllPositions();

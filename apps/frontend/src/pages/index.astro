@@ -124,7 +124,8 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
 
     requireAuth();
 
-    type Position = {
+    type PosAnnotation = { source?: 'paper' | 'live'; exchangeVerified?: boolean | null };
+    type Position = PosAnnotation & {
       id: string; ticker: { symbol: string }; side: 'long' | 'short';
       entryPrice: number; currentPrice: number; quantity: number;
       unrealizedPl: number; realizedPl: number; isProbation: boolean; openedAt: string;
@@ -307,6 +308,20 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
 
     // ---------- Positions ----------
     const positionsList = $('positionsList'), mUnrealized = $('mUnrealized'), mRealized = $('mRealized'), mOpen = $('mOpen');
+    // Exchange-reconciliation labels, keyed by position id, refreshed from the reconciled
+    // endpoint (which hits Binance) and merged onto the fast WS position pushes.
+    const posAnnotations = new Map<string, PosAnnotation>();
+
+    function exchangeBadge(p: Position): string {
+      const a = posAnnotations.get(p.id) || { source: p.source, exchangeVerified: p.exchangeVerified };
+      if (a.source === 'paper') return '<span class="badge badge-muted" title="Simulated fill — not sent to Binance">Paper</span>';
+      if (a.source === 'live' && a.exchangeVerified === false)
+        return '<span class="rounded bg-bear/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-bear" title="No matching balance on Binance — likely a stale/ghost trade">⚠ Not on Binance</span>';
+      if (a.source === 'live' && a.exchangeVerified === true)
+        return '<span class="rounded bg-brand/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-brand" title="Verified against your live Binance balance">✓ On Binance</span>';
+      return '';
+    }
+
     function renderPositions(positions: Position[]) {
       mOpen.textContent = String(positions.length);
       const unreal = positions.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
@@ -326,7 +341,8 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
           <div class="border-b border-border/60 px-4 py-3 transition-colors hover:bg-surface-2/60">
             <div class="mb-1.5 flex items-center justify-between">
               <span class="flex items-center gap-2 text-sm font-bold">${esc(p.ticker?.symbol || 'BTCUSDT')}
-                <span class="badge ${p.side === 'long' ? 'badge-brand' : 'badge-bear'}">${p.side.toUpperCase()}</span></span>
+                <span class="badge ${p.side === 'long' ? 'badge-brand' : 'badge-bear'}">${p.side.toUpperCase()}</span>
+                ${exchangeBadge(p)}</span>
               <span class="tabular text-sm font-bold ${bull ? 'text-brand' : 'text-bear'}">${bull ? '+' : ''}$${fmt(Number(p.unrealizedPl))}</span>
             </div>
             <div class="flex items-center justify-between text-xs text-muted">
@@ -340,11 +356,21 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
           </div>`;
       }).join('');
     }
+    // Fast path: WS pushes raw positions for instant PnL — reuse cached exchange labels.
     onPositionsUpdate((positions) => renderPositions(positions as Position[]));
+
+    // Slow path: reconciled endpoint refreshes the paper/on-Binance labels (hits the exchange).
     async function loadPositions() {
-      try { renderPositions(await apiGet<Position[]>('/execution/positions/open')); }
-      catch { positionsList.innerHTML = `<p class="p-4 text-sm text-muted">Failed to load positions.</p>`; }
+      try {
+        const positions = await apiGet<Position[]>('/execution/positions/open/reconciled');
+        posAnnotations.clear();
+        for (const p of positions) posAnnotations.set(p.id, { source: p.source, exchangeVerified: p.exchangeVerified });
+        renderPositions(positions);
+      } catch {
+        positionsList.innerHTML = `<p class="p-4 text-sm text-muted">Failed to load positions.</p>`;
+      }
     }
+    setInterval(loadPositions, 20000); // keep exchange labels fresh without hammering Binance
 
     // ---------- Active Alpha (bottom band) ----------
     const alphaWrap = $('alphaWrap'), alphaBody = $('alphaBody'), alphaBandName = $('alphaBandName');
