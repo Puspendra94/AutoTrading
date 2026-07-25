@@ -48,7 +48,7 @@ class _ExecStore:
 
     async def get_ticker(self, i): return {"id": "t1", "symbol": "BTCUSDT", "providerId": "p1"}
     async def get_provider(self, i): return self.provider
-    async def get_credential(self, i): return self.creds
+    async def get_credential(self, i, use_testnet=False): return self.creds
 
     async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation):
         return self.seed(side, entry_price, quantity)

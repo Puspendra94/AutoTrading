@@ -42,6 +42,16 @@ export class ProviderController {
     return this.providerService.updateTradingMode(id, body.tradingMode, body.useTestnet);
   }
 
+  // Add/replace API keys for one network (mainnet or testnet) on an existing provider —
+  // the header toggle's "add {network} keys" flow. Does not create a new provider.
+  @Post(':id/credentials')
+  async addCredential(
+    @Param('id') id: string,
+    @Body() body: { apiKey: string; apiSecret: string; useTestnet?: boolean },
+  ) {
+    return this.providerService.addCredential(id, body.apiKey, body.apiSecret, !!body.useTestnet);
+  }
+
   @Get(':id/balance')
   async getBalance(@Param('id') id: string) {
     return this.providerService.getLatestBalance(id);

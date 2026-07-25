@@ -35,7 +35,7 @@ class ExecutionError(Exception):
 class ExecutionStore(Protocol):
     async def get_ticker(self, ticker_id: str) -> Optional[dict]: ...
     async def get_provider(self, provider_id: str) -> Optional[dict]: ...
-    async def get_credential(self, provider_id: str) -> Optional[dict]: ...
+    async def get_credential(self, provider_id: str, use_testnet: bool = False) -> Optional[dict]: ...
     async def insert_position(self, *, ticker_id: str, strategy_id: Optional[str], side: str,
                               entry_price: float, quantity: float, is_probation: bool) -> str: ...
     async def insert_order(self, *, position_id: str, provider_order_id: str, side: str,
@@ -83,10 +83,11 @@ class ExecutionService:
 
         # 2. Real order ONLY in live + binance + creds; else simulated fill.
         if provider and provider.get("tradingMode") == LIVE and provider.get("type") == BINANCE:
-            creds = await self.store.get_credential(provider["id"])
+            creds = await self.store.get_credential(provider["id"], provider.get("useTestnet", False))
             if not creds or not creds.get("apiKey") or not creds.get("apiSecret"):
                 raise ExecutionError(
-                    f"Provider {provider.get('name')} is set to 'live' trading mode but has no stored API credentials — cannot place a real order."
+                    f"Provider {provider.get('name')} is set to 'live' trading mode but has no stored API credentials for the "
+                    f"{'testnet' if provider.get('useTestnet') else 'mainnet'} network — cannot place a real order."
                 )
             try:
                 order_side = "BUY" if side == LONG else "SELL"
@@ -123,7 +124,7 @@ class ExecutionService:
 
         provider = await self.store.get_provider(position["providerId"]) if position.get("providerId") else None
         if provider and provider.get("tradingMode") == LIVE and provider.get("type") == BINANCE:
-            creds = await self.store.get_credential(provider["id"])
+            creds = await self.store.get_credential(provider["id"], provider.get("useTestnet", False))
             if creds and creds.get("apiKey") and creds.get("apiSecret"):
                 try:
                     close_side = "SELL" if position["side"] == LONG else "BUY"

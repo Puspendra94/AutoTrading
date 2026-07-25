@@ -33,7 +33,8 @@ import Layout from '../layouts/Layout.astro';
     type Provider = {
       id: string; name: string; type: string; status: string;
       tradingEnabled: boolean; tradingMode?: 'paper' | 'live'; useTestnet?: boolean;
-      hasCredentials?: boolean; killSwitchActive?: boolean; killSwitchReason?: string | null;
+      hasCredentials?: boolean; networks?: { mainnet: boolean; testnet: boolean };
+      killSwitchActive?: boolean; killSwitchReason?: string | null;
       tradableBalance?: number | null; currency?: string | null; lastSyncedAt?: string | null;
     };
     type RiskLimit = {
@@ -149,6 +150,14 @@ import Layout from '../layouts/Layout.astro';
 
           <form id="connForm" class="mt-7 flex flex-col gap-5 rounded-xl border border-border bg-surface p-6 shadow-[0_1px_1px_rgba(0,0,0,0.2),0_16px_40px_-20px_rgba(0,0,0,0.6)]">
             <div>
+              <label class="label mb-2 uppercase tracking-widest">Network</label>
+              <div class="flex items-center rounded-md border border-border bg-surface-2 p-0.5 text-xs font-semibold" role="group" aria-label="Network">
+                <button type="button" id="connNetMain" class="flex-1 rounded px-3 py-1.5 bg-brand/15 text-brand transition-colors">Mainnet</button>
+                <button type="button" id="connNetTest" class="flex-1 rounded px-3 py-1.5 text-muted transition-colors">Testnet</button>
+              </div>
+              <p class="mt-1.5 text-[0.7rem] text-dim">Testnet uses separate keys from <span class="tabular">testnet.binance.vision</span>. You can add the other network's keys later.</p>
+            </div>
+            <div>
               <label class="label mb-2 uppercase tracking-widest" for="apiKey">API Key ID</label>
               <input class="input" id="apiKey" type="text" autocomplete="off" spellcheck="false" placeholder="vmPUZELF…" required />
             </div>
@@ -176,15 +185,26 @@ import Layout from '../layouts/Layout.astro';
       const form = $('connForm') as HTMLFormElement, errEl = $('connErr'), submit = $('connSubmit') as HTMLButtonElement;
       const secretInput = $('apiSecret') as HTMLInputElement;
       $('toggleSecret').addEventListener('click', () => { secretInput.type = secretInput.type === 'password' ? 'text' : 'password'; });
+
+      // Network selector (mainnet default) — determines which endpoint/key set this connects.
+      let connUseTestnet = false;
+      const netMain = $('connNetMain'), netTest = $('connNetTest');
+      const paintConnNet = () => {
+        netMain.className = `flex-1 rounded px-3 py-1.5 transition-colors ${connUseTestnet ? 'text-muted' : 'bg-brand/15 text-brand'}`;
+        netTest.className = `flex-1 rounded px-3 py-1.5 transition-colors ${connUseTestnet ? 'bg-brand/15 text-brand' : 'text-muted'}`;
+      };
+      netMain.addEventListener('click', () => { connUseTestnet = false; paintConnNet(); });
+      netTest.addEventListener('click', () => { connUseTestnet = true; paintConnNet(); });
+
       form.addEventListener('submit', async (e) => {
         e.preventDefault(); errEl.hidden = true;
         const apiKey = ($('apiKey') as HTMLInputElement).value.trim();
         const apiSecret = secretInput.value.trim();
         submit.disabled = true; const label = submit.innerHTML; submit.innerHTML = '<span class="spinner"></span>';
         try {
-          // No testnet toggle in this form → connect to mainnet so real keys return real
-          // balances/orders. Live order placement still requires flipping mode on the Dashboard.
-          await apiPost('/providers', { name: 'Binance', type: 'binance', tradingMode: 'paper', useTestnet: false, apiKey, apiSecret });
+          // Connect to the selected network. Live order placement still requires flipping
+          // trading mode; market data always comes from mainnet regardless.
+          await apiPost('/providers', { name: 'Binance', type: 'binance', tradingMode: 'paper', useTestnet: connUseTestnet, apiKey, apiSecret });
           (window as any).refreshConnection?.();
           await load();
         } catch (err) {
@@ -222,6 +242,38 @@ import Layout from '../layouts/Layout.astro';
             Disconnect
           </button>
         </div>
+
+        ${(() => {
+          const nets = p.networks || { mainnet: p.useTestnet === false, testnet: p.useTestnet === true };
+          const row = (n: 'mainnet' | 'testnet') => {
+            const has = (nets as any)[n];
+            const active = (n === 'testnet') === (p.useTestnet === true);
+            return `<div class="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-4 py-3">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-semibold capitalize">${n}</span>
+                ${active ? '<span class="rounded bg-brand/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-brand">Active</span>' : ''}
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs ${has ? 'text-brand' : 'text-muted'}">${has ? 'Keys stored' : 'No keys'}</span>
+                <button type="button" data-addnet="${n}" class="btn btn-ghost text-xs">${has ? 'Replace' : 'Add keys'}</button>
+              </div>
+            </div>`;
+          };
+          return `<div class="card p-5">
+            <p class="eyebrow mb-3">API Keys by Network</p>
+            <div class="flex flex-col gap-2.5">${row('mainnet')}${row('testnet')}</div>
+            <form id="addKeyForm" hidden class="mt-4 flex flex-col gap-3 border-t border-border pt-4">
+              <p class="text-xs text-muted">Add <span id="addKeyNet" class="font-semibold capitalize"></span> API keys (separate from the other network)</p>
+              <input class="input" id="addKeyApi" type="text" autocomplete="off" spellcheck="false" placeholder="API Key ID" />
+              <input class="input" id="addKeySecret" type="password" autocomplete="off" spellcheck="false" placeholder="Secret Key" />
+              <p id="addKeyErr" class="text-sm text-bear" hidden></p>
+              <div class="flex gap-2">
+                <button type="submit" id="addKeySave" class="btn btn-warn">Save keys</button>
+                <button type="button" id="addKeyCancel" class="btn btn-ghost">Cancel</button>
+              </div>
+            </form>
+          </div>`;
+        })()}
 
         <div class="grid grid-cols-2 gap-4 md:grid-cols-4">
           ${balCard('Total Balance', 'stTotal', 'Free + in orders')}
@@ -265,6 +317,33 @@ import Layout from '../layouts/Layout.astro';
         catch { btn.disabled = false; btn.innerHTML = l; }
       });
       $$('clearKsBtn')?.addEventListener('click', async () => { try { await apiPost(`/providers/${p.id}/kill-switch/clear`); await load(); } catch {} });
+
+      // Per-network API-key management (add/replace mainnet or testnet keys on this provider).
+      let addKeyNet: 'mainnet' | 'testnet' = 'mainnet';
+      const addKeyForm = $$('addKeyForm') as HTMLFormElement | null;
+      document.querySelectorAll('[data-addnet]').forEach((b) =>
+        b.addEventListener('click', () => {
+          addKeyNet = ((b as HTMLElement).dataset.addnet as 'mainnet' | 'testnet') || 'mainnet';
+          const lbl = $$('addKeyNet'); if (lbl) lbl.textContent = addKeyNet;
+          if (addKeyForm) addKeyForm.hidden = false;
+        }),
+      );
+      $$('addKeyCancel')?.addEventListener('click', () => { if (addKeyForm) addKeyForm.hidden = true; });
+      addKeyForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const errEl = $('addKeyErr'); errEl.hidden = true;
+        const apiKey = ($('addKeyApi') as HTMLInputElement).value.trim();
+        const apiSecret = ($('addKeySecret') as HTMLInputElement).value.trim();
+        const save = $('addKeySave') as HTMLButtonElement; save.disabled = true; const l = save.innerHTML; save.innerHTML = '<span class="spinner"></span>';
+        try {
+          await apiPost(`/providers/${p.id}/credentials`, { apiKey, apiSecret, useTestnet: addKeyNet === 'testnet' });
+          (window as any).refreshConnection?.();
+          await load();
+        } catch (err) {
+          errEl.hidden = false; errEl.textContent = err instanceof ApiError ? err.message : 'Failed to save keys';
+          save.disabled = false; save.innerHTML = l;
+        }
+      });
     }
 
     // ---------- Risk & Guardrails tab ----------

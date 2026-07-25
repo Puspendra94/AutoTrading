@@ -120,6 +120,15 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
             <span id="hdrAlphaName" class="max-w-[16ch] truncate"></span>
           </a>
           <span id="hdrLlmChip" class="hidden items-center rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[0.7rem] font-medium tabular text-muted md:inline-flex" title="Total LLM spend">LLM: —</span>
+          <!-- Network toggle: switches account/trade APIs + keys between Binance mainnet and
+               testnet. Market data always comes from mainnet, so charts are unaffected. -->
+          <div id="netToggle" hidden class="flex items-center gap-2">
+            <div class="flex items-center rounded-md border border-border bg-surface-2 p-0.5 text-[0.7rem] font-semibold" role="group" aria-label="Trading network">
+              <button id="netMainnet" type="button" class="rounded px-2 py-1 text-muted transition-colors" title="Binance mainnet (real funds)">Mainnet</button>
+              <button id="netTestnet" type="button" class="rounded px-2 py-1 text-muted transition-colors" title="Binance testnet (paper funds)">Testnet</button>
+            </div>
+            <a id="netKeysPrompt" href="/profile" hidden class="text-[0.7rem] font-semibold text-amber-400 hover:underline" title="This network has no API keys yet — live orders are blocked until you add them">+ add keys</a>
+          </div>
           <span id="connPill" class="flex items-center gap-2 text-xs tracking-wide text-muted">
             <span id="connIco" class="h-2 w-2 rounded-full bg-dim"></span>
             <span id="connText">CHECKING…</span>
@@ -137,7 +146,7 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
     </div>
 
     <script>
-      import { logout, apiGet } from '../lib/api';
+      import { logout, apiGet, apiPatch } from '../lib/api';
       import { resolveBtcTicker } from '../lib/ticker';
 
       document.getElementById('logoutBtn')?.addEventListener('click', () => logout());
@@ -183,28 +192,76 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
 
       // Shared connection indicator — a Binance provider with stored credentials means
       // "connected" (i.e. live trading is enabled). Market data does NOT depend on this.
-      type ProviderLite = { id: string; type: string; hasCredentials?: boolean; tradingMode?: string };
+      type NetInfo = { mainnet: boolean; testnet: boolean };
+      type ProviderLite = { id: string; type: string; hasCredentials?: boolean; tradingMode?: string; useTestnet?: boolean; networks?: NetInfo };
       const connPill = document.getElementById('connPill');
       const connIco = document.getElementById('connIco');
       const connText = document.getElementById('connText');
       const railDot = document.getElementById('railConnDot');
 
+      // ---- Network (mainnet/testnet) toggle ----
+      const netToggle = document.getElementById('netToggle');
+      const netMainnet = document.getElementById('netMainnet');
+      const netTestnet = document.getElementById('netTestnet');
+      const netKeysPrompt = document.getElementById('netKeysPrompt') as HTMLAnchorElement | null;
+      let netProviderId: string | null = null;
+      let switching = false;
+
+      function paintNetToggle(useTestnet: boolean, networks?: NetInfo) {
+        const on = 'bg-brand/15 text-brand';
+        const off = 'text-muted';
+        [netMainnet, netTestnet].forEach((b) => b?.classList.remove('bg-brand/15', 'text-brand', 'text-muted'));
+        (useTestnet ? netTestnet : netMainnet)?.classList.add(...on.split(' '));
+        (useTestnet ? netMainnet : netTestnet)?.classList.add(off);
+        // Prompt to add keys when the SELECTED network has none (live orders blocked).
+        const activeHasKeys = useTestnet ? networks?.testnet : networks?.mainnet;
+        if (netKeysPrompt) {
+          netKeysPrompt.hidden = !!activeHasKeys;
+          netKeysPrompt.textContent = `+ add ${useTestnet ? 'testnet' : 'mainnet'} keys`;
+        }
+      }
+
+      async function switchNetwork(useTestnet: boolean) {
+        if (!netProviderId || switching) return;
+        switching = true;
+        try {
+          await apiPatch(`/providers/${netProviderId}/trading-mode`, { useTestnet });
+          await refreshConnection();
+        } catch (e) { console.error('Network switch failed', e); }
+        finally { switching = false; }
+      }
+      netMainnet?.addEventListener('click', () => switchNetwork(false));
+      netTestnet?.addEventListener('click', () => switchNetwork(true));
+
       async function refreshConnection() {
         if (!localStorage.getItem('jwt')) return;
         try {
           const providers = await apiGet<ProviderLite[]>('/providers');
-          // The seeded "Binance Public Data" provider has no credentials, so it's never
-          // counted as connected — this reflects a real user trading key only.
-          const binance = providers.find((p) => p.type === 'binance' && p.hasCredentials);
-          const connected = !!binance;
-          (window as any).__connection = { connected, provider: binance || null };
+          // The user's trading Binance provider = a binance provider that has keys for at
+          // least one network (the seeded public-data provider never does). Distinct from
+          // "connected", which means the CURRENTLY-selected network has keys.
+          const trading = providers.find((p) => p.type === 'binance' && (p.networks?.mainnet || p.networks?.testnet))
+            || providers.find((p) => p.type === 'binance' && p.hasCredentials);
+          const connected = !!trading?.hasCredentials;
+          (window as any).__connection = { connected, provider: trading || null };
           window.dispatchEvent(new CustomEvent('connection-ready', { detail: (window as any).__connection }));
-          if (connText) connText.textContent = connected ? 'BINANCE LIVE' : 'NOT CONNECTED';
+
+          const net = trading?.useTestnet ? 'TESTNET' : 'MAINNET';
+          if (connText) connText.textContent = connected ? `BINANCE ${net}` : (trading ? `NOT CONNECTED · ${net}` : 'NOT CONNECTED');
           connIco?.classList.toggle('bg-brand', connected);
           connIco?.classList.toggle('bg-dim', !connected);
           railDot?.classList.toggle('bg-brand', connected);
           railDot?.classList.toggle('bg-dim', !connected);
           connPill?.classList.toggle('text-brand', connected);
+
+          // Show the network toggle once a trading provider exists.
+          if (trading && netToggle) {
+            netProviderId = trading.id;
+            netToggle.hidden = false;
+            paintNetToggle(!!trading.useTestnet, trading.networks);
+          } else if (netToggle) {
+            netToggle.hidden = true;
+          }
         } catch {
           if (connText) connText.textContent = 'NOT CONNECTED';
         }

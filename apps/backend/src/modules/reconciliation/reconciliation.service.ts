@@ -66,9 +66,9 @@ export class ReconciliationService {
       return report;
     }
 
-    const creds = await this.secretsProvider.getCredential(providerId);
+    const creds = await this.secretsProvider.getCredential(providerId, provider.useTestnet);
     if (!creds || !creds.apiKey || !creds.apiSecret) {
-      mismatches.push({ type: 'missing_credentials', detail: 'Provider is live but has no stored API credentials.' });
+      mismatches.push({ type: 'missing_credentials', detail: `Provider is live but has no stored API credentials for the ${provider.useTestnet ? 'testnet' : 'mainnet'} network.` });
     } else {
       try {
         const { balances } = await this.binanceAdapter.getOpenPositionsAndBalance(

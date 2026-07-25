@@ -71,10 +71,11 @@ export class ProviderService {
     await this.riskLimitRepo.save(riskLimit);
 
     if (data.apiKey && data.apiSecret) {
-      await this.secretsProvider.storeCredential(provider.id, {
-        apiKey: data.apiKey,
-        apiSecret: data.apiSecret,
-      });
+      await this.secretsProvider.storeCredential(
+        provider.id,
+        { apiKey: data.apiKey, apiSecret: data.apiSecret },
+        provider.useTestnet,
+      );
       // Best-effort immediate sync so the UI doesn't sit on a stale "not synced" state
       // longer than necessary; failure here doesn't block provider creation.
       await this.syncBalance(provider.id).catch((err) =>
@@ -93,10 +94,12 @@ export class ProviderService {
         where: { providerId: p.id },
         order: { syncedAt: 'DESC' },
       });
-      const creds = await this.secretsProvider.getCredential(p.id);
+      const networks = await this.secretsProvider.getConfiguredNetworks(p.id);
+      const activeNetworkHasKeys = p.useTestnet ? networks.testnet : networks.mainnet;
       results.push({
         ...p,
-        hasCredentials: !!creds,
+        hasCredentials: activeNetworkHasKeys, // keys for the CURRENTLY-selected network
+        networks, // which networks have keys — drives the header toggle's "add keys" prompt
         tradableBalance: latestBalance ? Number(latestBalance.tradableBalance) : null,
         currency: latestBalance ? latestBalance.currency : null,
         lastSyncedAt: latestBalance ? latestBalance.syncedAt : null,
@@ -191,10 +194,10 @@ export class ProviderService {
     const provider = await this.providerRepo.findOne({ where: { id: providerId } });
     if (!provider) throw new NotFoundException('Provider not found');
 
-    const creds = await this.secretsProvider.getCredential(providerId);
+    const creds = await this.secretsProvider.getCredential(providerId, provider.useTestnet);
     if (!creds || !creds.apiKey || !creds.apiSecret) {
       throw new BadRequestException(
-        'No API credentials stored for this provider yet — connect real Binance API key/secret before syncing balance.',
+        `No API credentials stored for the ${provider.useTestnet ? 'testnet' : 'mainnet'} network — connect Binance API key/secret for this network before syncing balance.`,
       );
     }
 
@@ -238,9 +241,11 @@ export class ProviderService {
     const provider = await this.providerRepo.findOne({ where: { id: providerId } });
     if (!provider) throw new NotFoundException('Provider not found');
 
-    const creds = await this.secretsProvider.getCredential(providerId);
+    const creds = await this.secretsProvider.getCredential(providerId, provider.useTestnet);
     if (!creds || !creds.apiKey || !creds.apiSecret) {
-      throw new BadRequestException('No API credentials stored for this provider yet.');
+      throw new BadRequestException(
+        `No API credentials stored for the ${provider.useTestnet ? 'testnet' : 'mainnet'} network.`,
+      );
     }
     if (provider.type !== ProviderType.BINANCE) {
       throw new BadRequestException(`Live account not supported for provider type '${provider.type}'.`);
@@ -284,6 +289,24 @@ export class ProviderService {
     provider.tradingMode = TradingMode.PAPER; // can't trade live without credentials
     await this.providerRepo.save(provider);
     return { disconnected: true };
+  }
+
+  /** Add/replace the API keys for one network on an existing provider (the header toggle's
+   * "add {network} keys" flow). Does not create a new provider; the other network's keys are
+   * preserved. Syncs the balance when the added network is the one currently selected. */
+  async addCredential(providerId: string, apiKey: string, apiSecret: string, useTestnet: boolean) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider) throw new NotFoundException('Provider not found');
+    if (!apiKey || !apiSecret) throw new BadRequestException('apiKey and apiSecret are required.');
+
+    await this.secretsProvider.storeCredential(providerId, { apiKey, apiSecret }, useTestnet);
+
+    if (provider.useTestnet === useTestnet) {
+      await this.syncBalance(providerId).catch((err) =>
+        this.logger.warn(`Balance sync after adding ${useTestnet ? 'testnet' : 'mainnet'} keys failed: ${err.message}`),
+      );
+    }
+    return { added: true, network: useTestnet ? 'testnet' : 'mainnet' };
   }
 
   /** Risk-limit guardrails for a provider (created lazily with defaults if none exist),

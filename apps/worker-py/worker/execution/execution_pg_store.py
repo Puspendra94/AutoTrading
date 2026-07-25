@@ -15,6 +15,15 @@ log = logging.getLogger("worker.execution.store")
 API_FAILURE_KILL_THRESHOLD = int(os.getenv("PROVIDER_API_FAILURE_THRESHOLD", "5"))
 
 
+def _resolve_credential(credential_json: dict, use_testnet: bool) -> Optional[dict]:
+    """Pick the network-scoped key set (mainnet/testnet), honoring a legacy flat blob.
+    Mirrors PlaintextSecretsProvider.getCredential on the backend."""
+    if credential_json.get("apiKey"):  # legacy flat keys = mainnet only
+        return None if use_testnet else credential_json
+    slot = credential_json.get("testnet" if use_testnet else "mainnet")
+    return slot if slot and slot.get("apiKey") and slot.get("apiSecret") else None
+
+
 class PgExecutionStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
@@ -34,10 +43,12 @@ class PgExecutionStore:
         return {"id": str(row["id"]), "name": row["name"], "tradingMode": row["trading_mode"],
                 "type": row["type"], "useTestnet": row["use_testnet"]}
 
-    async def get_credential(self, provider_id: str) -> Optional[dict]:
+    async def get_credential(self, provider_id: str, use_testnet: bool = False) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT credential_json FROM provider_credentials WHERE provider_id = $1", provider_id)
-        return row["credential_json"] if row else None
+        if not row or not row["credential_json"]:
+            return None
+        return _resolve_credential(row["credential_json"], use_testnet)
 
     async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation) -> str:
         async with self.pool.acquire() as conn:

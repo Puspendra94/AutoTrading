@@ -62,7 +62,7 @@ export class ExecutionService {
     // enforcement point. Otherwise, fall through to the simulated local fill, seeded
     // by the real streamed price already passed in by the caller.
     if (provider && provider.tradingMode === TradingMode.LIVE && provider.type === ProviderType.BINANCE) {
-      const creds = await this.secretsProvider.getCredential(provider.id);
+      const creds = await this.secretsProvider.getCredential(provider.id, provider.useTestnet);
       if (!creds || !creds.apiKey || !creds.apiSecret) {
         throw new BadRequestException(
           `Provider ${provider.name} is set to 'live' trading mode but has no stored API credentials — cannot place a real order.`,
@@ -131,7 +131,7 @@ export class ExecutionService {
     const provider = ticker ? await this.providerRepo.findOne({ where: { id: ticker.providerId } }) : null;
 
     if (provider && provider.tradingMode === TradingMode.LIVE && provider.type === ProviderType.BINANCE) {
-      const creds = await this.secretsProvider.getCredential(provider.id);
+      const creds = await this.secretsProvider.getCredential(provider.id, provider.useTestnet);
       if (creds?.apiKey && creds?.apiSecret) {
         try {
           const closeSide = position.side === PositionSide.LONG ? 'SELL' : 'BUY';
