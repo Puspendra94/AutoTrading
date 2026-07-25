@@ -168,6 +168,16 @@ export class ProviderService {
     }
   }
 
+  /** Extract Binance's real error body ({ code, msg }) from a connector/axios error, so the
+   * UI shows e.g. "[-2015] Invalid API-key, IP, or permissions" instead of the generic
+   * "Request failed with status code 401". */
+  private binanceErrorMessage(err: any): string {
+    const data = err?.response?.data;
+    if (data?.msg) return `Binance API error${data.code != null ? ` [${data.code}]` : ''}: ${data.msg}`;
+    if (typeof data === 'string' && data.trim()) return `Binance API error: ${data}`;
+    return err?.message ? `Binance API error: ${err.message}` : 'Binance API request failed.';
+  }
+
   /** Call from any provider-API call site's success path to reset the failure streak. */
   async recordApiSuccess(providerId: string) {
     const provider = await this.providerRepo.findOne({ where: { id: providerId } });
@@ -215,7 +225,7 @@ export class ProviderService {
     } catch (err) {
       await this.recordApiFailure(providerId);
       // Surface Binance's real message (e.g. "Invalid API-key, IP, or permissions") instead of a bare 500.
-      throw new BadRequestException(err?.message ? `Binance API error: ${err.message}` : "Binance API request failed.");
+      throw new BadRequestException(this.binanceErrorMessage(err));
     }
 
     // "Tradable balance" (spec 2.1) = free USDT (or the primary quote asset). Fall back
@@ -261,7 +271,7 @@ export class ProviderService {
     } catch (err) {
       // This is a UI read poll (every ~15s) — do NOT trip the trading kill switch on a read
       // failure (that's reserved for order-placement/sync failures). Just surface the message.
-      throw new BadRequestException(err?.message ? `Binance API error: ${err.message}` : 'Binance API request failed.');
+      throw new BadRequestException(this.binanceErrorMessage(err));
     }
 
     const usdt = account.balances.find((b) => b.asset === 'USDT');
