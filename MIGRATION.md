@@ -129,11 +129,16 @@ Split into sub-phases by risk (money/AI logic last):
     policies (gate=False and gate=True). Monte Carlo fields are RNG-driven in both and
     excluded; the gate does not depend on them. Golden values from the TS run are pinned in
     `tests/test_evaluator.py` so drift fails CI without needing Node.
-  - **3b-3 — generation orchestration + wiring.** Port `generateStrategyForTicker` (prompt
-    build with lessons, gate-before-save retry loop, persist strategy + backtest, retire/
-    promote, record lesson) and switch the Supervisor to generate in-process instead of
-    publishing `strategy:regenerate`. Retire the backend `StrategyRegenerateConsumer` at
-    cutover.
+  - **3b-3 — generation orchestration + wiring  ✅ (this change).** Ported
+    `generateStrategyForTicker` → `worker/strategy/generator.py`: exact prompt build with
+    lessons, gate-before-save 3-attempt retry loop, persist strategy + backtest, retire the
+    previous LIVE (record its lesson first, LLM-summarized with the same template fallback),
+    promote, and the data-quality-flag refusal. DB work is isolated behind a `GeneratorStore`
+    protocol (`pg_store.py` for production) so the control flow is unit-tested with a fake
+    store + fake LLM against the real evaluator (`tests/test_generator.py`, 7 cases). The
+    Supervisor gains `SUPERVISOR_GENERATE_INLINE` (default off): off = publish
+    `strategy:regenerate` (current behavior); on = run generation in-process. At cutover, flip
+    it on and retire the backend `StrategyRegenerateConsumer`.
 - **3c — Risk gate + execution → worker.** Port the risk gate and order execution as parallel
   pipelines (process pool for CPU-heavy stages); worker publishes `positions:update` /
   fills to Redis, backend forwards to browsers. Highest risk (real orders).

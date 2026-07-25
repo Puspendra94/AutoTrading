@@ -158,19 +158,37 @@ async def run_supervisor_once() -> dict:
             continue
 
         _flagged.add(s["id"])
-        payload = {
-            "tickerId": s["ticker_id"],
-            "strategyId": s["id"],
-            "reason": reason,
-            "triggeredBy": "supervisor",
-        }
         try:
-            await get_redis().publish(STRATEGY_REGENERATE_CHANNEL, json.dumps(payload))
+            if config.supervisor_generate_inline:
+                await _regenerate_inline(s["ticker_id"], reason)
+            else:
+                payload = {
+                    "tickerId": s["ticker_id"],
+                    "strategyId": s["id"],
+                    "reason": reason,
+                    "triggeredBy": "supervisor",
+                }
+                await get_redis().publish(STRATEGY_REGENERATE_CHANNEL, json.dumps(payload))
             triggered += 1
-            log.warning("Strategy %s (ticker %s) tripped a guardrail — %s. Requested regeneration.",
-                        s["id"], s["ticker_id"], reason)
-        except Exception as err:  # noqa: BLE001 — a publish failure must not kill the sweep
+            log.warning("Strategy %s (ticker %s) tripped a guardrail — %s. Regeneration %s.",
+                        s["id"], s["ticker_id"], reason,
+                        "run in-process" if config.supervisor_generate_inline else "requested from backend")
+        except Exception as err:  # noqa: BLE001 — a failure must not kill the sweep
             _flagged.discard(s["id"])  # allow a retry next cycle
-            log.warning("Failed to publish regeneration for strategy %s: %s", s["id"], err)
+            log.warning("Regeneration trigger failed for strategy %s: %s", s["id"], err)
 
     return {"checked": checked, "triggered": triggered}
+
+
+async def _regenerate_inline(ticker_id: str, reason: str) -> None:
+    """Run the ported generation pipeline in the worker (Phase 3b-3), instead of asking the
+    backend to. Imported lazily so the supervisor's deterministic path has no LLM deps."""
+    from .llm.service import LlmService
+    from .strategy.generator import StrategyGenerator
+    from .strategy.pg_store import PgGeneratorStore
+
+    pool = await get_pool()
+    generator = StrategyGenerator(PgGeneratorStore(pool), LlmService())
+    result = await generator.generate(ticker_id, reason)
+    log.info("In-process regeneration for ticker %s: saved=%s attempts=%s",
+             ticker_id, result.get("saved"), result.get("attempts"))

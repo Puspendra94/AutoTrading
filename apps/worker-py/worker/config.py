@@ -71,6 +71,10 @@ class Config:
     # Notional account base drawdown is measured against — matches StrategyPerformance's
     # notionalUsd default, so a small PnL dip isn't misread as a huge % drawdown.
     supervisor_notional_base: float = float(os.getenv("SUPERVISOR_NOTIONAL_BASE", "10000"))
+    # When a guardrail trips: False (default) publishes strategy:regenerate for the backend to
+    # run generateStrategyForTicker; True runs the ported generation in-process (Phase 3b-3).
+    # Keep False until the in-process generator has been validated end-to-end.
+    supervisor_generate_inline: bool = os.getenv("SUPERVISOR_GENERATE_INLINE", "false").lower() in ("1", "true", "yes", "on")
 
     @property
     def dsn(self) -> str:

@@ -172,7 +172,10 @@ class LlmService:
         purpose: str,
         response: dict,
     ) -> None:
-        """Persist one llm_cost_log row (mirrors LlmService.logCost)."""
+        """Persist one llm_cost_log row (mirrors LlmService.logCost). No-ops without a pool
+        (e.g. in unit tests with a fake store)."""
+        if pool is None:
+            return
         provider = "fallback" if str(response["model"]).endswith("-fallback") else (response.get("provider") or "unknown")
         async with pool.acquire() as conn:
             await conn.execute(
