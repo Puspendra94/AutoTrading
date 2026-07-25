@@ -139,9 +139,21 @@ Split into sub-phases by risk (money/AI logic last):
     Supervisor gains `SUPERVISOR_GENERATE_INLINE` (default off): off = publish
     `strategy:regenerate` (current behavior); on = run generation in-process. At cutover, flip
     it on and retire the backend `StrategyRegenerateConsumer`.
-- **3c — Risk gate + execution → worker.** Port the risk gate and order execution as parallel
-  pipelines (process pool for CPU-heavy stages); worker publishes `positions:update` /
-  fills to Redis, backend forwards to browsers. Highest risk (real orders).
+- **3c — Risk gate + execution → worker.** Split by risk (real orders last):
+  - **3c-1 — Risk gate  ✅ (this change).** Faithful port of `risk-gate.service.ts` →
+    `worker/execution/risk_gate.py`: kill switch, trading-enabled, provider schedule,
+    daily-loss breach (mark + critical alert + flatten + halt), max concurrent positions,
+    allocation ceiling, and probation sizing. DB reads/side-effects behind a `RiskGateStore`
+    protocol (`pg_store.py`). Unit-tested against the SAME scenarios as
+    `risk-gate.service.spec.ts` plus the sizing/probation/breach math
+    (`tests/test_risk_gate.py`, 10 cases). Places NO orders and is not wired to any caller —
+    `flatten_all_positions` is a loud no-op until 3c-2.
+  - **3c-2 — Execution + live loop.** Port `execution.service.ts` (Binance market orders via a
+    Python adapter, position/order writes, closePosition, flattenAllPositionsForProvider, hard
+    stop-loss/take-profit exits) and move the tick → evaluate → risk-gate → execute loop into
+    the worker. Worker publishes `positions:update` / fills to Redis; backend forwards to
+    browsers. **Highest risk (real capital)** — do after validating 3a/3b and behind a live
+    cutover flag.
 - **Solves problem 4.**
 
 ## Strategy Supervisor (Phase 3) — deterministic memory + gated regeneration
