@@ -8,10 +8,12 @@ import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { LiveVsBacktestDivergence } from '../../entities/live-vs-backtest-divergence.entity';
 import { Position } from '../../entities/position.entity';
 import { AiLessonLearned } from '../../entities/ai-lesson-learned.entity';
+import { StrategyPerformance } from '../../entities/strategy-performance.entity';
 import { LlmModule } from '../llm/llm.module';
 import { MarketDataModule } from '../market-data/market-data.module';
 import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyEngineService } from './strategy-engine.service';
+import { StrategyPerformanceService } from './strategy-performance.service';
 import { StrategyController } from './strategy.controller';
 import { AiLessonsService } from './ai-lessons.service';
 
@@ -26,12 +28,13 @@ import { AiLessonsService } from './ai-lessons.service';
       LiveVsBacktestDivergence,
       Position,
       AiLessonLearned,
+      StrategyPerformance,
     ]),
     LlmModule,
     MarketDataModule,
   ],
-  providers: [StrategyEvaluatorService, StrategyEngineService, AiLessonsService],
+  providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService],
   controllers: [StrategyController],
-  exports: [StrategyEvaluatorService, StrategyEngineService, AiLessonsService],
+  exports: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService],
 })
 export class StrategyModule {}

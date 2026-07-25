@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { Ticker, TickerStatus, OnboardingStage } from '../../entities/ticker.entity';
@@ -227,6 +227,33 @@ export class MarketDataService {
         take: limit,
       })
       .then((res) => res.reverse());
+  }
+
+  private static readonly PG_UNIT: Record<string, string> = { m: 'minutes', h: 'hours', d: 'days', w: 'weeks' };
+
+  /**
+   * Candles rolled up to an arbitrary interval from the stored 1m base via TimescaleDB
+   * time_bucket (first open, max high, min low, last close, sum volume). We only ingest 1m
+   * (the minimum interval), so every higher chart timeframe is derived in the DB — cheap,
+   * and no duplicate ingestion. `1m` short-circuits to the raw rows.
+   */
+  async getCandlesForInterval(tickerId: string, interval = '1m', limit = 500) {
+    if (interval === '1m') return this.getCandles(tickerId, limit);
+    const match = interval.match(/^(\d+)([mhdw])$/i);
+    if (!match) throw new BadRequestException(`Unsupported interval: ${interval}`);
+    const bucket = `${parseInt(match[1], 10)} ${MarketDataService.PG_UNIT[match[2].toLowerCase()]}`;
+    // bucket is regex-validated -> safe to inline as an interval literal.
+    const rows = await this.ohlcvRepo.query(
+      `SELECT "timestamp", open, high, low, close, volume FROM (
+         SELECT time_bucket(INTERVAL '${bucket}', "timestamp") AS "timestamp",
+           first(open, "timestamp") AS open, max(high) AS high, min(low) AS low,
+           last(close, "timestamp") AS close, sum(volume) AS volume
+         FROM "Algo_Trading"."ohlcv_data" WHERE ticker_id = $1
+         GROUP BY 1 ORDER BY 1 DESC LIMIT $2
+       ) t ORDER BY "timestamp" ASC`,
+      [tickerId, limit],
+    );
+    return rows;
   }
 
   async upsertLiveCandle(tickerId: string, candle: { timestamp: Date; open: number; high: number; low: number; close: number; volume: number }) {

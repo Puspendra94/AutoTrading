@@ -229,6 +229,63 @@ export class ProviderService {
     return this.balanceRepo.save(snapshot);
   }
 
+  /**
+   * Live account snapshot straight from Binance — real balances (free/locked per asset)
+   * plus real open orders. Powers the connected Connector view's balance cards and the
+   * Active Orders table. Fetched on demand so the UI reflects the account in real time.
+   */
+  async getLiveAccount(providerId: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider) throw new NotFoundException('Provider not found');
+
+    const creds = await this.secretsProvider.getCredential(providerId);
+    if (!creds || !creds.apiKey || !creds.apiSecret) {
+      throw new BadRequestException('No API credentials stored for this provider yet.');
+    }
+    if (provider.type !== ProviderType.BINANCE) {
+      throw new BadRequestException(`Live account not supported for provider type '${provider.type}'.`);
+    }
+
+    let account;
+    try {
+      account = await this.binanceAdapter.getOpenPositionsAndBalance(
+        { apiKey: creds.apiKey, apiSecret: creds.apiSecret },
+        provider.useTestnet,
+      );
+      await this.recordApiSuccess(providerId);
+    } catch (err) {
+      await this.recordApiFailure(providerId);
+      throw err;
+    }
+
+    const usdt = account.balances.find((b) => b.asset === 'USDT');
+    return {
+      balances: account.balances,
+      openOrders: account.openOrders,
+      totals: {
+        // Denominated in USDT (the product's quote asset) from real free/locked values.
+        available: usdt ? usdt.free : 0,
+        inOrders: usdt ? usdt.locked : 0,
+        total: usdt ? usdt.free + usdt.locked : 0,
+        currency: 'USDT',
+      },
+    };
+  }
+
+  /**
+   * Disconnect a provider — deletes its stored API credentials (so it drops back to the
+   * "not connected" state / paper mode) without deleting the provider row, its risk limits,
+   * or its balance history.
+   */
+  async disconnect(providerId: string) {
+    const provider = await this.providerRepo.findOne({ where: { id: providerId } });
+    if (!provider) throw new NotFoundException('Provider not found');
+    await this.secretsProvider.deleteCredential(providerId);
+    provider.tradingMode = TradingMode.PAPER; // can't trade live without credentials
+    await this.providerRepo.save(provider);
+    return { disconnected: true };
+  }
+
   /** Risk-limit guardrails for a provider (created lazily with defaults if none exist),
    * surfaced to and edited from the Profile page. */
   async getRiskLimit(providerId: string) {

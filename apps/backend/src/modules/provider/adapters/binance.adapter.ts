@@ -63,9 +63,17 @@ export class BinanceAdapter {
   /** Public klines — no credentials required. Always reads from mainnet: real market
    * data should reflect the real market regardless of whether the connected account
    * is paper/live or testnet/mainnet. */
-  async getPublicKlines(symbol: string, interval: string, limit = 500): Promise<RawCandle[]> {
+  async getPublicKlines(
+    symbol: string,
+    interval: string,
+    limit = 500,
+    opts: { startTime?: number; endTime?: number } = {},
+  ): Promise<RawCandle[]> {
     const client = this.client(undefined, false);
-    const res = await client.klines(symbol, interval, { limit });
+    const query: Record<string, number> = { limit };
+    if (opts.startTime != null) query.startTime = opts.startTime;
+    if (opts.endTime != null) query.endTime = opts.endTime;
+    const res = await client.klines(symbol, interval, query);
     return (res.data as any[]).map((raw) => ({
       timestamp: new Date(raw[0]),
       open: parseFloat(raw[1]),

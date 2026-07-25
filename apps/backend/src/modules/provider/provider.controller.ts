@@ -47,6 +47,18 @@ export class ProviderController {
     return this.providerService.getLatestBalance(id);
   }
 
+  // Live account straight from Binance — real balances + open orders for the connected view.
+  @Get(':id/account')
+  async getLiveAccount(@Param('id') id: string) {
+    return this.providerService.getLiveAccount(id);
+  }
+
+  // Disconnect — remove stored credentials, dropping back to the not-connected form.
+  @Post(':id/disconnect')
+  async disconnect(@Param('id') id: string) {
+    return this.providerService.disconnect(id);
+  }
+
   // Risk-limit guardrails, read/edited from the Profile page.
   @Get(':id/risk-limit')
   async getRiskLimit(@Param('id') id: string) {

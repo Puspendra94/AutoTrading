@@ -216,7 +216,7 @@ export class LlmService implements LLMProvider {
     };
   }
 
-  async logCost(tickerId: string, strategyId: string, purpose: LlmPurpose, response: LlmCompletionResponse) {
+  async logCost(tickerId: string, strategyId: string | null, purpose: LlmPurpose, response: LlmCompletionResponse) {
     const log = this.costLogRepo.create({
       tickerId,
       strategyId,

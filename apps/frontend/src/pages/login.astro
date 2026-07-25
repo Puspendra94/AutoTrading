@@ -7,94 +7,44 @@ import '../styles/global.css';
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#070b14" />
     <title>Terminal Access — AI Algorithmic Trading Platform</title>
-    <script is:inline>
-      (function () {
-        try {
-          const stored = localStorage.getItem('theme');
-          document.documentElement.setAttribute('data-theme', stored === 'light' ? 'light' : 'dark');
-        } catch (e) {
-          document.documentElement.setAttribute('data-theme', 'dark');
-        }
-      })();
-    </script>
   </head>
-  <body>
-    <div class="auth-shell">
-      <div class="auth-brand">
-        <span class="auth-logo-mark">⚡</span>
-        <span class="auth-logo-text">ALPHATRADE</span>
-      </div>
-
-      <div class="glass-card auth-card">
-        <p class="auth-eyebrow" id="eyebrow">Terminal Access</p>
-        <h2 class="auth-title" id="authTitle">Sign In</h2>
-
-        <div class="auth-tabs" id="authTabs">
-          <button type="button" class="auth-tab active" data-mode="login">Sign In</button>
-          <button type="button" class="auth-tab" data-mode="register">Sign Up</button>
-        </div>
-
-        <form id="authForm" class="auth-form">
-          <div class="field">
-            <label for="email">Email</label>
-            <input class="text-input" type="email" id="email" name="email" autocomplete="email" placeholder="trader@example.com" required />
-          </div>
-          <div class="field" id="passwordField">
-            <label for="password">Password</label>
-            <input class="text-input" type="password" id="password" name="password" autocomplete="current-password" minlength="6" placeholder="••••••••" />
-          </div>
-
-          <p class="error-text" id="authError" hidden></p>
-          <p class="ok-text" id="authOk" hidden></p>
-
-          <button type="submit" class="btn btn-primary submit-btn" id="submitBtn">Enter Terminal</button>
-        </form>
-
-        <div class="auth-links">
-          <button type="button" class="link-btn" id="forgotLink">Forgot password?</button>
-          <button type="button" class="link-btn" id="backLink" hidden>← Back to sign in</button>
-        </div>
-      </div>
-      <p class="auth-foot">v2.1.0 · ALPHATRADE PLATFORM</p>
+  <body class="flex min-h-screen flex-col items-center justify-center gap-5 p-6">
+    <div class="flex items-center gap-2.5">
+      <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-sm shadow-[0_2px_12px_rgba(0,200,150,0.3)]" aria-hidden="true">⚡</span>
+      <span class="text-base font-bold tracking-[0.2em]">ALPHATRADE</span>
     </div>
 
-    <style>
-      .auth-shell {
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 1.25rem;
-        padding: 1.5rem;
-      }
-      .auth-brand { display: flex; align-items: center; gap: 0.5rem; }
-      .auth-logo-mark {
-        width: 32px; height: 32px; border-radius: 6px; background: var(--accent-cyan);
-        display: flex; align-items: center; justify-content: center; font-size: 1rem;
-        box-shadow: 0 2px 10px rgba(0, 200, 150, 0.25);
-      }
-      .auth-logo-text { font-weight: 700; letter-spacing: 0.2em; font-size: 0.95rem; }
-      .auth-card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 0.25rem; padding: 1.75rem; }
-      .auth-eyebrow { font-size: 0.6rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent-cyan); }
-      .auth-title { font-size: 1.25rem; font-weight: 700; margin: 0.25rem 0 1.1rem; }
-      .auth-tabs { display: flex; gap: 0.4rem; margin-bottom: 1.1rem; }
-      .auth-tab {
-        flex: 1; padding: 0.45rem; font-size: 0.72rem; font-weight: 700; font-family: var(--font-mono);
-        background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-muted);
-        border-radius: 6px; cursor: pointer; transition: all 0.15s ease;
-      }
-      .auth-tab.active { background: var(--accent-cyan); color: #070b14; border-color: var(--accent-cyan); }
-      .auth-form { display: flex; flex-direction: column; gap: 0.9rem; }
-      .submit-btn { margin-top: 0.35rem; width: 100%; }
-      .auth-links { display: flex; justify-content: center; margin-top: 1rem; }
-      .link-btn { background: none; border: none; color: var(--text-muted); font-size: 0.68rem; font-family: var(--font-mono); cursor: pointer; }
-      .link-btn:hover { color: var(--accent-cyan); }
-      .auth-foot { font-size: 0.6rem; letter-spacing: 0.1em; color: var(--text-dim); }
-      .ok-text { color: var(--color-bull); font-size: 0.72rem; word-break: break-all; }
-      .ok-text a { color: var(--accent-cyan); }
-    </style>
+    <div class="card w-full max-w-sm p-7">
+      <p id="eyebrow" class="eyebrow text-brand">Terminal Access</p>
+      <h2 id="authTitle" class="mb-6 mt-1.5 text-xl font-bold">Sign In</h2>
+
+      <div id="authTabs" class="mb-5 flex gap-1.5">
+        <button type="button" data-mode="login" class="auth-tab flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs font-bold transition-colors">Sign In</button>
+        <button type="button" data-mode="register" class="auth-tab flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs font-bold transition-colors">Sign Up</button>
+      </div>
+
+      <form id="authForm" class="flex flex-col gap-4">
+        <div>
+          <label class="label" for="email">Email</label>
+          <input class="input" type="email" id="email" name="email" autocomplete="email" spellcheck="false" placeholder="trader@example.com" required />
+        </div>
+        <div id="passwordField">
+          <label class="label" for="password">Password</label>
+          <input class="input" type="password" id="password" name="password" autocomplete="current-password" minlength="6" placeholder="••••••••" />
+        </div>
+        <p id="authError" class="text-sm text-bear" hidden></p>
+        <p id="authOk" class="break-words text-xs text-brand" hidden></p>
+        <button type="submit" id="submitBtn" class="btn btn-primary mt-1 w-full">Enter Terminal</button>
+      </form>
+
+      <div class="mt-5 flex justify-center">
+        <button type="button" id="forgotLink" class="text-xs text-muted transition-colors hover:text-brand">Forgot password?</button>
+        <button type="button" id="backLink" hidden class="text-xs text-muted transition-colors hover:text-brand">← Back to sign in</button>
+      </div>
+    </div>
+    <p class="text-[0.65rem] tracking-wide text-dim">v2.1.0 · ALPHATRADE PLATFORM</p>
 
     <script>
       import { apiPost, setToken, ApiError } from '../lib/api';
@@ -103,77 +53,52 @@ import '../styles/global.css';
 
       type Mode = 'login' | 'register' | 'forgot';
       let mode: Mode = 'login';
+      const $ = (id: string) => document.getElementById(id)!;
+      const tabs = $('authTabs'), form = $('authForm') as HTMLFormElement, submitBtn = $('submitBtn') as HTMLButtonElement;
+      const errorEl = $('authError'), okEl = $('authOk'), passwordInput = $('password') as HTMLInputElement, passwordField = $('passwordField');
+      const emailInput = $('email') as HTMLInputElement, title = $('authTitle'), eyebrow = $('eyebrow');
+      const forgotLink = $('forgotLink') as HTMLButtonElement, backLink = $('backLink') as HTMLButtonElement;
 
-      const tabs = document.getElementById('authTabs')!;
-      const form = document.getElementById('authForm') as HTMLFormElement;
-      const submitBtn = document.getElementById('submitBtn') as HTMLButtonElement;
-      const errorEl = document.getElementById('authError') as HTMLParagraphElement;
-      const okEl = document.getElementById('authOk') as HTMLParagraphElement;
-      const passwordInput = document.getElementById('password') as HTMLInputElement;
-      const passwordField = document.getElementById('passwordField')!;
-      const emailInput = document.getElementById('email') as HTMLInputElement;
-      const title = document.getElementById('authTitle')!;
-      const eyebrow = document.getElementById('eyebrow')!;
-      const forgotLink = document.getElementById('forgotLink') as HTMLButtonElement;
-      const backLink = document.getElementById('backLink') as HTMLButtonElement;
-
+      function paintTabs() {
+        tabs.querySelectorAll<HTMLButtonElement>('.auth-tab').forEach((b) => {
+          const on = b.dataset.mode === mode;
+          b.classList.toggle('bg-brand', on); b.classList.toggle('text-[#04140e]', on);
+          b.classList.toggle('border-brand', on); b.classList.toggle('text-muted', !on);
+        });
+      }
       function setMode(next: Mode) {
-        mode = next;
-        errorEl.hidden = true;
-        okEl.hidden = true;
-        tabs.hidden = mode === 'forgot';
-        forgotLink.hidden = mode === 'forgot';
-        backLink.hidden = mode !== 'forgot';
-        passwordField.hidden = mode === 'forgot';
-        passwordInput.required = mode !== 'forgot';
-        passwordInput.setAttribute('autocomplete', mode === 'login' ? 'current-password' : 'new-password');
-
-        tabs.querySelectorAll<HTMLButtonElement>('.auth-tab').forEach((b) =>
-          b.classList.toggle('active', b.dataset.mode === mode));
-
+        mode = next; errorEl.hidden = true; okEl.hidden = true;
+        tabs.hidden = mode === 'forgot'; forgotLink.hidden = mode === 'forgot'; backLink.hidden = mode !== 'forgot';
+        passwordField.hidden = mode === 'forgot'; passwordInput.required = mode !== 'forgot';
+        passwordInput.autocomplete = mode === 'login' ? 'current-password' : 'new-password';
         if (mode === 'login') { title.textContent = 'Sign In'; eyebrow.textContent = 'Terminal Access'; submitBtn.textContent = 'Enter Terminal'; }
         else if (mode === 'register') { title.textContent = 'Sign Up'; eyebrow.textContent = 'Create Account'; submitBtn.textContent = 'Create Account'; }
         else { title.textContent = 'Reset Password'; eyebrow.textContent = 'Account Recovery'; submitBtn.textContent = 'Send Reset Link'; }
+        paintTabs();
       }
-
-      tabs.querySelectorAll<HTMLButtonElement>('.auth-tab').forEach((b) =>
-        b.addEventListener('click', () => setMode(b.dataset.mode as Mode)));
+      tabs.querySelectorAll<HTMLButtonElement>('.auth-tab').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode as Mode)));
       forgotLink.addEventListener('click', () => setMode('forgot'));
       backLink.addEventListener('click', () => setMode('login'));
+      paintTabs();
 
       form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        errorEl.hidden = true;
-        okEl.hidden = true;
-        const email = emailInput.value.trim();
-        const password = passwordInput.value;
-
-        submitBtn.disabled = true;
-        const label = submitBtn.textContent;
-        submitBtn.innerHTML = '<span class="spinner"></span>';
-
+        e.preventDefault(); errorEl.hidden = true; okEl.hidden = true;
+        const email = emailInput.value.trim(), password = passwordInput.value;
+        submitBtn.disabled = true; const label = submitBtn.textContent; submitBtn.innerHTML = '<span class="spinner"></span>';
         try {
           if (mode === 'forgot') {
             const res = await apiPost<{ ok: boolean; resetLink?: string }>('/auth/forgot-password', { email });
             okEl.hidden = false;
-            okEl.innerHTML = res.resetLink
-              ? `If that email exists, a reset link was created. Dev link: <a href="${res.resetLink}">Reset password</a>`
-              : 'If that email exists, a password reset link has been sent.';
+            okEl.innerHTML = res.resetLink ? `If that email exists, a reset link was created. Dev link: <a class="text-brand underline" href="${res.resetLink}">Reset password</a>` : 'If that email exists, a password reset link has been sent.';
             return;
           }
-          const path = mode === 'login' ? '/auth/login' : '/auth/register';
-          const res = await apiPost<{ token?: string; access_token?: string }>(path, { email, password });
+          const res = await apiPost<{ token?: string; access_token?: string }>(mode === 'login' ? '/auth/login' : '/auth/register', { email, password });
           const token = res?.token || res?.access_token;
           if (!token) throw new Error('Authentication succeeded but no token was returned.');
-          setToken(token);
-          window.location.href = '/';
+          setToken(token); window.location.href = '/';
         } catch (err) {
-          errorEl.hidden = false;
-          errorEl.textContent = err instanceof ApiError ? err.message : (err instanceof Error ? err.message : 'Something went wrong');
-        } finally {
-          submitBtn.disabled = false;
-          submitBtn.textContent = label;
-        }
+          errorEl.hidden = false; errorEl.textContent = err instanceof ApiError ? err.message : (err instanceof Error ? err.message : 'Something went wrong');
+        } finally { submitBtn.disabled = false; submitBtn.textContent = label; }
       });
     </script>
   </body>

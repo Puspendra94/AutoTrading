@@ -10,6 +10,8 @@ export interface BacktestPerformanceMetrics {
   drawdownDuration: number;
   profitFactor: number;
   tradeCount: number;
+  totalReturnPct: number; // compounded net return over the out-of-sample fold
+  winRate: number; // share of profitable trades, 0–100
   monteCarloSummary: {
     passRate: number;
     minSharpe: number;
@@ -30,6 +32,13 @@ interface TradeSimResult {
   trades: number[]; // per-trade net return fractions
   maxDrawdown: number; // pct
   drawdownDuration: number; // bars
+}
+
+export interface StrategySignal {
+  time: number; // unix seconds of the candle where the intent fired
+  side: 'buy' | 'sell';
+  price: number;
+  reason: string;
 }
 
 const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000;
@@ -58,6 +67,8 @@ export class StrategyEvaluatorService {
       drawdownDuration: 0,
       profitFactor: 0,
       tradeCount: 0,
+      totalReturnPct: 0,
+      winRate: 0,
       monteCarloSummary: {
         passRate: 0,
         minSharpe: 0,
@@ -117,6 +128,8 @@ export class StrategyEvaluatorService {
       drawdownDuration: outOfSampleSim.drawdownDuration,
       profitFactor: oosMetrics.profitFactor,
       tradeCount,
+      totalReturnPct: oosMetrics.totalReturnPct,
+      winRate: oosMetrics.winRate,
       monteCarloSummary: {
         ...monteCarlo,
         walkForward: {
@@ -148,6 +161,51 @@ export class StrategyEvaluatorService {
     const avgMsPerCandle = totalMs / (candles.length - 1);
     if (avgMsPerCandle <= 0) return 252;
     return MS_PER_YEAR / avgMsPerCandle;
+  }
+
+  /**
+   * Replays the strategy's entry/exit rules over a candle series and emits the buy/sell
+   * intents it would produce — the same EMA-crossover + stop-loss/take-profit logic
+   * simulateTrades() uses, but surfaced as timestamped markers for the chart rather than
+   * collapsed into a return series. Deterministic; represents intent, not execution.
+   */
+  generateSignals(candles: Array<{ close: any; timestamp: any }>, params: any): StrategySignal[] {
+    const signals: StrategySignal[] = [];
+    const emaFastPeriod = params?.indicatorConfig?.emaFastPeriod || 12;
+    const emaSlowPeriod = params?.indicatorConfig?.emaSlowPeriod || 26;
+    const stopLossPct = (params?.indicatorConfig?.stopLossPct || 1.5) / 100;
+    const takeProfitPct = (params?.indicatorConfig?.takeProfitPct || 3.5) / 100;
+    if (!candles || candles.length <= emaSlowPeriod) return signals;
+
+    const closes = candles.map((c) => Number(c.close));
+    const times = candles.map((c) => Math.floor(new Date(c.timestamp).getTime() / 1000));
+    const fastEma = this.calculateEma(closes, emaFastPeriod);
+    const slowEma = this.calculateEma(closes, emaSlowPeriod);
+
+    let position: 'NONE' | 'LONG' = 'NONE';
+    let entryPrice = 0;
+    for (let i = emaSlowPeriod; i < candles.length; i++) {
+      const price = closes[i];
+      if (!Number.isFinite(price) || !Number.isFinite(times[i])) continue;
+      if (position === 'NONE') {
+        if (fastEma[i] > slowEma[i] && fastEma[i - 1] <= slowEma[i - 1]) {
+          position = 'LONG';
+          entryPrice = price;
+          signals.push({ time: times[i], side: 'buy', price, reason: 'EMA cross up' });
+        }
+      } else {
+        const returnPct = (price - entryPrice) / entryPrice;
+        let reason = '';
+        if (returnPct <= -stopLossPct) reason = 'Stop loss';
+        else if (returnPct >= takeProfitPct) reason = 'Take profit';
+        else if (fastEma[i] < slowEma[i]) reason = 'EMA cross down';
+        if (reason) {
+          position = 'NONE';
+          signals.push({ time: times[i], side: 'sell', price, reason });
+        }
+      }
+    }
+    return signals;
   }
 
   private simulateTrades(candles: OhlcvData[], params: any): TradeSimResult {
@@ -220,6 +278,11 @@ export class StrategyEvaluatorService {
     const grossLoss = Math.abs(losses.reduce((sum, r) => sum + r, 0));
     const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 3.0 : 0;
 
+    // Compounded net return across the trade series (what the strategy would have
+    // returned if each trade's proceeds rolled into the next), and the win rate.
+    const compoundedReturn = trades.reduce((eq, r) => eq * (1 + r), 1) - 1;
+    const winRate = tradeCount > 0 ? (wins.length / tradeCount) * 100 : 0;
+
     const meanReturn = tradeCount > 0 ? trades.reduce((a, b) => a + b, 0) / tradeCount : 0;
     const stdDev =
       tradeCount > 1
@@ -246,6 +309,8 @@ export class StrategyEvaluatorService {
       calmar: Number(calmar.toFixed(2)),
       profitFactor: Number(profitFactor.toFixed(2)),
       tradeCount,
+      totalReturnPct: Number((compoundedReturn * 100).toFixed(2)),
+      winRate: Number(winRate.toFixed(1)),
     };
   }
 

@@ -34,6 +34,12 @@ export class BacktestResult {
   @Column({ name: 'trade_count', type: 'int' })
   tradeCount: number;
 
+  @Column({ name: 'total_return_pct', type: 'decimal', precision: 10, scale: 2, default: 0 })
+  totalReturnPct: number;
+
+  @Column({ name: 'win_rate', type: 'decimal', precision: 5, scale: 1, default: 0 })
+  winRate: number;
+
   @Column({ name: 'monte_carlo_summary_json', type: 'jsonb', nullable: true })
   monteCarloSummaryJson: Record<string, any>;
 

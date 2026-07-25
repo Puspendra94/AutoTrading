@@ -3,157 +3,339 @@ import Layout from '../layouts/Layout.astro';
 ---
 
 <Layout title="Profile — AI Algorithmic Trading Platform">
-  <div class="profile-page" id="profilePage">
-    <div class="empty-state glass-card" id="profLoading">
-      <span class="spinner"></span>
-      <p>Loading risk guardrails…</p>
+  <div class="mx-auto flex max-w-5xl flex-col gap-5">
+    <div>
+      <h2 class="text-xl font-semibold tracking-tight">Profile</h2>
+      <p class="mt-1 text-sm text-muted">Connect Binance for live trading &amp; account data, and tune the risk guardrails. Market data (chart &amp; prices) works without connecting.</p>
     </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-1 rounded-lg border border-border bg-surface-2 p-1" role="tablist" aria-label="Profile sections">
+      <button id="tabConnector" role="tab" aria-selected="true" class="tab-btn flex-1 rounded-md px-4 py-2 text-sm font-semibold transition-colors">Connector</button>
+      <button id="tabRisk" role="tab" aria-selected="false" class="tab-btn flex-1 rounded-md px-4 py-2 text-sm font-semibold transition-colors">Risk &amp; Guardrails</button>
+    </div>
+
+    <section id="panelConnector" role="tabpanel" class="flex flex-col gap-5">
+      <div id="connBody"><div class="card flex items-center gap-3 p-6 text-sm text-muted"><span class="spinner"></span> Loading connector…</div></div>
+    </section>
+
+    <section id="panelRisk" role="tabpanel" hidden class="flex flex-col gap-5">
+      <div id="riskBody"><div class="card flex items-center gap-3 p-6 text-sm text-muted"><span class="spinner"></span> Loading guardrails…</div></div>
+    </section>
   </div>
 
-  <style>
-    .profile-page { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
-    .prof-head { }
-    .prof-title { font-size: 1.2rem; font-weight: 700; }
-    .prof-sub { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
-
-    .guard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    @media (max-width: 640px) { .guard-grid { grid-template-columns: 1fr; } }
-    .guard { display: flex; flex-direction: column; gap: 0.4rem; }
-    .guard-lbl { font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
-    .guard-hint { font-size: 0.62rem; color: var(--text-dim); }
-    .guard-input-row { display: flex; align-items: center; gap: 0.4rem; }
-    .guard-input-row .text-input { max-width: 130px; }
-    .guard-suffix { font-size: 0.7rem; color: var(--text-muted); }
-
-    .prof-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem; }
-    .ok-text { color: var(--color-bull); font-size: 0.72rem; }
-    .section-title { font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; }
-  </style>
-
   <script>
-    import { apiGet, apiPatch, requireAuth, ApiError } from '../lib/api';
+    import { apiGet, apiPost, apiPatch, requireAuth, ApiError } from '../lib/api';
+    import { onPositionsUpdate } from '../lib/ws';
 
     requireAuth();
 
-    type Provider = { id: string; type: string; hasCredentials?: boolean };
+    type Provider = {
+      id: string; name: string; type: string; status: string;
+      tradingEnabled: boolean; tradingMode?: 'paper' | 'live'; useTestnet?: boolean;
+      hasCredentials?: boolean; killSwitchActive?: boolean; killSwitchReason?: string | null;
+      tradableBalance?: number | null; currency?: string | null; lastSyncedAt?: string | null;
+    };
     type RiskLimit = {
       id: string; providerId: string;
-      dailyLossLimitPct: number | string;
-      maxConcurrentPositionsPerTicker: number;
-      probationSizePct: number | string;
-      probationTradesCount: number;
-      resetBoundary: string;
-      hardStopLossPct: number | string | null;
-      hardTakeProfitPct: number | string | null;
+      dailyLossLimitPct: number | string; maxConcurrentPositionsPerTicker: number;
+      probationSizePct: number | string; probationTradesCount: number;
+      hardStopLossPct: number | string | null; hardTakeProfitPct: number | string | null;
     };
+    type Position = {
+      id: string; ticker?: { symbol: string }; side: 'long' | 'short';
+      entryPrice: number; currentPrice: number; quantity: number;
+      unrealizedPl: number; realizedPl: number; openedAt: string;
+    };
+    type Order = { symbol: string; type: string; side: string; price: string; stopPrice?: string; origQty: string; status: string };
+    type Account = { balances: { asset: string; free: number; locked: number }[]; openOrders: Order[]; totals: { total: number; available: number; inOrders: number; currency: string } };
 
-    const page = document.getElementById('profilePage')!;
-    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
-    const num = (v: number | string | null | undefined) => (v == null || v === '' ? '' : String(Number(v)));
+    const $ = (id: string) => document.getElementById(id)!;
+    const $$ = (id: string) => document.getElementById(id);
+    const esc = (s: string) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
+    const num = (v: any) => (v == null || v === '' ? '' : String(Number(v)));
+    const fmt = (n: number, d = 2) => Number(n).toLocaleString('en-US', { maximumFractionDigits: d });
 
-    async function load() {
-      try {
-        const providers = await apiGet<Provider[]>('/providers');
-        const provider = providers.find((p) => p.type === 'binance') || providers[0];
-        if (!provider) {
-          page.innerHTML = `<div class="glass-card empty-state"><p>No provider yet. Connect Binance on the Connector page first — risk guardrails are configured per provider.</p><a class="btn btn-primary" href="/providers" style="width:fit-content">Go to Connector</a></div>`;
-          return;
-        }
-        const rl = await apiGet<RiskLimit>(`/providers/${provider.id}/risk-limit`);
-        render(provider, rl);
-      } catch (err) {
-        page.innerHTML = `<div class="glass-card empty-state"><p class="error-text">${err instanceof ApiError ? esc(err.message) : 'Failed to load risk guardrails'}</p></div>`;
+    let userProvider: Provider | null = null; // the user's own binance provider (may be null)
+
+    // ---------- Tabs (state reflected in the URL) ----------
+    const tabConnector = $('tabConnector'), tabRisk = $('tabRisk');
+    function selectTab(tab: 'connector' | 'risk', push = true) {
+      const isRisk = tab === 'risk';
+      $('panelConnector').hidden = isRisk;
+      $('panelRisk').hidden = !isRisk;
+      for (const [btn, on] of [[tabConnector, !isRisk], [tabRisk, isRisk]] as const) {
+        btn.setAttribute('aria-selected', String(on));
+        btn.classList.toggle('bg-brand', on);
+        btn.classList.toggle('text-[#04140e]', on);
+        btn.classList.toggle('text-muted', !on);
       }
+      if (push) history.replaceState(null, '', `?tab=${tab}`);
+    }
+    tabConnector.addEventListener('click', () => selectTab('connector'));
+    tabRisk.addEventListener('click', () => selectTab('risk'));
+
+    // ═══════════════ Connector: live account state ═══════════════
+    let accountTimer: number | null = null;
+    let openPositions: Position[] = [];
+    let tradesToday = 0;
+
+    function stopAccountPolling() { if (accountTimer) { clearInterval(accountTimer); accountTimer = null; } }
+
+    // Bottom stat cards — driven by our real execution positions, live via WebSocket.
+    function paintStats() {
+      const pnlEl = $$('stPnl'); if (!pnlEl) return;
+      const pnl = openPositions.reduce((s, p) => s + Number(p.unrealizedPl || 0) + Number(p.realizedPl || 0), 0);
+      pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${fmt(pnl)}`;
+      pnlEl.className = `tabular mt-1.5 text-xl font-bold ${pnl >= 0 ? 'text-brand' : 'text-bear'}`;
+      const oc = $$('stOpenCount'); if (oc) oc.textContent = String(openPositions.length);
+      const tt = $$('stTrades'); if (tt) tt.textContent = String(tradesToday);
+    }
+    onPositionsUpdate((positions) => { openPositions = positions as Position[]; paintStats(); });
+
+    async function loadStats(id: string) {
+      try { openPositions = await apiGet<Position[]>('/execution/positions/open'); } catch { openPositions = []; }
+      try {
+        const all = await apiGet<Position[]>('/execution/positions/all');
+        const today = new Date().toDateString();
+        tradesToday = all.filter((p) => new Date(p.openedAt).toDateString() === today).length;
+      } catch { tradesToday = 0; }
+      paintStats();
     }
 
-    function field(id: string, label: string, value: string, suffix: string, hint: string, opts = 'step="0.1" min="0"') {
-      return `
-        <div class="guard">
-          <span class="guard-lbl">${label}</span>
-          <div class="guard-input-row">
-            <input class="text-input" id="${id}" type="number" ${opts} value="${esc(value)}" />
-            <span class="guard-suffix">${suffix}</span>
+    // Balance cards + Active Orders — live from Binance via /providers/:id/account.
+    const orderPrice = (o: Order) => { const p = Number(o.price); if (p > 0) return fmt(p); const s = Number(o.stopPrice); return s > 0 ? fmt(s) : 'MARKET'; };
+    function paintAccount(acc: Account) {
+      const cur = esc(acc.totals.currency);
+      const setBal = (id: string, v: number) => { const el = $$(id); if (el) el.textContent = `${fmt(v)} ${cur}`; };
+      setBal('stTotal', acc.totals.total);
+      setBal('stAvail', acc.totals.available);
+      setBal('stInOrders', acc.totals.inOrders);
+      const usdt = acc.balances.find((b) => b.asset === 'USDT');
+      const usdtEl = $$('stUsdt'); if (usdtEl) usdtEl.textContent = fmt(usdt ? usdt.free + usdt.locked : acc.totals.total);
+
+      const body = $$('ordersBody'); if (!body) return;
+      if (!acc.openOrders.length) { body.innerHTML = `<tr><td colspan="6" class="px-5 py-10 text-center text-sm text-muted">No active orders on this account.</td></tr>`; return; }
+      body.innerHTML = acc.openOrders.map((o) => `
+        <tr class="border-b border-border/50 transition-colors hover:bg-surface-2/40">
+          <td class="px-5 py-3.5 text-xs font-bold">${esc(o.symbol)}</td>
+          <td class="px-5 py-3.5 text-xs text-muted">${esc(o.type)}</td>
+          <td class="px-5 py-3.5"><span class="badge ${o.side === 'BUY' ? 'badge-brand' : 'badge-bear'}">${esc(o.side)}</span></td>
+          <td class="tabular px-5 py-3.5 text-xs">${orderPrice(o)}</td>
+          <td class="tabular px-5 py-3.5 text-xs">${esc(String(o.origQty))}</td>
+          <td class="px-5 py-3.5"><span class="rounded border border-brand/40 px-1.5 py-0.5 text-[0.65rem] font-semibold tracking-wide text-brand">${esc(o.status)}</span></td>
+        </tr>`).join('');
+    }
+    function paintAccountError(msg: string) {
+      const body = $$('ordersBody'); if (body) body.innerHTML = `<tr><td colspan="6" class="px-5 py-8 text-center text-sm text-bear">${esc(msg)}</td></tr>`;
+      ['stTotal', 'stAvail', 'stInOrders', 'stUsdt'].forEach((id) => { const el = $$(id); if (el) el.textContent = '—'; });
+    }
+    async function refreshAccount(id: string) {
+      try { paintAccount(await apiGet<Account>(`/providers/${id}/account`)); }
+      catch (err) { paintAccountError(err instanceof ApiError ? err.message : 'Failed to load live account.'); }
+    }
+
+    // ---------- Connector: not connected (exact reference form) ----------
+    function renderConnectForm() {
+      stopAccountPolling();
+      $('connBody').innerHTML = `
+        <div class="mx-auto w-full max-w-md py-8">
+          <div class="mb-2 flex items-center gap-2">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-warn" aria-hidden="true"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/></svg>
+            <span class="eyebrow text-warn">Binance API</span>
           </div>
-          <span class="guard-hint">${hint}</span>
+          <h3 class="font-mono text-3xl font-bold tracking-tight">Connect to Binance</h3>
+          <p class="mt-2 text-sm text-muted">Enter your API credentials to enable live trading and account access.</p>
+
+          <form id="connForm" class="mt-7 flex flex-col gap-5 rounded-xl border border-border bg-surface p-6 shadow-[0_1px_1px_rgba(0,0,0,0.2),0_16px_40px_-20px_rgba(0,0,0,0.6)]">
+            <div>
+              <label class="label mb-2 uppercase tracking-widest" for="apiKey">API Key ID</label>
+              <input class="input" id="apiKey" type="text" autocomplete="off" spellcheck="false" placeholder="vmPUZELF…" required />
+            </div>
+            <div>
+              <label class="label mb-2 uppercase tracking-widest" for="apiSecret">Secret Key</label>
+              <div class="relative">
+                <input class="input pr-10" id="apiSecret" type="password" autocomplete="off" spellcheck="false" placeholder="NhqpR29Lp…" required />
+                <button type="button" id="toggleSecret" aria-label="Toggle secret visibility" class="absolute right-3 top-1/2 -translate-y-1/2 text-muted transition-colors hover:text-fg">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex items-start gap-2.5 rounded-lg border border-warn/20 bg-warn/[0.06] p-3.5">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" class="mt-0.5 shrink-0 text-warn" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
+              <p class="text-xs text-muted">Keys are stored securely server-side and used only to sync balance and place orders you authorize. Scope them to spot trading &amp; use read-only + trading permissions only.</p>
+            </div>
+            <p id="connErr" class="text-sm text-bear" hidden></p>
+            <button type="submit" id="connSubmit" class="btn btn-warn w-full py-3 text-sm">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 20 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+              Connect to Binance
+            </button>
+          </form>
         </div>`;
+
+      const form = $('connForm') as HTMLFormElement, errEl = $('connErr'), submit = $('connSubmit') as HTMLButtonElement;
+      const secretInput = $('apiSecret') as HTMLInputElement;
+      $('toggleSecret').addEventListener('click', () => { secretInput.type = secretInput.type === 'password' ? 'text' : 'password'; });
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault(); errEl.hidden = true;
+        const apiKey = ($('apiKey') as HTMLInputElement).value.trim();
+        const apiSecret = secretInput.value.trim();
+        submit.disabled = true; const label = submit.innerHTML; submit.innerHTML = '<span class="spinner"></span>';
+        try {
+          // No testnet toggle in this form → connect to mainnet so real keys return real
+          // balances/orders. Live order placement still requires flipping mode on the Dashboard.
+          await apiPost('/providers', { name: 'Binance', type: 'binance', tradingMode: 'paper', useTestnet: false, apiKey, apiSecret });
+          (window as any).refreshConnection?.();
+          await load();
+        } catch (err) {
+          errEl.hidden = false; errEl.textContent = err instanceof ApiError ? err.message : 'Failed to connect';
+          submit.disabled = false; submit.innerHTML = label;
+        }
+      });
     }
 
-    function render(provider: Provider, rl: RiskLimit) {
-      page.innerHTML = `
-        <div class="prof-head">
-          <h1 class="prof-title">Risk Guardrails</h1>
-          <p class="prof-sub">Hard limits enforced on every order and every live tick for your Binance account. Changes apply immediately.</p>
+    // ---------- Connector: connected (exact reference dashboard, live data) ----------
+    function renderConnected(p: Provider) {
+      const testnet = p.useTestnet !== false;
+      const th = (h: string) => `<th class="px-5 py-3 text-left text-[0.65rem] font-semibold uppercase tracking-widest text-muted">${h}</th>`;
+      const balCard = (label: string, id: string, sub: string) => `
+        <div class="card p-5">
+          <p class="eyebrow">${label}</p>
+          <p id="${id}" class="tabular mt-2 text-lg font-bold">—</p>
+          <p class="mt-1 text-[0.7rem] text-dim">${sub}</p>
+        </div>`;
+      const statCard = (label: string, id: string) => `
+        <div class="card p-5 text-center">
+          <p class="eyebrow">${label}</p>
+          <p id="${id}" class="tabular mt-1.5 text-xl font-bold text-fg">—</p>
+        </div>`;
+
+      $('connBody').innerHTML = `
+        <div class="card flex items-center justify-between px-5 py-4">
+          <div class="flex items-center gap-2.5">
+            <span class="live-dot"></span>
+            <span class="text-sm font-semibold">Binance Connected</span>
+            <span class="badge badge-muted">${testnet ? 'Testnet' : 'Mainnet'} · spot</span>
+          </div>
+          <button id="disconnectBtn" class="btn btn-danger">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="2" y1="2" x2="22" y2="22"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 4.17-2.65"/><path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76"/><path d="M16.85 11.25a10 10 0 0 1 2.22 1.68"/><path d="M5 13a10 10 0 0 1 5.24-2.76"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+            Disconnect
+          </button>
         </div>
 
-        <div class="glass-card">
-          <div class="section-title">Loss & Exposure Limits</div>
-          <div class="guard-grid">
-            ${field('dailyLossLimitPct', 'Max Daily Loss', num(rl.dailyLossLimitPct), '%', 'All trading halts for the day once realized+unrealized loss hits this % of balance.')}
-            ${field('maxConcurrentPositionsPerTicker', 'Max Concurrent Positions', String(rl.maxConcurrentPositionsPerTicker), 'per ticker', 'New entries are rejected beyond this many open positions per ticker.', 'step="1" min="1"')}
+        <div class="grid grid-cols-2 gap-4 md:grid-cols-4">
+          ${balCard('Total Balance', 'stTotal', 'Free + in orders')}
+          ${balCard('Available', 'stAvail', 'Free to trade')}
+          ${balCard('In Orders', 'stInOrders', 'Locked in open orders')}
+          ${balCard('USDT Balance', 'stUsdt', 'Spot wallet')}
+        </div>
+
+        <div class="card overflow-hidden">
+          <div class="flex items-center justify-between border-b border-border px-5 py-3.5">
+            <span class="eyebrow">Active Orders</span>
+            <span class="flex items-center gap-1.5 text-[0.65rem] font-semibold tracking-wide text-brand"><span class="live-dot"></span> LIVE</span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[640px]">
+              <thead><tr class="border-b border-border">${th('Pair')}${th('Type')}${th('Side')}${th('Price')}${th('Qty')}${th('Status')}</tr></thead>
+              <tbody id="ordersBody"><tr><td colspan="6" class="px-5 py-8 text-center text-sm text-muted"><span class="spinner"></span></td></tr></tbody>
+            </table>
           </div>
         </div>
 
-        <div class="glass-card">
-          <div class="section-title">Hard Stop-Loss / Take-Profit (per position)</div>
-          <div class="guard-grid">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          ${statCard('24h PnL', 'stPnl')}
+          ${statCard('Open Positions', 'stOpenCount')}
+          ${statCard('Total Trades Today', 'stTrades')}
+        </div>
+        ${p.killSwitchActive ? `<div class="card flex items-center justify-between gap-3 border-bear/30 bg-bear/[0.05] p-5">
+          <div><div class="eyebrow text-bear">Kill Switch Active</div><div class="mt-0.5 text-xs text-muted">${esc(p.killSwitchReason || 'Manually triggered')}</div></div>
+          <button id="clearKsBtn" class="btn btn-ghost">Clear</button></div>` : ''}`;
+
+      // Populate live, then keep refreshing: account every 15s, stats live via WS.
+      paintStats();
+      loadStats(p.id);
+      refreshAccount(p.id);
+      stopAccountPolling();
+      accountTimer = window.setInterval(() => refreshAccount(p.id), 15000);
+
+      $('disconnectBtn').addEventListener('click', async (e) => {
+        const btn = e.currentTarget as HTMLButtonElement; btn.disabled = true; const l = btn.innerHTML; btn.innerHTML = '<span class="spinner"></span>';
+        try { stopAccountPolling(); await apiPost(`/providers/${p.id}/disconnect`); (window as any).refreshConnection?.(); await load(); }
+        catch { btn.disabled = false; btn.innerHTML = l; }
+      });
+      $$('clearKsBtn')?.addEventListener('click', async () => { try { await apiPost(`/providers/${p.id}/kill-switch/clear`); await load(); } catch {} });
+    }
+
+    // ---------- Risk & Guardrails tab ----------
+    function field(id: string, label: string, value: string, suffix: string, hint: string, opts = 'step="0.1" min="0"') {
+      return `<div class="flex flex-col gap-1.5">
+        <label class="label mb-0" for="${id}">${label}</label>
+        <div class="flex items-center gap-2"><input class="input max-w-[130px]" id="${id}" type="number" inputmode="decimal" ${opts} value="${esc(value)}" /><span class="text-xs text-muted">${suffix}</span></div>
+        <span class="text-[0.7rem] text-dim">${hint}</span></div>`;
+    }
+    async function renderRisk() {
+      if (!userProvider) {
+        $('riskBody').innerHTML = `<div class="card flex flex-col items-start gap-3 p-6"><p class="text-sm text-muted">Connect Binance on the Connector tab first — risk guardrails apply per trading provider.</p><button id="goConnector" class="btn btn-primary">Go to Connector</button></div>`;
+        $$('goConnector')?.addEventListener('click', () => selectTab('connector'));
+        return;
+      }
+      let rl: RiskLimit;
+      try { rl = await apiGet<RiskLimit>(`/providers/${userProvider.id}/risk-limit`); }
+      catch (err) { $('riskBody').innerHTML = `<div class="card p-6"><p class="text-sm text-bear">${err instanceof ApiError ? esc(err.message) : 'Failed to load guardrails'}</p></div>`; return; }
+
+      $('riskBody').innerHTML = `
+        <div class="card p-5"><div class="eyebrow mb-4">Loss &amp; Exposure Limits</div>
+          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+            ${field('dailyLossLimitPct', 'Max Daily Loss', num(rl.dailyLossLimitPct), '%', 'All trading halts for the day once realized+unrealized loss hits this % of balance.')}
+            ${field('maxConcurrentPositionsPerTicker', 'Max Concurrent Positions', String(rl.maxConcurrentPositionsPerTicker), 'per ticker', 'New entries rejected beyond this many open positions per ticker.', 'step="1" min="1"')}
+          </div></div>
+        <div class="card p-5"><div class="eyebrow mb-4">Hard Stop-Loss / Take-Profit (per position)</div>
+          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
             ${field('hardStopLossPct', 'Hard Stop-Loss', num(rl.hardStopLossPct), '%', 'Any open position is force-closed at this loss %, regardless of strategy. Blank = no hard cap.')}
             ${field('hardTakeProfitPct', 'Hard Take-Profit', num(rl.hardTakeProfitPct), '%', 'Any open position is force-closed at this gain %. Blank = let the strategy decide.')}
-          </div>
-        </div>
-
-        <div class="glass-card">
-          <div class="section-title">New-Strategy Probation</div>
-          <div class="guard-grid">
+          </div></div>
+        <div class="card p-5"><div class="eyebrow mb-4">New-Strategy Probation</div>
+          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
             ${field('probationSizePct', 'Probation Size', num(rl.probationSizePct), '% of full', 'Newly promoted strategies trade at this fraction of full size during probation.')}
-            ${field('probationTradesCount', 'Probation Trades', String(rl.probationTradesCount), 'trades', 'Number of trades a new strategy stays at probation size before scaling up.', 'step="1" min="0"')}
-          </div>
-        </div>
-
-        <div class="prof-actions">
-          <button class="btn btn-primary" id="saveBtn">Save Guardrails</button>
-          <p class="error-text" id="saveErr" hidden></p>
-          <p class="ok-text" id="saveOk" hidden></p>
+            ${field('probationTradesCount', 'Probation Trades', String(rl.probationTradesCount), 'trades', 'Trades a new strategy stays at probation size before scaling up.', 'step="1" min="0"')}
+          </div></div>
+        <div class="flex items-center gap-3">
+          <button id="saveRisk" class="btn btn-primary">Save Guardrails</button>
+          <p id="riskErr" class="text-sm text-bear" hidden></p><p id="riskOk" class="text-sm text-brand" hidden></p>
         </div>`;
 
-      document.getElementById('saveBtn')!.addEventListener('click', () => save(provider.id));
+      const readNum = (id: string) => { const v = ($(id) as HTMLInputElement).value.trim(); return v === '' ? null : Number(v); };
+      $('saveRisk').addEventListener('click', async () => {
+        const errEl = $('riskErr'), okEl = $('riskOk'), btn = $('saveRisk') as HTMLButtonElement;
+        errEl.hidden = true; okEl.hidden = true; btn.disabled = true; const l = btn.textContent; btn.innerHTML = '<span class="spinner"></span>';
+        try {
+          await apiPatch(`/providers/${userProvider!.id}/risk-limit`, {
+            dailyLossLimitPct: readNum('dailyLossLimitPct'), maxConcurrentPositionsPerTicker: readNum('maxConcurrentPositionsPerTicker'),
+            probationSizePct: readNum('probationSizePct'), probationTradesCount: readNum('probationTradesCount'),
+            hardStopLossPct: readNum('hardStopLossPct'), hardTakeProfitPct: readNum('hardTakeProfitPct'),
+          });
+          okEl.hidden = false; okEl.textContent = 'Guardrails saved.';
+        } catch (err) { errEl.hidden = false; errEl.textContent = err instanceof ApiError ? err.message : 'Failed to save'; }
+        finally { btn.disabled = false; btn.textContent = l; }
+      });
     }
 
-    function readNum(id: string): number | null {
-      const v = (document.getElementById(id) as HTMLInputElement).value.trim();
-      return v === '' ? null : Number(v);
-    }
-
-    async function save(providerId: string) {
-      const errEl = document.getElementById('saveErr')!;
-      const okEl = document.getElementById('saveOk')!;
-      const btn = document.getElementById('saveBtn') as HTMLButtonElement;
-      errEl.hidden = true; okEl.hidden = true;
-
-      const payload = {
-        dailyLossLimitPct: readNum('dailyLossLimitPct'),
-        maxConcurrentPositionsPerTicker: readNum('maxConcurrentPositionsPerTicker'),
-        probationSizePct: readNum('probationSizePct'),
-        probationTradesCount: readNum('probationTradesCount'),
-        // null clears the hard cap; a number sets it.
-        hardStopLossPct: readNum('hardStopLossPct'),
-        hardTakeProfitPct: readNum('hardTakeProfitPct'),
-      };
-
-      btn.disabled = true;
-      const label = btn.textContent;
-      btn.innerHTML = '<span class="spinner"></span>';
+    // ---------- Load ----------
+    async function load() {
+      stopAccountPolling();
       try {
-        await apiPatch(`/providers/${providerId}/risk-limit`, payload);
-        okEl.hidden = false; okEl.textContent = 'Guardrails saved.';
+        const providers = await apiGet<Provider[]>('/providers');
+        userProvider = providers.find((p) => p.type === 'binance' && p.hasCredentials) || providers.find((p) => p.type === 'binance') || null;
+        const connected = providers.find((p) => p.type === 'binance' && p.hasCredentials);
+        if (connected) renderConnected(connected); else renderConnectForm();
+        await renderRisk();
       } catch (err) {
-        errEl.hidden = false;
-        errEl.textContent = err instanceof ApiError ? err.message : 'Failed to save guardrails';
-      } finally {
-        btn.disabled = false;
-        btn.textContent = label;
+        $('connBody').innerHTML = `<div class="card p-6"><p class="text-sm text-bear">${err instanceof ApiError ? esc(err.message) : 'Failed to load'}</p></div>`;
       }
     }
 
+    selectTab(new URLSearchParams(location.search).get('tab') === 'risk' ? 'risk' : 'connector', false);
     load();
   </script>
 </Layout>

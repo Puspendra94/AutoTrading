@@ -5,6 +5,7 @@ import { Ticker, TickerStatus } from '../../entities/ticker.entity';
 import { Position, PositionStatus, PositionSide } from '../../entities/position.entity';
 import { BinanceAdapter, LiveKlineTick } from '../provider/adapters/binance.adapter';
 import { MarketDataService } from './market-data.service';
+import { MarketDataSeedService } from './market-data-seed.service';
 import { TradingGateway } from '../../websockets/trading.gateway';
 import { StrategyEngineService } from '../strategy/strategy-engine.service';
 import { ExecutionService } from '../risk-execution/execution.service';
@@ -25,16 +26,26 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(Position) private readonly positionRepo: Repository<Position>,
     private readonly binanceAdapter: BinanceAdapter,
     private readonly marketDataService: MarketDataService,
+    private readonly marketDataSeedService: MarketDataSeedService,
     private readonly tradingGateway: TradingGateway,
     private readonly strategyEngineService: StrategyEngineService,
     private readonly executionService: ExecutionService,
   ) {}
 
   async onModuleInit() {
+    // Ensure the public BTCUSDT market-data ticker exists first (no API key needed), so the
+    // dashboard chart + live price work out of the box, independent of any connected trading
+    // provider. See MarketDataSeedService.
+    try {
+      await this.marketDataSeedService.ensureSystemMarketDataTicker();
+    } catch (err) {
+      this.logger.error(`Market-data seed failed: ${err.message}`);
+    }
+
     // Stream for any ticker that has real data behind it (ACTIVE = live-strategy-managed,
     // ONBOARDING = added but strategy generation hasn't completed yet) — the dashboard's
-    // live chart (spec 16.1) is useful for any managed ticker, not only ones with a live
-    // strategy. INACTIVE means backfill failed; nothing to stream.
+    // live chart is useful for any managed ticker, not only ones with a live strategy.
+    // INACTIVE means backfill failed; nothing to stream.
     const streamableTickers = await this.tickerRepo.find({ where: { status: Not(TickerStatus.INACTIVE) } });
     for (const ticker of streamableTickers) {
       this.startStream(ticker);

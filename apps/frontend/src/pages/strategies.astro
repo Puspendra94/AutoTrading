@@ -3,98 +3,44 @@ import Layout from '../layouts/Layout.astro';
 ---
 
 <Layout title="Alpha — AI Algorithmic Trading Platform">
-  <div class="alpha-page">
-    <div class="alpha-header">
+  <div class="mx-auto flex max-w-4xl flex-col gap-5 font-mono">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="ah-title">Alpha Strategies</h1>
-        <p class="ah-sub" id="ahSub">Loading…</p>
+        <h2 class="text-xl font-bold tracking-tight">Alpha Strategies</h2>
+        <p id="ahSub" class="mt-1 text-sm text-muted">Loading…</p>
       </div>
-      <div class="ah-actions">
-        <span class="spend-chip" id="spendChip" title="Total LLM spend">LLM: —</span>
-        <button class="btn btn-primary" id="genBtn">⚡ Generate New Strategy</button>
-      </div>
+      <button id="genBtn" class="btn btn-primary">⚡ Generate New Strategy</button>
     </div>
 
-    <div id="alphaError" class="error-text" hidden></div>
+    <p id="alphaError" class="text-sm text-bear" hidden></p>
 
-    <!-- Evaluation policy thresholds -->
-    <div class="glass-card policy-strip" id="policyStrip">
-      <p class="hint-text">Loading policy thresholds…</p>
+    <!-- Policy thresholds -->
+    <div id="policyStrip" class="card flex flex-wrap gap-x-8 gap-y-3 px-5 py-4">
+      <p class="text-sm text-muted">Loading policy thresholds…</p>
     </div>
 
-    <!-- Active strategy -->
     <div id="activeWrap"></div>
 
-    <!-- All strategies (paginated) -->
     <div>
-      <div class="list-head">
-        <span class="micro">All Strategies</span>
-        <span class="micro" id="listRange"></span>
+      <div class="mb-2 flex items-center justify-between">
+        <span class="eyebrow">All Strategies</span>
+        <span id="listRange" class="text-xs text-muted"></span>
       </div>
-      <div class="glass-card list-card" id="listCard">
-        <p class="hint-text pad">Loading strategies…</p>
-      </div>
-      <div class="pager" id="pager"></div>
+      <div id="listCard" class="card overflow-hidden"><p class="p-4 text-sm text-muted">Loading strategies…</p></div>
+      <div id="pager" class="mt-3 flex justify-center gap-1.5"></div>
     </div>
   </div>
 
   <!-- Generation pipeline modal -->
-  <div class="modal-backdrop" id="genModal" hidden>
-    <div class="glass-card modal-card gen-modal">
-      <div class="gen-top"><span class="spinner"></span><span class="gen-eyebrow">Generating Alpha</span></div>
-      <h3 class="gen-name" id="genName">New Strategy</h3>
-      <div class="gen-bar"><div class="gen-bar-fill" id="genBarFill"></div></div>
-      <div class="gen-stages" id="genStages"></div>
-      <p class="hint-text" style="text-align:center">Real LLM generation + backtest running · do not close</p>
+  <div id="genModal" hidden class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" style="overscroll-behavior: contain;">
+    <div class="card w-full max-w-md p-6" role="dialog" aria-modal="true" aria-label="Generating strategy">
+      <div class="flex items-center gap-2"><span class="spinner"></span><span class="eyebrow text-brand">Generating Alpha</span></div>
+      <h3 id="genName" class="mt-2 text-lg font-bold">New Strategy</h3>
+      <div class="my-4 h-1.5 overflow-hidden rounded-full bg-surface-2"><div id="genBarFill" class="h-full w-0 rounded-full bg-brand transition-[width] duration-500"></div></div>
+      <div id="genStages" class="flex flex-col gap-2.5"></div>
+      <p class="mt-4 text-center text-xs text-muted">Real LLM generation + backtest running · do not close</p>
     </div>
   </div>
-
-  <style>
-    .alpha-page { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.1rem; }
-    .alpha-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-    .ah-title { font-size: 1.2rem; font-weight: 700; }
-    .ah-sub { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
-    .ah-actions { display: flex; align-items: center; gap: 0.75rem; }
-    .spend-chip { font-size: 0.62rem; letter-spacing: 0.06em; color: var(--color-bull); border: 1px solid rgba(0,200,150,0.3); border-radius: 5px; padding: 0.3rem 0.5rem; }
-
-    .policy-strip { display: flex; flex-wrap: wrap; gap: 1.5rem; padding: 0.85rem 1.1rem; }
-    .pol { display: flex; flex-direction: column; gap: 0.1rem; }
-    .pol-lbl { font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
-    .pol-val { font-size: 0.85rem; font-weight: 700; }
-
-    .micro { font-size: 0.58rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); }
-    .list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
-    .list-card { padding: 0; overflow: hidden; }
-    .pad { padding: 1rem; }
-
-    .strat-row { padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
-    .strat-row:last-child { border-bottom: none; }
-    .strat-row.active { background: rgba(0, 200, 150, 0.05); }
-    .sr-name { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.82rem; }
-    .sr-desc { font-size: 0.66rem; color: var(--text-muted); margin: 0.25rem 0 0.4rem; }
-    .sr-metrics { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.66rem; color: var(--text-muted); }
-    .sr-metrics .mono { color: var(--text-main); }
-
-    .active-card { border-color: rgba(0, 200, 150, 0.3); }
-
-    .pager { display: flex; justify-content: center; gap: 0.4rem; margin-top: 0.85rem; }
-    .pager button { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-muted); cursor: pointer; font-family: var(--font-mono); font-size: 0.72rem; }
-    .pager button.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,200,150,0.1); }
-    .pager button:disabled { opacity: 0.3; cursor: not-allowed; }
-
-    /* Modal */
-    .gen-modal { gap: 0.85rem; }
-    .gen-top { display: flex; align-items: center; gap: 0.5rem; }
-    .gen-eyebrow { font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-cyan); }
-    .gen-name { font-size: 1.05rem; font-weight: 700; }
-    .gen-bar { height: 5px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden; }
-    .gen-bar-fill { height: 100%; width: 0%; background: var(--accent-cyan); transition: width 0.4s ease; }
-    .gen-stages { display: flex; flex-direction: column; gap: 0.55rem; }
-    .gen-stage { display: flex; align-items: center; gap: 0.6rem; font-size: 0.75rem; color: var(--text-muted); }
-    .gen-stage.done { color: var(--text-main); }
-    .gen-stage.running { color: var(--color-warning); }
-    .gen-ico { width: 14px; height: 14px; flex-shrink: 0; }
-  </style>
 
   <script>
     import { apiGet, apiPost, requireAuth, ApiError } from '../lib/api';
@@ -103,190 +49,175 @@ import Layout from '../layouts/Layout.astro';
     requireAuth();
 
     type Policy = { name: string; minSharpe: number; maxDrawdownPct: number; minProfitFactor: number; minTradeCount: number; isActive: boolean };
-    type Backtest = { sharpe: number; sortino: number; maxDrawdown: number; profitFactor: number; tradeCount: number; passedEvaluationGate: boolean };
+    type Backtest = { sharpe: number; sortino: number; maxDrawdown: number; profitFactor: number; tradeCount: number; totalReturnPct: number; winRate: number; passedEvaluationGate: boolean };
     type Strategy = { id: string; version: number; status: string; executionMode: string; createdAt: string; parametersJson?: any };
+    type StrategyRow = { strategy: Strategy; backtest: Backtest | null };
 
     const PER_PAGE = 5;
     const STAGES = ['Checking active trades', 'Generating alpha signals', 'Backtesting historical data', 'Verifying on live data', 'Applying evaluation gate', 'Promoting strategy'];
+    const $ = (id: string) => document.getElementById(id)!;
+    const esc = (s: string) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
+    const nameOf = (s: Strategy) => s.parametersJson?.strategyName || `Strategy v${s.version}`;
+    const descOf = (s: Strategy) => s.parametersJson?.reasoning || modeLabel(s.executionMode);
+    const modeLabel = (m: string) => (m === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live');
+    const isoDate = (d: string) => new Date(d).toISOString().slice(0, 10);
 
-    const alphaError = document.getElementById('alphaError')!;
-    const ahSub = document.getElementById('ahSub')!;
-    const activeWrap = document.getElementById('activeWrap')!;
-    const listCard = document.getElementById('listCard')!;
-    const pager = document.getElementById('pager')!;
-    const listRange = document.getElementById('listRange')!;
+    const playIcon = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 4 20 12 6 20"/></svg>';
 
-    let tickerId: string | null = null;
-    let allStrategies: Strategy[] = [];
-    let activeId: string | null = null;
-    let activeBacktest: Backtest | null = null;
-    let pg = 1;
+    let tickerId: string | null = null, strategyRows: StrategyRow[] = [], activeId: string | null = null, pg = 1;
 
-    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
-    function nameOf(s: Strategy): string { return s.parametersJson?.strategyName || `Strategy v${s.version}`; }
-    function modeLabel(m: string): string { return m === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live'; }
+    // Shared metric line: signed return (coloured) · win rate · sharpe · trades · date.
+    // Falls back to a muted "awaiting backtest" note when a version has no backtest yet.
+    function metricsRow(bt: Backtest | null, createdAt: string): string {
+      const date = isoDate(createdAt);
+      if (!bt) return `<div class="mt-2 text-xs text-dim tabular">Awaiting backtest · ${date}</div>`;
+      const ret = Number(bt.totalReturnPct);
+      const retCls = ret >= 0 ? 'text-brand' : 'text-bear';
+      const sign = ret >= 0 ? '+' : '';
+      return `<div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted tabular">
+        <span class="font-bold ${retCls}">${sign}${ret.toFixed(1)}%</span>
+        <span>WR: ${Number(bt.winRate).toFixed(1)}%</span>
+        <span>Sharpe: ${Number(bt.sharpe).toFixed(2)}</span>
+        <span>${bt.tradeCount} trades</span>
+        <span>${date}</span>
+      </div>`;
+    }
 
-    // ---- Policy strip ----
     async function loadPolicy() {
-      const el = document.getElementById('policyStrip')!;
       try {
         const policies = await apiGet<Policy[]>('/strategies/policies');
         const a = policies.find((p) => p.isActive) || policies[0];
-        if (!a) { el.innerHTML = `<p class="hint-text">No evaluation policy configured.</p>`; return; }
-        el.innerHTML = `
-          <div class="pol"><span class="pol-lbl">Policy</span><span class="pol-val text-bull">${esc(a.name)}</span></div>
-          <div class="pol"><span class="pol-lbl">Min Sharpe</span><span class="pol-val mono">≥ ${Number(a.minSharpe).toFixed(2)}</span></div>
-          <div class="pol"><span class="pol-lbl">Max Drawdown</span><span class="pol-val mono">≤ ${Number(a.maxDrawdownPct).toFixed(1)}%</span></div>
-          <div class="pol"><span class="pol-lbl">Min Profit Factor</span><span class="pol-val mono">≥ ${Number(a.minProfitFactor).toFixed(2)}</span></div>
-          <div class="pol"><span class="pol-lbl">Min Trades</span><span class="pol-val mono">≥ ${a.minTradeCount}</span></div>`;
-      } catch { el.innerHTML = `<p class="hint-text">Failed to load policy thresholds.</p>`; }
+        if (!a) { $('policyStrip').innerHTML = `<p class="text-sm text-muted">No evaluation policy configured.</p>`; return; }
+        const pol = (label: string, val: string, cls = 'text-fg') => `<div class="flex flex-col gap-0.5"><span class="eyebrow">${label}</span><span class="tabular text-sm font-bold ${cls}">${val}</span></div>`;
+        $('policyStrip').innerHTML =
+          pol('Policy', esc(a.name), 'text-brand') + pol('Min Sharpe', `≥ ${Number(a.minSharpe).toFixed(2)}`) +
+          pol('Max Drawdown', `≤ ${Number(a.maxDrawdownPct).toFixed(1)}%`) + pol('Min Profit Factor', `≥ ${Number(a.minProfitFactor).toFixed(2)}`) +
+          pol('Min Trades', `≥ ${a.minTradeCount}`);
+      } catch { $('policyStrip').innerHTML = `<p class="text-sm text-muted">Failed to load policy thresholds.</p>`; }
     }
 
-    // ---- LLM spend chip ----
-    async function loadSpend() {
-      const chip = document.getElementById('spendChip')!;
-      try {
-        const s = await apiGet<{ totalCostUsd: number; totalCalls: number }>('/llm/cost-summary');
-        chip.textContent = `LLM: $${Number(s.totalCostUsd).toFixed(4)} · ${s.totalCalls} calls`;
-      } catch { chip.textContent = 'LLM: n/a'; }
-    }
-
-    // ---- Strategies ----
     function renderActive() {
-      const active = allStrategies.find((s) => s.id === activeId);
-      if (!active) { activeWrap.innerHTML = ''; return; }
-      const bt = activeBacktest;
-      activeWrap.innerHTML = `
-        <div class="list-head"><span class="micro">Active Strategy</span></div>
-        <div class="glass-card active-card">
-          <div class="strat-row active" style="border:none">
-            <div>
-              <div class="sr-name">★ ${esc(nameOf(active))} <span class="badge badge-bull">ACTIVE</span></div>
-              <div class="sr-desc">v${active.version} · ${modeLabel(active.executionMode)}</div>
-              <div class="sr-metrics">
-                ${bt ? `
-                <span>Sharpe <span class="mono">${Number(bt.sharpe).toFixed(2)}</span></span>
-                <span>Sortino <span class="mono">${Number(bt.sortino).toFixed(2)}</span></span>
-                <span>Max DD <span class="mono">${Number(bt.maxDrawdown).toFixed(1)}%</span></span>
-                <span>Profit Factor <span class="mono">${Number(bt.profitFactor).toFixed(2)}</span></span>
-                <span>Trades <span class="mono">${bt.tradeCount}</span></span>
-                <span>Gate <span class="mono ${bt.passedEvaluationGate ? 'text-bull' : 'text-bear'}">${bt.passedEvaluationGate ? 'PASSED' : 'FAILED'}</span></span>
-                ` : '<span>No backtest metrics recorded.</span>'}
-              </div>
-            </div>
+      const row = strategyRows.find((r) => r.strategy.id === activeId);
+      if (!row) { $('activeWrap').innerHTML = ''; return; }
+      const s = row.strategy;
+      $('activeWrap').innerHTML = `
+        <div class="mb-2 flex items-center gap-2 eyebrow"><span class="h-1.5 w-1.5 rounded-full bg-brand"></span>Active Strategy</div>
+        <div class="card border-brand/30 bg-brand/[0.03] p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-warn" aria-hidden="true">★</span>
+            <span class="text-[0.95rem] font-bold">${esc(nameOf(s))}</span>
+            <span class="badge badge-brand">ACTIVE</span>
           </div>
+          <div class="mt-1 truncate text-xs text-muted">${esc(descOf(s))}</div>
+          ${metricsRow(row.backtest, s.createdAt)}
         </div>`;
     }
 
     function renderList() {
-      const inactive = allStrategies.filter((s) => s.id !== activeId);
+      const inactive = strategyRows.filter((r) => r.strategy.id !== activeId);
       const totalPages = Math.max(1, Math.ceil(inactive.length / PER_PAGE));
       if (pg > totalPages) pg = totalPages;
       const paged = inactive.slice((pg - 1) * PER_PAGE, pg * PER_PAGE);
+      $('listRange').textContent = inactive.length ? `${(pg - 1) * PER_PAGE + 1}–${Math.min(pg * PER_PAGE, inactive.length)} of ${inactive.length}` : '';
 
-      listRange.textContent = inactive.length ? `${(pg - 1) * PER_PAGE + 1}–${Math.min(pg * PER_PAGE, inactive.length)} of ${inactive.length}` : '';
+      $('listCard').innerHTML = !inactive.length
+        ? `<p class="p-4 text-sm text-muted">No other strategy versions yet.</p>`
+        : paged.map((r) => {
+            const s = r.strategy;
+            return `
+            <div class="flex items-start justify-between gap-4 border-b border-border/60 px-4 py-4 last:border-0">
+              <div class="min-w-0">
+                <div class="text-sm font-bold text-fg">${esc(nameOf(s))}</div>
+                <div class="mt-0.5 truncate text-xs text-muted">${esc(descOf(s))}</div>
+                ${metricsRow(r.backtest, s.createdAt)}
+              </div>
+              <button data-activate="${s.id}" class="inline-flex flex-shrink-0 items-center gap-1.5 rounded-md border border-brand/40 px-3 py-1.5 text-xs font-semibold text-brand transition-colors hover:bg-brand/10 disabled:opacity-40">
+                ${playIcon} Activate
+              </button>
+            </div>`;
+          }).join('');
 
-      if (!inactive.length) {
-        listCard.innerHTML = `<p class="hint-text pad">No other strategy versions yet.</p>`;
-      } else {
-        listCard.innerHTML = paged.map((s) => `
-          <div class="strat-row">
-            <div>
-              <div class="sr-name">${esc(nameOf(s))}</div>
-              <div class="sr-desc">v${s.version} · ${modeLabel(s.executionMode)} · ${new Date(s.createdAt).toLocaleDateString()}</div>
-            </div>
-            <span class="badge ${s.status === 'live' ? 'badge-bull' : s.status === 'retired' ? 'badge-bear' : 'badge-info'}">${esc(s.status.toUpperCase())}</span>
-          </div>`).join('');
-      }
+      $('listCard').querySelectorAll<HTMLButtonElement>('button[data-activate]').forEach((b) =>
+        b.addEventListener('click', () => activate(b.dataset.activate!, b)));
 
-      pager.innerHTML = totalPages > 1 ? (() => {
-        let h = `<button ${pg === 1 ? 'disabled' : ''} data-pg="${pg - 1}">‹</button>`;
-        for (let n = 1; n <= totalPages; n++) h += `<button class="${n === pg ? 'active' : ''}" data-pg="${n}">${n}</button>`;
-        h += `<button ${pg === totalPages ? 'disabled' : ''} data-pg="${pg + 1}">›</button>`;
-        return h;
+      $('pager').innerHTML = totalPages > 1 ? (() => {
+        const b = (n: number, label: string, disabled = false, active = false) =>
+          `<button ${disabled ? 'disabled' : ''} data-pg="${n}" class="h-8 min-w-8 rounded-md border px-2 text-xs font-semibold transition-colors ${active ? 'border-brand bg-brand/10 text-brand' : 'border-border text-muted hover:text-fg'} disabled:opacity-30">${label}</button>`;
+        let h = b(pg - 1, '‹', pg === 1);
+        for (let n = 1; n <= totalPages; n++) h += b(n, String(n), false, n === pg);
+        return h + b(pg + 1, '›', pg === totalPages);
       })() : '';
-      pager.querySelectorAll<HTMLButtonElement>('button[data-pg]').forEach((b) =>
-        b.addEventListener('click', () => { pg = Number(b.dataset.pg); renderList(); }));
+      $('pager').querySelectorAll<HTMLButtonElement>('button[data-pg]').forEach((b) => b.addEventListener('click', () => { pg = Number(b.dataset.pg); renderList(); }));
+    }
+
+    async function activate(strategyId: string, btn: HTMLButtonElement) {
+      if (!confirm('Activate this strategy version? The currently active strategy will be retired.')) return;
+      $('alphaError').hidden = true;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner" style="width:13px;height:13px"></span> Activating…`;
+      try {
+        await apiPost(`/strategies/${strategyId}/activate`);
+        await loadStrategies(); // re-renders the whole list, so the button is replaced
+        (window as any).refreshActiveStrategy?.(); // sync the header chip with the swap
+      } catch (err) {
+        btn.disabled = false; btn.innerHTML = `${playIcon} Activate`;
+        $('alphaError').hidden = false; $('alphaError').textContent = err instanceof ApiError ? err.message : 'Activation failed';
+      }
     }
 
     async function loadStrategies() {
       if (!tickerId) return;
       try {
-        const [all, active] = await Promise.all([
-          apiGet<Strategy[]>(`/strategies/ticker/${tickerId}/all`),
-          apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${tickerId}/active`),
-        ]);
-        allStrategies = all.sort((a, b) => b.version - a.version);
-        activeId = active?.strategy?.id ?? null;
-        activeBacktest = active?.backtest ?? null;
-        ahSub.textContent = `${all.length} total · ${activeId ? '1 active' : 'none active'} · BTCUSDT`;
-        renderActive();
-        renderList();
-      } catch (err) {
-        listCard.innerHTML = `<p class="hint-text pad">Failed to load strategies.</p>`;
-      }
+        strategyRows = (await apiGet<StrategyRow[]>(`/strategies/ticker/${tickerId}/all`))
+          .sort((a, b) => b.strategy.version - a.strategy.version);
+        activeId = strategyRows.find((r) => r.strategy.status === 'live')?.strategy.id ?? null;
+        $('ahSub').textContent = `${strategyRows.length} total · ${activeId ? '1 active' : 'none active'}`;
+        renderActive(); renderList();
+      } catch { $('listCard').innerHTML = `<p class="p-4 text-sm text-muted">Failed to load strategies.</p>`; }
     }
 
-    // ---- Generation pipeline ----
-    const genModal = document.getElementById('genModal')!;
-    const genStagesEl = document.getElementById('genStages')!;
-    const genBarFill = document.getElementById('genBarFill')!;
-    const genNameEl = document.getElementById('genName')!;
-    const genBtn = document.getElementById('genBtn') as HTMLButtonElement;
-
-    const checkSvg = '<svg class="gen-ico" viewBox="0 0 24 24" fill="none" stroke="#00c896" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-    const dotSvg = '<svg class="gen-ico" viewBox="0 0 24 24" fill="none" stroke="#3d4d6b" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>';
-    const spinSpan = '<span class="spinner" style="width:14px;height:14px"></span>';
-
+    // Pipeline modal
+    const check = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#00c896" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+    const dot = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#55698f" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/></svg>';
+    const spin = '<span class="spinner" style="width:15px;height:15px"></span>';
     function paintStages(current: number) {
-      genStagesEl.innerHTML = STAGES.map((label, i) => {
-        const cls = i < current ? 'done' : i === current ? 'running' : '';
-        const ico = i < current ? checkSvg : i === current ? spinSpan : dotSvg;
-        return `<div class="gen-stage ${cls}">${ico}<span>${label}</span></div>`;
+      $('genStages').innerHTML = STAGES.map((label, i) => {
+        const done = i < current, running = i === current;
+        return `<div class="flex items-center gap-2.5 text-sm ${done ? 'text-fg' : running ? 'text-warn' : 'text-muted'}">${done ? check : running ? spin : dot}<span>${label}</span></div>`;
       }).join('');
-      genBarFill.style.width = `${Math.round((current / STAGES.length) * 100)}%`;
+      ($('genBarFill') as HTMLElement).style.width = `${Math.round((current / STAGES.length) * 100)}%`;
     }
-
     async function generate() {
       if (!tickerId) return;
-      alphaError.hidden = true;
-      genNameEl.textContent = 'New Strategy';
-      genModal.hidden = false;
-      genBtn.disabled = true;
-
-      // Staged affordance advances on a timer while the real (single-call) backend
-      // pipeline runs; stalls on the last visible stage until the request resolves.
-      let cur = 0;
-      paintStages(cur);
+      $('alphaError').hidden = true; $('genName').textContent = 'New Strategy'; $('genModal').hidden = false;
+      const genBtn = $('genBtn') as HTMLButtonElement; genBtn.disabled = true;
+      let cur = 0; paintStages(cur);
       const timer = setInterval(() => { if (cur < STAGES.length - 1) { cur++; paintStages(cur); } }, 1200);
-
       try {
-        await apiPost(`/strategies/ticker/${tickerId}/generate`);
-        clearInterval(timer);
-        paintStages(STAGES.length);
-        await Promise.all([loadStrategies(), loadSpend()]);
-        setTimeout(() => { genModal.hidden = true; genBtn.disabled = false; }, 700);
+        const res = await apiPost<{ saved: boolean; attempts?: number; message?: string; evaluation?: any }>(`/strategies/ticker/${tickerId}/generate`);
+        clearInterval(timer); paintStages(STAGES.length);
+        await loadStrategies();
+        (window as any).refreshLlmSpend?.(); (window as any).refreshActiveStrategy?.();
+        // Gate-before-save: nothing is persisted unless a generated candidate clears the gate.
+        if (res && res.saved === false) {
+          $('genModal').hidden = true; genBtn.disabled = false;
+          const sh = res.evaluation ? ` (best Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)})` : '';
+          $('alphaError').hidden = false;
+          $('alphaError').textContent = (res.message || 'No generated strategy passed the evaluation gate.') + sh;
+          return;
+        }
+        setTimeout(() => { $('genModal').hidden = true; genBtn.disabled = false; }, 700);
       } catch (err) {
-        clearInterval(timer);
-        genModal.hidden = true;
-        genBtn.disabled = false;
-        alphaError.hidden = false;
-        alphaError.textContent = err instanceof ApiError ? err.message : 'Strategy generation failed';
+        clearInterval(timer); $('genModal').hidden = true; genBtn.disabled = false;
+        $('alphaError').hidden = false; $('alphaError').textContent = err instanceof ApiError ? err.message : 'Strategy generation failed';
       }
     }
-    genBtn.addEventListener('click', generate);
+    $('genBtn').addEventListener('click', generate);
 
-    // ---- Init ----
     (async () => {
       loadPolicy();
-      loadSpend();
       const ticker = await resolveBtcTicker();
-      if (!ticker) {
-        genBtn.disabled = true;
-        ahSub.textContent = 'No BTCUSDT ticker — connect Binance first.';
-        listCard.innerHTML = `<p class="hint-text pad">Connect Binance on the Connector page to begin generating strategies.</p>`;
-        return;
-      }
+      if (!ticker) { ($('genBtn') as HTMLButtonElement).disabled = true; $('ahSub').textContent = 'Market data initializing…'; $('listCard').innerHTML = `<p class="p-4 text-sm text-muted">Waiting for BTCUSDT market data…</p>`; return; }
       tickerId = ticker.id;
       await loadStrategies();
     })();

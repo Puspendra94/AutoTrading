@@ -6,6 +6,7 @@ import { DataQualityFlag } from '../../entities/data-quality-flag.entity';
 import { Provider } from '../../entities/provider.entity';
 import { MarketType } from '../../entities/market-type.entity';
 import { MarketDataService } from './market-data.service';
+import { HistoricalBackfillService } from './historical-backfill.service';
 import { ProviderModule } from '../provider/provider.module';
 
 // Deliberately minimal — no controller, no MarketStreamService, no WebsocketsModule.
@@ -18,7 +19,7 @@ import { ProviderModule } from '../provider/provider.module';
     TypeOrmModule.forFeature([Ticker, OhlcvData, DataQualityFlag, Provider, MarketType]),
     ProviderModule,
   ],
-  providers: [MarketDataService],
+  providers: [MarketDataService, HistoricalBackfillService],
   exports: [MarketDataService],
 })
 export class MarketDataModule {}

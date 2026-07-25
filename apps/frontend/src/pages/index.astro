@@ -1,153 +1,124 @@
 ---
 import Layout from '../layouts/Layout.astro';
+
+const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
 ---
 
 <Layout title="Dashboard — AI Algorithmic Trading Platform">
-  <div class="dash">
-    <!-- P/L banner + BTCUSDT live price + mode toggle -->
-    <div class="banner glass-card">
-      <div class="banner-metrics">
-        <div class="sym-block">
-          <span class="sym">BTCUSDT</span>
-          <span class="sym-price mono" id="livePrice">—</span>
-          <span class="sym-change mono" id="priceChange">—</span>
+  <div class="flex flex-col gap-5">
+    <!-- P/L banner -->
+    <section class="card flex flex-wrap items-center justify-between gap-x-8 gap-y-4 px-5 py-4">
+      <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
+        <div class="flex items-baseline gap-2.5">
+          <span class="text-base font-semibold tracking-tight">BTCUSDT</span>
+          <span id="livePrice" class="tabular text-lg font-bold">—</span>
+          <span id="priceChange" class="tabular text-sm font-medium text-muted">—</span>
         </div>
-        <div class="metric">
-          <span class="metric-lbl">Unrealized P/L</span>
-          <span class="metric-val mono" id="mUnrealized">—</span>
+        <div class="flex flex-col gap-0.5">
+          <span class="eyebrow">Unrealized P/L</span>
+          <span id="mUnrealized" class="tabular text-[0.95rem] font-bold">—</span>
         </div>
-        <div class="metric">
-          <span class="metric-lbl">Open Positions</span>
-          <span class="metric-val mono" id="mOpen">—</span>
+        <div class="flex flex-col gap-0.5">
+          <span class="eyebrow">Realized P/L</span>
+          <span id="mRealized" class="tabular text-[0.95rem] font-bold">—</span>
         </div>
-        <div class="metric">
-          <span class="metric-lbl">Balance</span>
-          <span class="metric-val mono" id="mBalance">—</span>
+        <div class="flex flex-col gap-0.5">
+          <span class="eyebrow">Open Positions</span>
+          <span id="mOpen" class="tabular text-[0.95rem] font-bold">—</span>
+        </div>
+        <div class="flex flex-col gap-0.5">
+          <span class="eyebrow">Balance</span>
+          <span id="mBalance" class="tabular text-[0.95rem] font-bold">—</span>
         </div>
       </div>
 
-      <div class="banner-actions">
-        <a class="alpha-chip" id="alphaChip" href="/strategies" hidden></a>
-        <div class="mode-toggle" id="modeToggle" data-state="locked">
-          <span class="mode-lbl">Mode</span>
-          <div class="mode-switch">
-            <button type="button" class="mode-btn" data-mode="paper" id="modePaper">PAPER</button>
-            <button type="button" class="mode-btn" data-mode="live" id="modeLive">LIVE</button>
+      <div class="flex items-center gap-4">
+        <div id="modeToggle" data-state="locked" class="flex items-center gap-2.5">
+          <span class="eyebrow">Mode</span>
+          <div class="flex rounded-lg border border-border bg-surface-2 p-0.5" role="group" aria-label="Trading mode">
+            <button type="button" id="modePaper" data-mode="paper" class="rounded-md px-3 py-1.5 text-xs font-bold text-muted transition-colors">PAPER</button>
+            <button type="button" id="modeLive" data-mode="live" class="rounded-md px-3 py-1.5 text-xs font-bold text-muted transition-colors">LIVE</button>
           </div>
-          <span class="mode-locked" id="modeLocked">LOCKED</span>
+          <span id="modeLocked" class="text-[0.65rem] font-semibold tracking-wide text-warn">LOCKED</span>
         </div>
       </div>
-    </div>
+    </section>
 
-    <!-- Main: Live Trades + Active Alpha -->
-    <div class="dash-grid">
-      <section class="glass-card panel">
-        <div class="panel-head">
-          <span class="panel-title">Live Trades</span>
-          <span class="live-tag"><span class="status-dot"></span> LIVE</span>
+    <!-- Chart + side panels -->
+    <div class="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_380px]">
+      <!-- Chart -->
+      <section class="card flex min-w-0 flex-col overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
+          <div class="flex items-center gap-2">
+            <span class="live-dot"></span>
+            <span class="eyebrow">Live Market · Binance</span>
+          </div>
+          <div class="flex items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5" id="tfGroup" role="group" aria-label="Chart timeframe">
+            {TIMEFRAMES.map((tf) => (
+              <button type="button" data-tf={tf} class="tf-btn rounded-md px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:text-fg">{tf}</button>
+            ))}
+          </div>
         </div>
-        <div class="positions-list" id="positionsList">
-          <p class="hint-text pad">Loading positions…</p>
+        <div class="relative min-h-[440px] flex-1">
+          <div id="priceChart" class="absolute inset-0"></div>
+          <div id="chartEmpty" hidden class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-muted">
+            <span class="spinner"></span>
+            <p>Loading BTCUSDT candles…</p>
+          </div>
         </div>
       </section>
 
-      <aside class="glass-card panel">
-        <div class="panel-head">
-          <span class="panel-title">Active Alpha</span>
-        </div>
-        <div id="alphaBody">
-          <p class="hint-text pad">Loading strategy…</p>
-        </div>
+      <!-- Side panels -->
+      <aside class="flex flex-col gap-5">
+        <section class="card flex flex-col overflow-hidden">
+          <div class="flex items-center justify-between border-b border-border px-4 py-2.5">
+            <span class="eyebrow">Live Trades</span>
+            <span class="flex items-center gap-1.5 text-[0.65rem] font-semibold tracking-wide text-brand"><span class="live-dot"></span> LIVE</span>
+          </div>
+          <div id="positionsList" class="flex flex-col" aria-live="polite">
+            <p class="p-4 text-sm text-muted">Loading positions…</p>
+          </div>
+        </section>
+
+        <section class="card flex flex-col overflow-hidden">
+          <div class="border-b border-border px-4 py-2.5"><span class="eyebrow">Market Stats · BTCUSDT</span></div>
+          <div id="marketStats" class="grid grid-cols-2 gap-x-4 gap-y-3.5 p-4">
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">24h Change</span><span id="msChange" class="tabular text-sm font-bold text-muted">—</span></div>
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">24h Volume</span><span id="msVol" class="tabular text-sm font-bold">—</span></div>
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">24h High</span><span id="msHigh" class="tabular text-sm font-bold">—</span></div>
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">24h Low</span><span id="msLow" class="tabular text-sm font-bold">—</span></div>
+            <div class="col-span-2 flex flex-col gap-0.5"><span class="eyebrow">24h Range</span><span id="msRange" class="tabular text-sm font-bold">—</span></div>
+          </div>
+        </section>
       </aside>
     </div>
+
+    <!-- Active Alpha band -->
+    <section id="alphaWrap" hidden class="card px-5 py-4">
+      <div class="mb-3 flex items-center gap-2">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="text-brand" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>
+        <span class="eyebrow">Active Alpha</span>
+        <span id="alphaBandName" class="text-[0.7rem] font-bold text-brand"></span>
+      </div>
+      <div id="alphaBody"><p class="text-sm text-muted">Loading strategy…</p></div>
+
+      <!-- Real-data performance replay (full history) -->
+      <div class="mt-4 border-t border-border pt-4">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <span class="eyebrow">Real-Data Performance</span>
+            <span id="perfCoverage" class="text-[0.7rem] text-dim"></span>
+          </div>
+          <button id="perfRecompute" hidden class="rounded-md border border-border px-2.5 py-1 text-[0.7rem] font-semibold text-muted transition-colors hover:text-fg">Recompute</button>
+        </div>
+        <div id="perfBody"><p class="text-sm text-muted">Loading performance…</p></div>
+      </div>
+    </section>
   </div>
 
-  <style>
-    .dash { display: flex; flex-direction: column; gap: 1rem; max-width: 1500px; margin: 0 auto; }
-
-    /* Banner */
-    .banner {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1.5rem;
-      flex-wrap: wrap;
-      padding: 0.9rem 1.25rem;
-    }
-    .banner-metrics { display: flex; align-items: center; gap: 2rem; flex-wrap: wrap; }
-    .sym-block { display: flex; align-items: baseline; gap: 0.6rem; }
-    .sym { font-weight: 700; font-size: 0.95rem; letter-spacing: 0.03em; }
-    .sym-price { font-size: 1.05rem; font-weight: 700; }
-    .sym-change { font-size: 0.8rem; }
-    .metric { display: flex; flex-direction: column; gap: 0.15rem; }
-    .metric-lbl { font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
-    .metric-val { font-size: 0.95rem; font-weight: 700; }
-    .text-bull { color: var(--color-bull); }
-    .text-bear { color: var(--color-bear); }
-
-    .banner-actions { display: flex; align-items: center; gap: 1rem; }
-    .alpha-chip {
-      display: inline-flex; align-items: center; gap: 0.35rem;
-      font-size: 0.65rem; letter-spacing: 0.06em;
-      color: var(--accent-cyan);
-      border: 1px solid rgba(0, 200, 150, 0.3);
-      border-radius: 5px; padding: 0.3rem 0.55rem; text-decoration: none;
-    }
-    .alpha-chip:hover { background: rgba(0, 200, 150, 0.06); }
-
-    /* Mode toggle */
-    .mode-toggle { display: flex; align-items: center; gap: 0.6rem; }
-    .mode-lbl { font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
-    .mode-switch { display: flex; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; }
-    .mode-btn {
-      padding: 0.35rem 0.8rem; font-size: 0.7rem; font-weight: 700; font-family: var(--font-mono);
-      background: transparent; border: none; color: var(--text-muted); cursor: pointer; border-radius: 5px;
-      transition: all 0.15s ease;
-    }
-    .mode-btn.active[data-mode="paper"] { background: var(--accent-cyan); color: #070b14; }
-    .mode-btn.active[data-mode="live"] { background: var(--color-bear); color: #fff; }
-    .mode-locked { font-size: 0.6rem; letter-spacing: 0.1em; color: var(--color-warning); animation: pulse-subtle 2s infinite ease-in-out; }
-    .mode-toggle[data-state="ready"] { }
-    .mode-toggle[data-state="ready"] .mode-locked { display: none; }
-    .mode-toggle[data-state="locked"] .mode-switch { opacity: 0.5; pointer-events: none; }
-
-    /* Grid */
-    .dash-grid { display: grid; grid-template-columns: 1fr 360px; gap: 1rem; align-items: start; }
-    @media (max-width: 1000px) { .dash-grid { grid-template-columns: 1fr; } }
-
-    .panel { padding: 0; overflow: hidden; }
-    .panel-head {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 0.7rem 1rem; border-bottom: 1px solid var(--border-color);
-    }
-    .panel-title { font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); }
-    .live-tag { display: flex; align-items: center; gap: 0.35rem; font-size: 0.6rem; letter-spacing: 0.1em; color: var(--color-bull); }
-    .pad { padding: 1rem; }
-
-    /* Positions */
-    .positions-list { display: flex; flex-direction: column; }
-    .pos-row { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); transition: background 0.15s ease; }
-    .pos-row:hover { background: var(--bg-card-hover); }
-    .pos-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; }
-    .pos-sym { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 0.8rem; }
-    .side-tag { font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; }
-    .side-long { background: rgba(0, 200, 150, 0.12); color: var(--color-bull); }
-    .side-short { background: rgba(255, 59, 107, 0.12); color: var(--color-bear); }
-    .pos-line { display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted); margin-top: 0.15rem; }
-    .pos-line .mono { color: var(--text-main); }
-
-    /* Alpha body */
-    .alpha-inner { padding: 1rem; display: flex; flex-direction: column; gap: 0.9rem; }
-    .alpha-name { font-size: 0.9rem; font-weight: 700; }
-    .alpha-sub { font-size: 0.65rem; color: var(--text-muted); margin-top: 0.15rem; }
-    .alpha-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
-    .am { display: flex; flex-direction: column; gap: 0.1rem; background: var(--bg-secondary); border-radius: 6px; padding: 0.5rem 0.6rem; }
-    .am-lbl { font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
-    .am-val { font-size: 0.85rem; font-weight: 700; }
-  </style>
-
   <script>
-    import { apiGet, apiPatch, requireAuth, ApiError } from '../lib/api';
+    import { createChart, ColorType, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
+    import { apiGet, apiPatch, apiPost, requireAuth, ApiError } from '../lib/api';
     import { resolveBtcTicker } from '../lib/ticker';
     import { subscribeTicker, onPriceUpdate, onPositionsUpdate } from '../lib/ws';
 
@@ -158,163 +129,400 @@ import Layout from '../layouts/Layout.astro';
       entryPrice: number; currentPrice: number; quantity: number;
       unrealizedPl: number; realizedPl: number; isProbation: boolean; openedAt: string;
     };
-    type Provider = { id: string; type: string; tradingMode: 'paper' | 'live'; hasCredentials?: boolean; killSwitchActive?: boolean; tradableBalance: number | null; currency: string | null };
+    type Provider = { id: string; type: string; tradingMode: 'paper' | 'live'; hasCredentials?: boolean; tradableBalance: number | null; currency: string | null };
     type Strategy = { id: string; version: number; status: string; executionMode: string; parametersJson: any };
     type Backtest = { sharpe: number; profitFactor: number; maxDrawdown: number; tradeCount: number; passedEvaluationGate: boolean };
+    type Bar = { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number };
 
-    const livePriceEl = document.getElementById('livePrice')!;
-    const priceChangeEl = document.getElementById('priceChange')!;
-    const mUnrealized = document.getElementById('mUnrealized')!;
-    const mOpen = document.getElementById('mOpen')!;
-    const mBalance = document.getElementById('mBalance')!;
-    const positionsList = document.getElementById('positionsList')!;
-    const alphaBody = document.getElementById('alphaBody')!;
-    const alphaChip = document.getElementById('alphaChip') as HTMLAnchorElement;
+    const $ = (id: string) => document.getElementById(id)!;
+    const esc = (s: string) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
+    const fmt = (n: number, d = 2) => Number(n).toLocaleString('en-US', { maximumFractionDigits: d });
+    const compact = (n: number) => { const a = Math.abs(n); if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B'; if (a >= 1e6) return (n / 1e6).toFixed(2) + 'M'; if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K'; return fmt(n); };
 
-    function esc(s: string): string { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
-    function fmt(n: number, d = 2): string { return Number(n).toLocaleString(undefined, { maximumFractionDigits: d }); }
+    const INTERVAL_MS: Record<string, number> = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3 };
+    const UP = '#00c896', DOWN = '#ff3b6b';
 
-    // ---- BTCUSDT live price (number only, no chart) ----
-    let firstOpen: number | null = null;
-    onPriceUpdate(({ candle }) => {
-      const close = Number(candle.close ?? candle.c);
+    // ---------- Chart ----------
+    const chartEl = $('priceChart') as HTMLDivElement;
+    const chartEmpty = $('chartEmpty');
+    let chart: IChartApi | null = null;
+    let series: ISeriesApi<'Candlestick'> | null = null;
+    let volSeries: ISeriesApi<'Histogram'> | null = null;
+    let currentInterval = '5m';
+    let tickerId: string | null = null;
+    let lastBar: Bar | null = null;
+    let bars: Bar[] = [];
+
+    function initChart() {
+      chart = createChart(chartEl, {
+        layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#8496b8', fontFamily: "'JetBrains Mono', monospace" },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#1c2740' },
+        rightPriceScale: { borderColor: '#1c2740' },
+        crosshair: { mode: 0 },
+        width: chartEl.clientWidth,
+        height: chartEl.clientHeight,
+      });
+      series = chart.addCandlestickSeries({
+        upColor: UP, downColor: DOWN, borderVisible: false,
+        wickUpColor: UP, wickDownColor: DOWN,
+      });
+      // Volume histogram overlaid on the bottom ~18% of the pane (same real candle volume).
+      volSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false });
+      chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      new ResizeObserver(() => chart?.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight })).observe(chartEl);
+    }
+
+    const toSec = (raw: string | number): UTCTimestamp => {
+      const ms = typeof raw === 'number' ? (raw > 1e12 ? raw : raw * 1000) : new Date(raw).getTime();
+      return Math.floor(ms / 1000) as UTCTimestamp;
+    };
+    const normalize = (raw: any): Bar => ({
+      time: toSec(raw.timestamp ?? raw.time ?? raw.t),
+      open: Number(raw.open ?? raw.o), high: Number(raw.high ?? raw.h),
+      low: Number(raw.low ?? raw.l), close: Number(raw.close ?? raw.c),
+      volume: Number(raw.volume ?? raw.v ?? 0),
+    });
+    const volPoint = (b: Bar) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? 'rgba(0,200,150,0.32)' : 'rgba(255,59,107,0.32)' });
+
+    async function loadCandles(interval: string) {
+      if (!tickerId) return;
+      chartEmpty.hidden = false;
+      try {
+        const raw = await apiGet<any[]>(`/market-data/tickers/${tickerId}/candles?interval=${interval}&limit=500`);
+        bars = raw.map(normalize).filter((b) => Number.isFinite(b.close));
+        series?.setData(bars);
+        volSeries?.setData(bars.map(volPoint));
+        lastBar = bars.length ? { ...bars[bars.length - 1] } : null;
+        chart?.timeScale().fitContent();
+        chartEmpty.hidden = bars.length > 0;
+        loadSignals(interval); // overlay the active strategy's buy/sell intents on this timeframe
+        if (bars.length) { updatePriceHeader(lastBar!.close); renderMarketStats(); }
+        else chartEmpty.querySelector('p')!.textContent = 'No candles yet — backfilling from Binance archive…';
+      } catch {
+        chartEmpty.hidden = false;
+        chartEmpty.querySelector('p')!.textContent = 'Failed to load candles.';
+      }
+    }
+
+    // Overlay the active strategy's buy/sell intents as chart markers. Recomputed by the
+    // backend over the same interval-rolled candles, so a BUY/SELL sits on its exact bar.
+    type Signal = { time: number; side: 'buy' | 'sell'; price: number; reason: string };
+    async function loadSignals(interval: string) {
+      if (!tickerId || !series) return;
+      try {
+        const res = await apiGet<{ signals: Signal[] }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=500`);
+        const markers = (res.signals || [])
+          .slice()
+          .sort((a, b) => a.time - b.time)
+          .map((s) => ({
+            time: s.time as UTCTimestamp,
+            position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
+            color: s.side === 'buy' ? UP : DOWN,
+            shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
+            text: s.side === 'buy' ? 'BUY' : 'SELL',
+          }));
+        series.setMarkers(markers as any);
+      } catch {
+        series?.setMarkers([]); // no active strategy / fetch failed → keep the chart clean
+      }
+    }
+
+    // Fold a live 1m candle into the current timeframe's bucket.
+    function applyLiveTick(candle: any) {
+      if (!series) return;
+      const c = normalize(candle);
+      const stepSec = INTERVAL_MS[currentInterval] / 1000;
+      const bucket = (Math.floor((c.time as number) / stepSec) * stepSec) as UTCTimestamp;
+      if (lastBar && bucket === lastBar.time) {
+        lastBar.high = Math.max(lastBar.high, c.high);
+        lastBar.low = Math.min(lastBar.low, c.low);
+        lastBar.close = c.close;
+        lastBar.volume = c.volume; // latest 1m volume for the in-progress bucket
+      } else if (!lastBar || bucket > lastBar.time) {
+        lastBar = { time: bucket, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume };
+        bars.push(lastBar);
+      } else {
+        return; // out-of-order, ignore
+      }
+      if (bars.length && bars[bars.length - 1].time === lastBar.time) bars[bars.length - 1] = { ...lastBar };
+      series.update({ time: lastBar.time as UTCTimestamp, open: lastBar.open, high: lastBar.high, low: lastBar.low, close: lastBar.close });
+      volSeries?.update(volPoint(lastBar));
+      updatePriceHeader(lastBar.close);
+      renderMarketStats();
+    }
+
+    // ---------- Price header ----------
+    let sessionOpen: number | null = null;
+    const livePriceEl = $('livePrice'), priceChangeEl = $('priceChange');
+    function updatePriceHeader(close: number) {
       if (!Number.isFinite(close)) return;
-      if (firstOpen === null) firstOpen = Number(candle.open ?? candle.o) || close;
-      livePriceEl.textContent = `$${fmt(close, 2)}`;
-      const chg = firstOpen ? ((close - firstOpen) / firstOpen) * 100 : 0;
+      if (sessionOpen === null) sessionOpen = close;
+      livePriceEl.textContent = `$${fmt(close)}`;
+      const chg = sessionOpen ? ((close - sessionOpen) / sessionOpen) * 100 : 0;
       priceChangeEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
-      priceChangeEl.classList.toggle('text-bull', chg >= 0);
-      priceChangeEl.classList.toggle('text-bear', chg < 0);
+      priceChangeEl.className = `tabular text-sm font-medium ${chg >= 0 ? 'text-brand' : 'text-bear'}`;
+    }
+
+    // ---------- Market stats (real, derived from the loaded candle window) ----------
+    function renderMarketStats() {
+      if (!bars.length) return;
+      const now = bars[bars.length - 1].time;
+      const window = bars.filter((b) => now - b.time <= 86400); // last 24h of loaded bars
+      const use = window.length ? window : bars;
+      const high = Math.max(...use.map((b) => b.high));
+      const low = Math.min(...use.map((b) => b.low));
+      const vol = use.reduce((s, b) => s + b.volume, 0);
+      const first = use[0].open, last = use[use.length - 1].close;
+      const chg = first ? ((last - first) / first) * 100 : 0;
+      const rangePct = low ? ((high - low) / low) * 100 : 0;
+      const msChange = $('msChange');
+      msChange.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+      msChange.className = `tabular text-sm font-bold ${chg >= 0 ? 'text-brand' : 'text-bear'}`;
+      $('msVol').textContent = `${compact(vol)} BTC`;
+      $('msHigh').textContent = `$${fmt(high)}`;
+      $('msLow').textContent = `$${fmt(low)}`;
+      $('msRange').textContent = `$${fmt(low)} – $${fmt(high)}  ·  ${rangePct.toFixed(2)}%`;
+    }
+
+    onPriceUpdate(({ tickerId: tid, candle }) => { if (tid === tickerId) applyLiveTick(candle); });
+
+    // ---------- Timeframe tabs ----------
+    function paintTf() {
+      document.querySelectorAll<HTMLButtonElement>('.tf-btn').forEach((b) => {
+        const active = b.dataset.tf === currentInterval;
+        b.classList.toggle('bg-brand', active);
+        b.classList.toggle('text-[#04140e]', active);
+        b.classList.toggle('text-muted', !active);
+      });
+    }
+    $('tfGroup').addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('.tf-btn') as HTMLButtonElement | null;
+      if (!btn || btn.dataset.tf === currentInterval) return;
+      currentInterval = btn.dataset.tf!;
+      sessionOpen = null;
+      paintTf();
+      loadCandles(currentInterval);
     });
 
-    // ---- Live trades ----
+    // ---------- Positions ----------
+    const positionsList = $('positionsList'), mUnrealized = $('mUnrealized'), mRealized = $('mRealized'), mOpen = $('mOpen');
     function renderPositions(positions: Position[]) {
       mOpen.textContent = String(positions.length);
       const unreal = positions.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
-      mUnrealized.textContent = `${unreal >= 0 ? '+' : ''}$${fmt(unreal, 2)}`;
-      mUnrealized.classList.toggle('text-bull', unreal >= 0);
-      mUnrealized.classList.toggle('text-bear', unreal < 0);
+      const real = positions.reduce((s, p) => s + Number(p.realizedPl || 0), 0);
+      mUnrealized.textContent = `${unreal >= 0 ? '+' : ''}$${fmt(unreal)}`;
+      mUnrealized.className = `tabular text-[0.95rem] font-bold ${unreal >= 0 ? 'text-brand' : 'text-bear'}`;
+      mRealized.textContent = `${real >= 0 ? '+' : ''}$${fmt(real)}`;
+      mRealized.className = `tabular text-[0.95rem] font-bold ${real >= 0 ? 'text-brand' : 'text-bear'}`;
 
-      if (!positions.length) {
-        positionsList.innerHTML = `<p class="hint-text pad">No open positions right now.</p>`;
-        return;
-      }
+      if (!positions.length) { positionsList.innerHTML = `<p class="p-4 text-sm text-muted">No open positions right now.</p>`; return; }
       positionsList.innerHTML = positions.map((p) => {
         const bull = Number(p.unrealizedPl) >= 0;
         const plPct = p.entryPrice ? (Number(p.unrealizedPl) / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
         const mins = Math.floor((Date.now() - new Date(p.openedAt).getTime()) / 60000);
         const age = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
         return `
-          <div class="pos-row">
-            <div class="pos-top">
-              <span class="pos-sym">${esc(p.ticker?.symbol || 'BTCUSDT')}
-                <span class="side-tag ${p.side === 'long' ? 'side-long' : 'side-short'}">${p.side.toUpperCase()}</span>
-              </span>
-              <span class="mono ${bull ? 'text-bull' : 'text-bear'}" style="font-weight:700;font-size:0.8rem">${bull ? '+' : ''}$${fmt(Number(p.unrealizedPl), 2)}</span>
+          <div class="border-b border-border/60 px-4 py-3 transition-colors hover:bg-surface-2/60">
+            <div class="mb-1.5 flex items-center justify-between">
+              <span class="flex items-center gap-2 text-sm font-bold">${esc(p.ticker?.symbol || 'BTCUSDT')}
+                <span class="badge ${p.side === 'long' ? 'badge-brand' : 'badge-bear'}">${p.side.toUpperCase()}</span></span>
+              <span class="tabular text-sm font-bold ${bull ? 'text-brand' : 'text-bear'}">${bull ? '+' : ''}$${fmt(Number(p.unrealizedPl))}</span>
             </div>
-            <div class="pos-line"><span>Entry</span><span class="mono">$${fmt(Number(p.entryPrice), 2)}</span></div>
-            <div class="pos-line"><span>P/L %</span><span class="mono ${bull ? 'text-bull' : 'text-bear'}">${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%</span></div>
-            <div class="pos-line"><span>Size ${fmt(Number(p.quantity), 6)}</span><span>${p.isProbation ? 'Probation' : 'Full'} · ${age}</span></div>
+            <div class="flex items-center justify-between text-xs text-muted">
+              <span>Entry <span class="tabular text-fg">$${fmt(Number(p.entryPrice))}</span></span>
+              <span class="tabular ${bull ? 'text-brand' : 'text-bear'}">${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%</span>
+            </div>
+            <div class="mt-0.5 flex items-center justify-between text-[0.7rem] text-dim">
+              <span class="tabular">Size ${fmt(Number(p.quantity), 6)}</span>
+              <span>${p.isProbation ? 'Probation' : 'Full'} · ${age}</span>
+            </div>
           </div>`;
       }).join('');
     }
-
+    onPositionsUpdate((positions) => renderPositions(positions as Position[]));
     async function loadPositions() {
       try { renderPositions(await apiGet<Position[]>('/execution/positions/open')); }
-      catch { positionsList.innerHTML = `<p class="hint-text pad">Failed to load positions.</p>`; }
+      catch { positionsList.innerHTML = `<p class="p-4 text-sm text-muted">Failed to load positions.</p>`; }
     }
-    onPositionsUpdate((positions) => renderPositions(positions as Position[]));
 
-    // ---- Active Alpha ----
-    async function loadAlpha(tickerId: string) {
+    // ---------- Active Alpha (bottom band) ----------
+    const alphaWrap = $('alphaWrap'), alphaBody = $('alphaBody'), alphaBandName = $('alphaBandName');
+    async function loadAlpha(tid: string) {
       try {
-        const result = await apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${tickerId}/active`);
-        if (!result) {
-          alphaBody.innerHTML = `<div class="alpha-inner"><p class="hint-text">No active strategy yet. Generate one on the Alpha page.</p><a href="/strategies" class="btn btn-primary" style="width:fit-content">Go to Alpha</a></div>`;
-          alphaChip.hidden = true;
-          return;
-        }
+        const result = await apiGet<{ strategy: Strategy; backtest: Backtest } | null>(`/strategies/ticker/${tid}/active`);
+        if (!result) { alphaWrap.hidden = true; stopPerfPolling(); return; }
         const { strategy, backtest } = result;
         const name = strategy.parametersJson?.strategyName || 'Generated Strategy';
-        alphaChip.hidden = false;
-        alphaChip.textContent = `⚡ ${name}`;
+        alphaWrap.hidden = false; alphaBandName.textContent = name;
+        loadPerformance(strategy.id);
+        const metric = (label: string, val: string, cls = 'text-fg') => `<div class="flex flex-col gap-0.5"><span class="eyebrow">${label}</span><span class="tabular text-base font-bold ${cls}">${val}</span></div>`;
         alphaBody.innerHTML = `
-          <div class="alpha-inner">
-            <div>
-              <div class="alpha-name">${esc(name)}</div>
-              <div class="alpha-sub">v${strategy.version} · ${strategy.executionMode === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live'} · ${esc(strategy.status.toUpperCase())}</div>
+          <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
+            <div class="flex flex-col gap-0.5">
+              <span class="flex items-center gap-2 text-sm font-bold">${esc(name)} <span class="badge badge-brand">${esc(strategy.status.toUpperCase())}</span></span>
+              <span class="text-xs text-muted">v${strategy.version} · ${strategy.executionMode === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live'}</span>
             </div>
-            ${backtest ? `
-            <div class="alpha-metrics">
-              <div class="am"><span class="am-lbl">Sharpe</span><span class="am-val mono">${Number(backtest.sharpe).toFixed(2)}</span></div>
-              <div class="am"><span class="am-lbl">Profit Factor</span><span class="am-val mono">${Number(backtest.profitFactor).toFixed(2)}</span></div>
-              <div class="am"><span class="am-lbl">Max Drawdown</span><span class="am-val mono">${Number(backtest.maxDrawdown).toFixed(1)}%</span></div>
-              <div class="am"><span class="am-lbl">Trades</span><span class="am-val mono">${backtest.tradeCount}</span></div>
-              <div class="am" style="grid-column:1/-1"><span class="am-lbl">Eval Gate</span><span class="am-val mono ${backtest.passedEvaluationGate ? 'text-bull' : 'text-bear'}">${backtest.passedEvaluationGate ? 'PASSED' : 'FAILED'}</span></div>
-            </div>` : `<p class="hint-text">No backtest metrics recorded.</p>`}
+            ${backtest ? metric('Sharpe', Number(backtest.sharpe).toFixed(2)) +
+              metric('Profit Factor', Number(backtest.profitFactor).toFixed(2)) +
+              metric('Max Drawdown', Number(backtest.maxDrawdown).toFixed(1) + '%', 'text-bear') +
+              metric('Trades', String(backtest.tradeCount)) +
+              metric('Eval Gate', backtest.passedEvaluationGate ? 'PASSED' : 'FAILED', backtest.passedEvaluationGate ? 'text-brand' : 'text-bear')
+              : '<span class="text-sm text-muted">No backtest metrics recorded.</span>'}
           </div>`;
       } catch (err) {
-        alphaBody.innerHTML = `<p class="hint-text pad">${err instanceof ApiError ? esc(err.message) : 'Failed to load strategy'}</p>`;
+        alphaWrap.hidden = false; alphaBandName.textContent = '';
+        alphaBody.innerHTML = `<p class="text-sm text-bear">${err instanceof ApiError ? esc(err.message) : 'Failed to load strategy'}</p>`;
       }
     }
 
-    // ---- Mode toggle (change #3) ----
-    const modeToggle = document.getElementById('modeToggle')!;
-    const modePaper = document.getElementById('modePaper') as HTMLButtonElement;
-    const modeLive = document.getElementById('modeLive') as HTMLButtonElement;
-    let boundProvider: Provider | null = null;
+    // ---------- Real-data performance (full-history replay, computed in background) ----------
+    type Perf = {
+      status: 'pending' | 'ready' | 'failed'; strategyId: string;
+      dataFrom?: string; dataTo?: string; candleCount?: number; intentCount?: number;
+      tradeCount?: number; openPositions?: number; winRate?: number; totalReturnPct?: number;
+      totalPnlUsd?: number; maxDrawdownPct?: number; sharpe?: number; avgTradeReturnPct?: number;
+      tradesJson?: Array<{ entryTime: string; entryPrice: number; exitTime: string; exitPrice: number; returnPct: number; pnlUsd: number; reason: string }>;
+      error?: string;
+    };
+    const perfBody = $('perfBody'), perfCoverage = $('perfCoverage'), perfRecompute = $('perfRecompute') as HTMLButtonElement;
+    let perfStrategyId: string | null = null;
+    let perfTimer: number | null = null;
+    function stopPerfPolling() { if (perfTimer) { clearTimeout(perfTimer); perfTimer = null; } }
 
+    async function loadPerformance(strategyId: string) {
+      perfStrategyId = strategyId;
+      stopPerfPolling();
+      try {
+        const perf = await apiGet<Perf>(`/strategies/${strategyId}/performance`);
+        if (perfStrategyId !== strategyId) return; // strategy changed under us
+        renderPerformance(perf);
+        if (perf.status === 'pending') { perfTimer = window.setTimeout(() => loadPerformance(strategyId), 4000); }
+      } catch {
+        perfBody.innerHTML = `<p class="text-sm text-muted">Failed to load performance.</p>`;
+      }
+    }
+
+    function renderPerformance(p: Perf) {
+      perfRecompute.hidden = false;
+      if (p.status === 'pending') {
+        perfCoverage.textContent = '';
+        perfBody.innerHTML = `<div class="flex items-center gap-2 text-sm text-muted"><span class="spinner"></span> Calculating over full history — this runs in the background, refreshing automatically…</div>`;
+        return;
+      }
+      if (p.status === 'failed') {
+        perfCoverage.textContent = '';
+        perfBody.innerHTML = `<p class="text-sm text-bear">Performance calculation failed${p.error ? ': ' + esc(p.error) : ''}.</p>`;
+        return;
+      }
+      const from = p.dataFrom ? new Date(p.dataFrom).toISOString().slice(0, 10) : '—';
+      const to = p.dataTo ? new Date(p.dataTo).toISOString().slice(0, 10) : '—';
+      perfCoverage.textContent = `${Number(p.candleCount || 0).toLocaleString('en-US')} candles · ${from} → ${to}`;
+
+      const ret = Number(p.totalReturnPct || 0), pnl = Number(p.totalPnlUsd || 0), dd = Number(p.maxDrawdownPct || 0);
+      const retCls = ret >= 0 ? 'text-brand' : 'text-bear';
+      const metric = (label: string, val: string, cls = 'text-fg') => `<div class="flex flex-col gap-0.5"><span class="eyebrow">${label}</span><span class="tabular text-base font-bold ${cls}">${val}</span></div>`;
+
+      const trades = p.tradesJson || [];
+      const tradeRows = trades.slice(0, 12).map((t) => {
+        const win = Number(t.returnPct) >= 0;
+        const held = `${new Date(t.entryTime).toISOString().slice(5, 16).replace('T', ' ')} → ${new Date(t.exitTime).toISOString().slice(5, 16).replace('T', ' ')}`;
+        return `<tr class="border-b border-border/50 last:border-0">
+          <td class="py-1.5 pr-3 text-xs text-muted tabular whitespace-nowrap">${held}</td>
+          <td class="py-1.5 pr-3 text-xs tabular text-fg">$${fmt(Number(t.entryPrice))} → $${fmt(Number(t.exitPrice))}</td>
+          <td class="py-1.5 pr-3 text-xs tabular text-right ${win ? 'text-brand' : 'text-bear'}">${win ? '+' : ''}${Number(t.returnPct).toFixed(2)}%</td>
+          <td class="py-1.5 pr-3 text-xs tabular text-right ${win ? 'text-brand' : 'text-bear'}">${win ? '+' : ''}$${fmt(Number(t.pnlUsd))}</td>
+          <td class="py-1.5 text-xs text-dim whitespace-nowrap">${esc(t.reason)}</td>
+        </tr>`;
+      }).join('');
+
+      perfBody.innerHTML = `
+        <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
+          ${metric('Total Return', `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`, retCls)}
+          ${metric('Net P/L', `${pnl >= 0 ? '+' : ''}$${fmt(pnl)}`, retCls)}
+          ${metric('Max Drawdown', `${dd.toFixed(2)}%`, 'text-bear')}
+          ${metric('Win Rate', `${Number(p.winRate || 0).toFixed(1)}%`)}
+          ${metric('Intents', String(p.intentCount || 0))}
+          ${metric('Trades', String(p.tradeCount || 0))}
+          ${metric('Open Positions', String(p.openPositions || 0))}
+          ${metric('Sharpe', Number(p.sharpe || 0).toFixed(2))}
+        </div>
+        <p class="mt-1 text-[0.7rem] text-dim">On a $${fmt(10000)} notional, compounded, with fees + slippage. Buy→sell round trips derived from the strategy's intents over all real candles.</p>
+        ${trades.length ? `
+          <div class="mt-3 overflow-x-auto">
+            <div class="mb-1.5 eyebrow">Recent Trades</div>
+            <table class="w-full min-w-[520px] border-collapse">
+              <thead><tr class="border-b border-border text-left">
+                <th class="py-1 pr-3 eyebrow font-semibold">Window (UTC)</th>
+                <th class="py-1 pr-3 eyebrow font-semibold">Entry → Exit</th>
+                <th class="py-1 pr-3 eyebrow font-semibold text-right">Return</th>
+                <th class="py-1 pr-3 eyebrow font-semibold text-right">P/L</th>
+                <th class="py-1 eyebrow font-semibold">Reason</th>
+              </tr></thead>
+              <tbody>${tradeRows}</tbody>
+            </table>
+          </div>` : `<p class="mt-3 text-sm text-muted">No completed trades yet over the available history.</p>`}`;
+    }
+
+    perfRecompute.addEventListener('click', async () => {
+      if (!perfStrategyId) return;
+      perfRecompute.disabled = true;
+      try { await apiPost(`/strategies/${perfStrategyId}/performance/recompute`); await loadPerformance(perfStrategyId); }
+      catch {}
+      finally { perfRecompute.disabled = false; }
+    });
+
+    // ---------- Mode toggle ----------
+    const modeToggle = $('modeToggle'), modePaper = $('modePaper') as HTMLButtonElement, modeLive = $('modeLive') as HTMLButtonElement, mBalance = $('mBalance');
+    let boundProvider: Provider | null = null;
     function paintMode(mode: 'paper' | 'live', locked: boolean) {
       modeToggle.dataset.state = locked ? 'locked' : 'ready';
-      modePaper.classList.toggle('active', mode === 'paper');
-      modeLive.classList.toggle('active', mode === 'live');
+      $('modeLocked').style.display = locked ? '' : 'none';
+      modeToggle.querySelector('.flex.rounded-lg')?.classList.toggle('opacity-50', locked);
+      modeToggle.querySelector('.flex.rounded-lg')?.classList.toggle('pointer-events-none', locked);
+      const on = (btn: HTMLButtonElement, active: boolean, live: boolean) => {
+        btn.classList.toggle('bg-brand', active && !live);
+        btn.classList.toggle('text-[#04140e]', active && !live);
+        btn.classList.toggle('bg-bear', active && live);
+        btn.classList.toggle('text-white', active && live);
+        btn.classList.toggle('text-muted', !active);
+      };
+      on(modePaper, mode === 'paper', false);
+      on(modeLive, mode === 'live', true);
     }
-
-    function applyProviderState(provider: Provider | null) {
-      boundProvider = provider;
-      const connected = !!provider && !!provider.hasCredentials;
+    function applyProvider(p: Provider | null) {
+      boundProvider = p;
+      const connected = !!p && !!p.hasCredentials;
       if (!connected) { paintMode('paper', true); mBalance.textContent = '—'; return; }
-      paintMode(provider!.tradingMode || 'paper', false);
-      mBalance.textContent = provider!.tradableBalance != null ? `${fmt(provider!.tradableBalance, 2)} ${provider!.currency || ''}`.trim() : '—';
+      paintMode(p!.tradingMode || 'paper', false);
+      mBalance.textContent = p!.tradableBalance != null ? `${fmt(p!.tradableBalance)} ${p!.currency || ''}`.trim() : '—';
     }
-
     async function switchMode(mode: 'paper' | 'live') {
-      if (!boundProvider || !boundProvider.hasCredentials) return;
-      if (mode === boundProvider.tradingMode) return;
+      if (!boundProvider?.hasCredentials || mode === boundProvider.tradingMode) return;
       paintMode(mode, false);
-      try {
-        const updated = await apiPatch<Provider>(`/providers/${boundProvider.id}/trading-mode`, { tradingMode: mode });
-        boundProvider.tradingMode = updated.tradingMode;
-      } catch (err) {
-        // revert on failure
-        paintMode(boundProvider.tradingMode, false);
-      }
+      try { const u = await apiPatch<Provider>(`/providers/${boundProvider.id}/trading-mode`, { tradingMode: mode }); boundProvider.tradingMode = u.tradingMode; }
+      catch { paintMode(boundProvider.tradingMode, false); }
     }
     modePaper.addEventListener('click', () => switchMode('paper'));
     modeLive.addEventListener('click', () => switchMode('live'));
-
-    // Reuse the Layout's shared connection probe when available, else fetch directly.
+    window.addEventListener('connection-ready', (e: any) => { if (e.detail?.provider) applyProvider(e.detail.provider as Provider); });
     async function loadProvider() {
-      try {
-        const providers = await apiGet<Provider[]>('/providers');
-        applyProviderState(providers.find((p) => p.type === 'binance' && p.hasCredentials) || providers.find((p) => p.type === 'binance') || null);
-      } catch { applyProviderState(null); }
+      try { const ps = await apiGet<Provider[]>('/providers'); applyProvider(ps.find((p) => p.type === 'binance' && p.hasCredentials) || ps.find((p) => p.type === 'binance') || null); }
+      catch { applyProvider(null); }
     }
-    window.addEventListener('connection-ready', (e: any) => {
-      if (e.detail?.provider) applyProviderState(e.detail.provider as Provider);
-    });
 
-    // ---- Init ----
+    // ---------- Init ----------
+    initChart();
+    paintTf();
+    loadProvider();
+    loadPositions();
     (async () => {
-      loadProvider();
-      loadPositions();
       const ticker = await resolveBtcTicker();
-      if (ticker) {
-        subscribeTicker(ticker.id);
-        loadAlpha(ticker.id);
-      } else {
-        alphaBody.innerHTML = `<div class="alpha-inner"><p class="hint-text">No BTCUSDT ticker yet — connect Binance on the Connector page to begin.</p></div>`;
-      }
+      if (!ticker) { chartEmpty.hidden = false; chartEmpty.querySelector('p')!.textContent = 'Market data initializing — refresh in a moment.'; return; }
+      tickerId = ticker.id;
+      await loadCandles(currentInterval); // historical renders immediately…
+      subscribeTicker(ticker.id);          // …then live ticks keep populating
+      loadAlpha(ticker.id);
     })();
   </script>
 </Layout>

@@ -25,9 +25,19 @@ export class MarketDataController {
     return ticker;
   }
 
+  // Chart candles. `interval` (1m/5m/15m/1h/4h/1d/1w) rolls up the stored 1m base via
+  // TimescaleDB time_bucket. Public data — no connector/API key required.
   @Get('tickers/:id/candles')
-  async getCandles(@Param('id') id: string, @Query('limit') limit?: string) {
-    return this.marketDataService.getCandles(id, limit ? parseInt(limit, 10) : 200);
+  async getCandles(
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+    @Query('interval') interval?: string,
+  ) {
+    return this.marketDataService.getCandlesForInterval(
+      id,
+      interval || '1m',
+      limit ? parseInt(limit, 10) : 500,
+    );
   }
 
   @Post('tickers/:id/backfill')

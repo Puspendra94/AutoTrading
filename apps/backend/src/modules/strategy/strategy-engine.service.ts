@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Strategy, StrategyStatus, ExecutionMode } from '../../entities/strategy.entity';
 import { BacktestResult } from '../../entities/backtest-result.entity';
 import { StrategyEvaluationPolicy } from '../../entities/strategy-evaluation-policy.entity';
@@ -11,6 +11,7 @@ import { Position, PositionStatus } from '../../entities/position.entity';
 import { LlmService } from '../llm/llm.service';
 import { LlmPurpose } from '../../entities/llm-cost-log.entity';
 import { StrategyEvaluatorService } from './strategy-evaluator.service';
+import { StrategyPerformanceService } from './strategy-performance.service';
 import { AiLessonsService } from './ai-lessons.service';
 import { StrategyParamsSchema } from '../llm/schemas/strategy-params.schema';
 import { LiveDecisionSchema } from '../llm/schemas/live-decision.schema';
@@ -38,6 +39,7 @@ export class StrategyEngineService {
     @InjectRepository(Position)
     private readonly positionRepo: Repository<Position>,
     private readonly evaluatorService: StrategyEvaluatorService,
+    private readonly performanceService: StrategyPerformanceService,
     private readonly llmService: LlmService,
     private readonly aiLessonsService: AiLessonsService,
     private readonly marketDataService: MarketDataService,
@@ -61,11 +63,14 @@ export class StrategyEngineService {
     ticker.onboardingStage = OnboardingStage.GENERATING_STRATEGY;
     await this.tickerRepo.save(ticker);
 
-    const candles = await this.ohlcvRepo.find({
+    // Generate/evaluate against RECENT history: with the full-genesis backfill running,
+    // the oldest rows are years old and unrepresentative of the regime the strategy will
+    // actually trade, so we take the most recent window and restore chronological order.
+    const candles = (await this.ohlcvRepo.find({
       where: { tickerId },
-      order: { timestamp: 'ASC' },
-      take: 1000,
-    });
+      order: { timestamp: 'DESC' },
+      take: 2000,
+    })).reverse();
 
     // Spec 4.11.2: retrieve relevant past lessons before generating, so the LLM doesn't
     // repeat a documented mistake for this ticker (or a similar strategy type).
@@ -98,34 +103,6 @@ ${lessonsBlock}`;
     // provider-specific shape that silently gets ignored downstream. The field list above
     // is also spelled out in prose since DeepSeek's reasoning models are forced onto the
     // 'jsonMode' method (see llm.service.ts), which sends no structural schema to the model.
-    const llmRes = await this.llmService.generateStructuredCompletion(summaryPrompt, StrategyParamsSchema, {
-      schemaName: 'propose_strategy_params',
-    });
-    const parsedParams = llmRes.data;
-
-    const existingCount = await this.strategyRepo.count({ where: { tickerId } });
-    const strategy = this.strategyRepo.create({
-      tickerId,
-      version: existingCount + 1,
-      status: StrategyStatus.DRAFT,
-      executionMode: ExecutionMode.MODE_A_RULES,
-      parametersJson: parsedParams,
-      generatedBy: llmRes.model,
-    });
-    await this.strategyRepo.save(strategy);
-
-    await this.llmService.logCost(tickerId, strategy.id, LlmPurpose.STRATEGY_GENERATION, {
-      content: JSON.stringify(parsedParams),
-      inputTokens: llmRes.inputTokens,
-      outputTokens: llmRes.outputTokens,
-      costUsd: llmRes.costUsd,
-      model: llmRes.model,
-      provider: llmRes.provider,
-    });
-
-    ticker.onboardingStage = OnboardingStage.BACKTESTING;
-    await this.tickerRepo.save(ticker);
-
     let activePolicy = await this.policyRepo.findOne({ where: { isActive: true } });
     if (!activePolicy) {
       activePolicy = this.policyRepo.create({
@@ -137,32 +114,80 @@ ${lessonsBlock}`;
       });
     }
 
-    const evalResult = this.evaluatorService.evaluateStrategy(candles, parsedParams, activePolicy);
-
-    ticker.onboardingStage = OnboardingStage.EVALUATING;
+    ticker.onboardingStage = OnboardingStage.BACKTESTING;
     await this.tickerRepo.save(ticker);
 
-    const backtest = this.backtestRepo.create({
-      strategyId: strategy.id,
-      sharpe: evalResult.sharpe,
-      sortino: evalResult.sortino,
-      calmar: evalResult.calmar,
-      maxDrawdown: evalResult.maxDrawdown,
-      drawdownDuration: evalResult.drawdownDuration,
-      profitFactor: evalResult.profitFactor,
-      tradeCount: evalResult.tradeCount,
-      monteCarloSummaryJson: evalResult.monteCarloSummary,
-      regimeBreakdownJson: evalResult.regimeBreakdown,
-      parameterCount: evalResult.parameterCount,
-      passedEvaluationGate: evalResult.passedEvaluationGate,
-    });
-    await this.backtestRepo.save(backtest);
+    // Gate-before-save: a generated strategy is persisted ONLY if its out-of-sample
+    // backtest clears the active policy gate. Retry the LLM up to MAX_ATTEMPTS; failed
+    // attempts are discarded (never written to `strategies`), though their real LLM cost
+    // is still logged so spend stays truthful.
+    const MAX_ATTEMPTS = 3;
+    let lastEval: any = null;
+    let lastParams: any = null;
 
-    if (evalResult.passedEvaluationGate) {
-      // Retire previous LIVE strategy for this ticker — and record what we learned
-      // from it before it disappears from the "current" view (spec 4.11.1).
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const llmRes = await this.llmService.generateStructuredCompletion(summaryPrompt, StrategyParamsSchema, {
+        schemaName: 'propose_strategy_params',
+      });
+      const parsedParams = llmRes.data;
+      const evalResult = this.evaluatorService.evaluateStrategy(candles, parsedParams, activePolicy);
+      lastEval = evalResult;
+      lastParams = parsedParams;
+
+      await this.llmService.logCost(tickerId, null, LlmPurpose.STRATEGY_GENERATION, {
+        content: JSON.stringify(parsedParams),
+        inputTokens: llmRes.inputTokens,
+        outputTokens: llmRes.outputTokens,
+        costUsd: llmRes.costUsd,
+        model: llmRes.model,
+        provider: llmRes.provider,
+      });
+
+      if (!evalResult.passedEvaluationGate) {
+        this.logger.warn(
+          `Strategy attempt ${attempt}/${MAX_ATTEMPTS} for ticker ${tickerId} failed the gate ` +
+            `(sharpe ${evalResult.sharpe}, PF ${evalResult.profitFactor}, DD ${evalResult.maxDrawdown}%, trades ${evalResult.tradeCount}). Discarding.`,
+        );
+        continue;
+      }
+
+      // --- Passed the gate: persist strategy + backtest, then promote it live. ---
+      const existingCount = await this.strategyRepo.count({ where: { tickerId } });
+      const strategy = this.strategyRepo.create({
+        tickerId,
+        version: existingCount + 1,
+        status: StrategyStatus.DRAFT,
+        executionMode: ExecutionMode.MODE_A_RULES,
+        parametersJson: parsedParams,
+        generatedBy: llmRes.model,
+      });
+      await this.strategyRepo.save(strategy);
+
+      const backtest = this.backtestRepo.create({
+        strategyId: strategy.id,
+        sharpe: evalResult.sharpe,
+        sortino: evalResult.sortino,
+        calmar: evalResult.calmar,
+        maxDrawdown: evalResult.maxDrawdown,
+        drawdownDuration: evalResult.drawdownDuration,
+        profitFactor: evalResult.profitFactor,
+        tradeCount: evalResult.tradeCount,
+        totalReturnPct: evalResult.totalReturnPct,
+        winRate: evalResult.winRate,
+        monteCarloSummaryJson: evalResult.monteCarloSummary,
+        regimeBreakdownJson: evalResult.regimeBreakdown,
+        parameterCount: evalResult.parameterCount,
+        passedEvaluationGate: true,
+      });
+      await this.backtestRepo.save(backtest);
+
+      ticker.onboardingStage = OnboardingStage.EVALUATING;
+      await this.tickerRepo.save(ticker);
+
+      // Retire the previous LIVE strategy (record its lesson first) and promote this one,
+      // keeping exactly one strategy live per ticker.
       const previousLive = await this.strategyRepo.findOne({ where: { tickerId, status: StrategyStatus.LIVE } });
-      if (previousLive) {
+      if (previousLive && previousLive.id !== strategy.id) {
         const previousBacktest = await this.backtestRepo.findOne({ where: { strategyId: previousLive.id } });
         const latestDivergence = await this.divergenceRepo.findOne({
           where: { strategyId: previousLive.id },
@@ -177,9 +202,8 @@ ${lessonsBlock}`;
             reason: retirementReason,
           })
           .catch((err) => this.logger.warn(`Lesson recording failed (non-fatal): ${err.message}`));
+        await this.strategyRepo.update({ tickerId, status: StrategyStatus.LIVE }, { status: StrategyStatus.RETIRED });
       }
-
-      await this.strategyRepo.update({ tickerId, status: StrategyStatus.LIVE }, { status: StrategyStatus.RETIRED });
 
       strategy.status = StrategyStatus.LIVE;
       await this.strategyRepo.save(strategy);
@@ -187,15 +211,25 @@ ${lessonsBlock}`;
       ticker.status = TickerStatus.ACTIVE;
       ticker.onboardingStage = OnboardingStage.READY;
       await this.tickerRepo.save(ticker);
-    } else {
-      strategy.status = StrategyStatus.EVALUATED;
-      await this.strategyRepo.save(strategy);
 
-      ticker.onboardingStage = OnboardingStage.FAILED;
-      await this.tickerRepo.save(ticker);
+      // Replay the strategy over full real history in the background (non-blocking).
+      this.performanceService.computeForStrategyInBackground(strategy.id);
+
+      return { strategy, backtest, evaluation: evalResult, saved: true, attempts: attempt };
     }
 
-    return { strategy, backtest, evaluation: evalResult };
+    // No attempt cleared the gate — nothing is persisted.
+    ticker.onboardingStage = OnboardingStage.FAILED;
+    await this.tickerRepo.save(ticker);
+    return {
+      strategy: null,
+      backtest: null,
+      evaluation: lastEval,
+      params: lastParams,
+      saved: false,
+      attempts: MAX_ATTEMPTS,
+      message: `No generated strategy passed the evaluation gate after ${MAX_ATTEMPTS} attempts.`,
+    };
   }
 
   /**
@@ -399,7 +433,81 @@ Respond in JSON with your decision.`;
   }
 
   async getStrategiesByTicker(tickerId: string) {
-    return this.strategyRepo.find({ where: { tickerId }, order: { version: 'DESC' } });
+    const strategies = await this.strategyRepo.find({ where: { tickerId }, order: { version: 'DESC' } });
+    if (!strategies.length) return [];
+    const backtests = await this.backtestRepo.find({
+      where: { strategyId: In(strategies.map((s) => s.id)) },
+    });
+    const byStrategy = new Map(backtests.map((b) => [b.strategyId, b]));
+    return strategies.map((strategy) => ({ strategy, backtest: byStrategy.get(strategy.id) ?? null }));
+  }
+
+  /**
+   * Manually promote a specific strategy version to LIVE for its ticker. Retires the
+   * currently-live version (recording a lesson first, mirroring the auto-promotion path)
+   * so exactly one strategy is ever live per ticker. Unlike generation this bypasses the
+   * evaluation gate — it's a deliberate operator override.
+   */
+  async activateStrategy(strategyId: string) {
+    const strategy = await this.strategyRepo.findOne({ where: { id: strategyId } });
+    if (!strategy) throw new NotFoundException('Strategy not found');
+
+    const backtestFor = (id: string) => this.backtestRepo.findOne({ where: { strategyId: id } });
+    if (strategy.status === StrategyStatus.LIVE) {
+      return { strategy, backtest: await backtestFor(strategy.id) };
+    }
+
+    const { tickerId } = strategy;
+    const ticker = await this.tickerRepo.findOne({ where: { id: tickerId } });
+
+    const previousLive = await this.strategyRepo.findOne({ where: { tickerId, status: StrategyStatus.LIVE } });
+    if (previousLive && previousLive.id !== strategy.id) {
+      const previousBacktest = await backtestFor(previousLive.id);
+      const latestDivergence = await this.divergenceRepo.findOne({
+        where: { strategyId: previousLive.id },
+        order: { measuredAt: 'DESC' },
+      });
+      if (ticker) {
+        await this.aiLessonsService
+          .recordLesson({
+            retiredStrategy: previousLive,
+            retiredBacktest: previousBacktest,
+            divergence: latestDivergence,
+            ticker,
+            reason: `manually superseded by v${strategy.version}`,
+          })
+          .catch((err) => this.logger.warn(`Lesson recording failed (non-fatal): ${err.message}`));
+      }
+      await this.strategyRepo.update({ tickerId, status: StrategyStatus.LIVE }, { status: StrategyStatus.RETIRED });
+    }
+
+    strategy.status = StrategyStatus.LIVE;
+    await this.strategyRepo.save(strategy);
+
+    if (ticker) {
+      ticker.status = TickerStatus.ACTIVE;
+      ticker.onboardingStage = OnboardingStage.READY;
+      await this.tickerRepo.save(ticker);
+    }
+
+    return { strategy, backtest: await backtestFor(strategy.id) };
+  }
+
+  /**
+   * Buy/sell intent markers for a ticker's currently-active (LIVE) strategy, replayed over
+   * the same interval-rolled candles the chart renders so the markers line up bar-for-bar.
+   * Empty when nothing is live.
+   */
+  async getSignalsForTicker(tickerId: string, interval = '15m', limit = 500) {
+    const active = await this.strategyRepo.findOne({ where: { tickerId, status: StrategyStatus.LIVE } });
+    if (!active) return { strategyId: null, strategyName: null, signals: [] };
+    const candles = await this.marketDataService.getCandlesForInterval(tickerId, interval, limit);
+    const signals = this.evaluatorService.generateSignals(candles, active.parametersJson);
+    return {
+      strategyId: active.id,
+      strategyName: active.parametersJson?.strategyName || `Strategy v${active.version}`,
+      signals,
+    };
   }
 
   async getPolicies() {

@@ -1,15 +1,19 @@
 import { defineConfig } from 'astro/config';
+import tailwindcss from '@tailwindcss/vite';
 
 // Where the backend API lives when running `astro dev` individually. In Docker the
 // static build is served by server.mjs instead, which proxies to the `backend` service.
 const API_TARGET = process.env.API_INTERNAL_URL || 'http://localhost:3009';
 
 export default defineConfig({
+  // Hide the floating Astro dev toolbar (the pill at the bottom of the page in `astro dev`).
+  devToolbar: { enabled: false },
   server: {
     port: 4321,
     host: true,
   },
   vite: {
+    plugins: [tailwindcss()],
     server: {
       // Same-origin proxy so the browser only ever talks to the frontend origin:
       //   /api/*      -> backend (path prefix stripped)
