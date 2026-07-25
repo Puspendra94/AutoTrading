@@ -401,18 +401,26 @@ import Layout from '../layouts/Layout.astro';
     }
 
     // ---------- Load ----------
+    // Stays "connected" if the provider has keys for EITHER network, so switching to a network
+    // whose keys aren't added yet keeps the connected view (with the add-keys panel) rather
+    // than flipping to the first-time connect form.
+    const hasAnyKeys = (p?: Provider | null) => !!(p && (p.networks?.mainnet || p.networks?.testnet || p.hasCredentials));
+
     async function load() {
       stopAccountPolling();
       try {
         const providers = await apiGet<Provider[]>('/providers');
-        userProvider = providers.find((p) => p.type === 'binance' && p.hasCredentials) || providers.find((p) => p.type === 'binance') || null;
-        const connected = providers.find((p) => p.type === 'binance' && p.hasCredentials);
-        if (connected) renderConnected(connected); else renderConnectForm();
+        userProvider = providers.find((p) => p.type === 'binance' && hasAnyKeys(p))
+          || providers.find((p) => p.type === 'binance') || null;
+        if (hasAnyKeys(userProvider)) renderConnected(userProvider!); else renderConnectForm();
         await renderRisk();
       } catch (err) {
         $('connBody').innerHTML = `<div class="card p-6"><p class="text-sm text-bear">${err instanceof ApiError ? esc(err.message) : 'Failed to load'}</p></div>`;
       }
     }
+
+    // Re-render when the header network toggle switches networks (badge + account for the new net).
+    window.addEventListener('network-changed', () => load());
 
     selectTab(new URLSearchParams(location.search).get('tab') === 'risk' ? 'risk' : 'connector', false);
     load();

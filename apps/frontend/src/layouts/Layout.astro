@@ -264,6 +264,8 @@ const pageTitle = navItems.find((n) => n.href === currentPath)?.label ?? title;
         try {
           await apiPatch(`/providers/${netProviderId}/trading-mode`, { useTestnet });
           await refreshConnection();
+          // Let the current page (e.g. Profile) re-render for the new network.
+          window.dispatchEvent(new CustomEvent('network-changed', { detail: { useTestnet } }));
         } catch (e) { console.error('Network switch failed', e); }
         finally { switching = false; }
       }

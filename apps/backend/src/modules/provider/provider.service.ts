@@ -214,7 +214,8 @@ export class ProviderService {
       await this.recordApiSuccess(providerId);
     } catch (err) {
       await this.recordApiFailure(providerId);
-      throw err;
+      // Surface Binance's real message (e.g. "Invalid API-key, IP, or permissions") instead of a bare 500.
+      throw new BadRequestException(err?.message ? `Binance API error: ${err.message}` : "Binance API request failed.");
     }
 
     // "Tradable balance" (spec 2.1) = free USDT (or the primary quote asset). Fall back
@@ -257,10 +258,10 @@ export class ProviderService {
         { apiKey: creds.apiKey, apiSecret: creds.apiSecret },
         provider.useTestnet,
       );
-      await this.recordApiSuccess(providerId);
     } catch (err) {
-      await this.recordApiFailure(providerId);
-      throw err;
+      // This is a UI read poll (every ~15s) — do NOT trip the trading kill switch on a read
+      // failure (that's reserved for order-placement/sync failures). Just surface the message.
+      throw new BadRequestException(err?.message ? `Binance API error: ${err.message}` : 'Binance API request failed.');
     }
 
     const usdt = account.balances.find((b) => b.asset === 'USDT');
