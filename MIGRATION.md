@@ -119,11 +119,16 @@ Split into sub-phases by risk (money/AI logic last):
     structured-output method selection (DeepSeek → `json_mode`), same `-fallback` synthetic
     path, same pricing table, and `llm_cost_log` writes. Deterministic parts unit-tested
     (`tests/test_llm.py`, 8 cases). No caller wired yet — it's the foundation 3b-2/3b-3 use.
-  - **3b-2 — evaluator/backtest engine.** Port `strategy-evaluator.service.ts` (~420 lines:
-    walk-forward split, Sharpe/Sortino/Calmar, Monte Carlo, regime breakdown, parameter
-    count). Validate with a **parity harness**: same candles through the TS and Python
-    evaluators, diff every metric until they match. Money-critical — its numbers decide which
-    strategies pass the gate.
+  - **3b-2 — evaluator/backtest engine  ✅ (this change).** Faithful port of
+    `strategy-evaluator.service.ts` → `worker/strategy/evaluator.py` (walk-forward split,
+    Sharpe/Sortino/Calmar, drawdown, profit factor, regime breakdown, parameter count, gate),
+    including a `to_fixed` that matches JS `Number(x.toFixed(n))` on the exact double.
+    Validated by a **parity harness** (`tools/parity_evaluator.py` +
+    `apps/backend/tools/parity_evaluator_runner.ts`): identical candles through the real TS
+    service and the Python port — every deterministic field matches across 4 scenarios × 2
+    policies (gate=False and gate=True). Monte Carlo fields are RNG-driven in both and
+    excluded; the gate does not depend on them. Golden values from the TS run are pinned in
+    `tests/test_evaluator.py` so drift fails CI without needing Node.
   - **3b-3 — generation orchestration + wiring.** Port `generateStrategyForTicker` (prompt
     build with lessons, gate-before-save retry loop, persist strategy + backtest, retire/
     promote, record lesson) and switch the Supervisor to generate in-process instead of
