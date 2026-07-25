@@ -10,8 +10,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "websockets>=12.0",   # live Binance kline stream (Phase 1 ingestion)
     "redis>=5.0",         # async pub/sub — publishes market:tick to the backend
-    # AI section (strategy generation) — added when the LLM port lands:
-    # "anthropic>=0.40",
+    # AI section (strategy generation, Phase 3b) — LangChain, same providers as the backend.
+    "pydantic>=2.0",
+    "langchain-core>=0.3",
+    "langchain-anthropic>=0.3",
+    "langchain-aws>=0.2",
+    "langchain-deepseek>=0.1",
 ]
 
 [project.optional-dependencies]

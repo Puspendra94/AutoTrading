@@ -111,10 +111,24 @@ Split into sub-phases by risk (money/AI logic last):
   flag-gated (`SUPERVISOR_ENABLED`, default off); when on, it is the responsive replacement
   for the daily `strategy_reevaluation` trigger. The decision math is pure functions with unit
   tests (`tests/test_supervisor.py`).
-- **3b — LLM strategy generation → worker.** Port `generateStrategyForTicker` (prompt build,
-  structured parsing, backtest, evaluation gate) into Python behind a parity harness; the
-  supervisor then generates in-process instead of publishing to the backend. Feeds Tier-1
-  knowledge + prior lessons into the prompt (below). Higher risk (LLM output parity).
+- **3b — LLM strategy generation → worker.** Ported faithfully in layers behind a parity
+  harness; the supervisor eventually generates in-process instead of publishing to the backend.
+  - **3b-1 — LLM layer  ✅ (this change).** Faithful Python port of `LlmChainBuilder` +
+    `LlmService` + the zod schemas (`worker/llm/`): same `LLM_MODELS` fallback chain, same
+    per-provider build (`langchain-anthropic` / `langchain-aws` / `langchain-deepseek`), same
+    structured-output method selection (DeepSeek → `json_mode`), same `-fallback` synthetic
+    path, same pricing table, and `llm_cost_log` writes. Deterministic parts unit-tested
+    (`tests/test_llm.py`, 8 cases). No caller wired yet — it's the foundation 3b-2/3b-3 use.
+  - **3b-2 — evaluator/backtest engine.** Port `strategy-evaluator.service.ts` (~420 lines:
+    walk-forward split, Sharpe/Sortino/Calmar, Monte Carlo, regime breakdown, parameter
+    count). Validate with a **parity harness**: same candles through the TS and Python
+    evaluators, diff every metric until they match. Money-critical — its numbers decide which
+    strategies pass the gate.
+  - **3b-3 — generation orchestration + wiring.** Port `generateStrategyForTicker` (prompt
+    build with lessons, gate-before-save retry loop, persist strategy + backtest, retire/
+    promote, record lesson) and switch the Supervisor to generate in-process instead of
+    publishing `strategy:regenerate`. Retire the backend `StrategyRegenerateConsumer` at
+    cutover.
 - **3c — Risk gate + execution → worker.** Port the risk gate and order execution as parallel
   pipelines (process pool for CPU-heavy stages); worker publishes `positions:update` /
   fills to Redis, backend forwards to browsers. Highest risk (real orders).
