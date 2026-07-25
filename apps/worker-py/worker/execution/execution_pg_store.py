@@ -128,6 +128,13 @@ class PgExecutionStore:
             return None
         return {"hardStopLossPct": row["hard_stop_loss_pct"], "hardTakeProfitPct": row["hard_take_profit_pct"]}
 
+    async def update_position_mark(self, position_id: str, current_price: float, unrealized_pl: float) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE positions SET current_price = $2, unrealized_pl = $3 WHERE id = $1",
+                position_id, current_price, unrealized_pl,
+            )
+
     async def record_api_success(self, provider_id: str) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE providers SET api_failure_count = 0 WHERE id = $1 AND api_failure_count != 0", provider_id)

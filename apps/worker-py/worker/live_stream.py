@@ -69,8 +69,9 @@ def _stream_url(tickers: list[dict]) -> str:
     return f"{config.binance_ws_base}/stream?streams={streams}"
 
 
-async def _handle_message(raw: str, by_key: dict[str, str]) -> None:
-    """Parse one combined-stream frame, publish the tick, persist on close."""
+async def _handle_message(raw: str, by_key: dict[str, str], executor=None) -> None:
+    """Parse one combined-stream frame, publish the tick, persist on close, and — when the
+    worker owns execution — drive the live trading loop."""
     msg = json.loads(raw)
     data = msg.get("data", msg)  # combined streams wrap payload under "data"
     k = data.get("k")
@@ -84,6 +85,7 @@ async def _handle_message(raw: str, by_key: dict[str, str]) -> None:
         return  # a stream we didn't ask for / ticker vanished
 
     is_final = bool(k["x"])
+    close = float(k["c"])
     tick = {
         "tickerId": ticker_id,
         "symbol": symbol.upper(),
@@ -93,7 +95,7 @@ async def _handle_message(raw: str, by_key: dict[str, str]) -> None:
         "open": float(k["o"]),
         "high": float(k["h"]),
         "low": float(k["l"]),
-        "close": float(k["c"]),
+        "close": close,
         "volume": float(k["v"]),
         "isFinal": is_final,
     }
@@ -103,9 +105,27 @@ async def _handle_message(raw: str, by_key: dict[str, str]) -> None:
     if is_final:
         await _upsert_final_candle(ticker_id, k)
 
+    # Live trading loop (Phase 3c-3) — mark price + hard exits every tick, evaluate+execute on
+    # close. Only when the worker owns execution; a failure must not break ingestion.
+    if executor is not None:
+        try:
+            await executor.on_tick(ticker_id, close)
+            if is_final:
+                await executor.on_final_candle(ticker_id, close)
+        except Exception:  # noqa: BLE001
+            log.exception("Live execution failed for ticker %s", ticker_id)
+
 
 async def run_live_stream(stop: asyncio.Event) -> None:
     """Own the live kline stream until `stop` is set, reconnecting on failure."""
+    executor = None
+    if config.worker_owns_execution:
+        from .execution.factory import build_live_executor
+
+        executor = build_live_executor(await get_pool())
+        log.warning("WORKER OWNS EXECUTION — live orders will be driven from this process. "
+                    "Ensure the backend is set to LIVE_EXECUTION_SOURCE=worker.")
+
     while not stop.is_set():
         tickers = await _load_streamable_tickers()
         if not tickers:
@@ -123,7 +143,7 @@ async def run_live_stream(stop: asyncio.Event) -> None:
                     if stop.is_set():
                         break
                     try:
-                        await _handle_message(raw, by_key)
+                        await _handle_message(raw, by_key, executor)
                     except Exception:  # noqa: BLE001 — one bad frame must not kill the stream
                         log.exception("Failed to handle kline frame")
         except Exception as err:  # noqa: BLE001 — reconnect on any socket error

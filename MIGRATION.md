@@ -158,10 +158,19 @@ Split into sub-phases by risk (money/AI logic last):
     whole flow is unit-tested on the simulated + live-branch paths with fakes — never touching
     Binance (`tests/test_execution.py`, 11 cases). The risk gate's `flatten_all_positions` now
     delegates here when wired. **Not connected to the live tick loop yet.**
-  - **3c-3 — Live-loop integration + cutover.** Port `evaluateLiveSignal` (Mode A rules / Mode B
-    AI decision) and move the tick → evaluate → risk-gate → execute loop into the worker;
-    publish `positions:update` / fills to Redis for the backend to forward. Behind a live
-    cutover flag, on testnet first. **This is the step that moves real capital.**
+  - **3c-3 — Live-loop integration  ✅ (this change).** Ported `evaluateLiveSignal` (Mode A
+    deterministic EMA rules + Mode B AI decision) → `worker/execution/signals.py`, and the
+    per-tick loop → `worker/execution/live_executor.py`: on every tick mark-price + hard exits,
+    on candle close evaluate → BUY opens (via the gate+engine), SELL closes the matching
+    position. `factory.build_live_executor` wires the risk gate's flatten to the engine and
+    publishes `positions:update`. Wired into `live_stream` behind `WORKER_OWNS_EXECUTION`
+    (default off); the backend gains `LIVE_EXECUTION_SOURCE` (default `backend`) so when the
+    worker owns execution the backend stops executing and just forwards `positions:update`.
+    Mode A signals + the tick/execute dispatch are unit-tested (`tests/test_signals.py`,
+    `tests/test_live_executor.py`, 12 cases); Mode B and live orders need a testnet run.
+  - **Cutover:** set `WORKER_OWNS_EXECUTION=true` (worker) + `LIVE_EXECUTION_SOURCE=worker`
+    (backend) together — never one alone (double orders / none). Validate on Binance testnet
+    (provider `useTestnet=true`, `trading_mode=live`) before mainnet.
 - **Solves problem 4.**
 
 ## Strategy Supervisor (Phase 3) — deterministic memory + gated regeneration

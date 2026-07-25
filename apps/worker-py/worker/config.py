@@ -76,6 +76,12 @@ class Config:
     # Keep False until the in-process generator has been validated end-to-end.
     supervisor_generate_inline: bool = os.getenv("SUPERVISOR_GENERATE_INLINE", "false").lower() in ("1", "true", "yes", "on")
 
+    # Worker owns the live trading loop (Phase 3c-3): mark-price, hard exits, and — on candle
+    # close — evaluate signal + execute. Off by default; when ON, the backend MUST be set to
+    # LIVE_EXECUTION_SOURCE=worker so execution never runs in both places (double orders).
+    # Requires LIVE_STREAM_ENABLED (the worker must own the stream to drive execution).
+    worker_owns_execution: bool = os.getenv("WORKER_OWNS_EXECUTION", "false").lower() in ("1", "true", "yes", "on")
+
     @property
     def dsn(self) -> str:
         return (

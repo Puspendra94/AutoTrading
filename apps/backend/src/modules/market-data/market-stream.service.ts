@@ -12,8 +12,9 @@ import { StrategyEngineService } from '../strategy/strategy-engine.service';
 import { ExecutionService } from '../risk-execution/execution.service';
 import { REDIS_SUBSCRIBER } from '../../common/redis/redis.module';
 
-// Must match worker-py's redis_bus.MARKET_TICK_CHANNEL.
+// Must match worker-py's redis_bus channel names.
 export const MARKET_TICK_CHANNEL = 'market:tick';
+export const POSITIONS_UPDATE_CHANNEL = 'positions:update';
 
 /**
  * Owns live Binance kline WebSocket subscriptions for every ACTIVE ticker. Runs inside
@@ -32,6 +33,14 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
   // live stream AND 'internal' at once (double ingestion).
   private readonly liveStreamSource: 'internal' | 'redis' =
     process.env.LIVE_STREAM_SOURCE === 'redis' ? 'redis' : 'internal';
+
+  // Who runs the live trading loop (mark-price, hard exits, evaluate+execute). 'backend'
+  // (default) keeps it here; 'worker' means the Python worker owns execution (Phase 3c-3),
+  // so this process must NOT also execute — it only broadcasts price + forwards position
+  // updates the worker publishes. Set to 'worker' only together with the worker's
+  // WORKER_OWNS_EXECUTION, never one alone (double orders / no execution).
+  private readonly liveExecutionSource: 'backend' | 'worker' =
+    process.env.LIVE_EXECUTION_SOURCE === 'worker' ? 'worker' : 'backend';
 
   constructor(
     @InjectRepository(Ticker) private readonly tickerRepo: Repository<Ticker>,
@@ -84,8 +93,19 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Failed to subscribe to ${MARKET_TICK_CHANNEL}: ${err.message}`);
       }
     });
+    // When the worker owns execution it publishes position changes here; forward them to
+    // browsers over Socket.IO (this process still owns the WS server).
+    this.redisSubscriber.subscribe(POSITIONS_UPDATE_CHANNEL, (err) => {
+      if (err) {
+        this.logger.error(`Failed to subscribe to ${POSITIONS_UPDATE_CHANNEL}: ${err.message}`);
+      }
+    });
 
     this.redisSubscriber.on('message', (channel, message) => {
+      if (channel === POSITIONS_UPDATE_CHANNEL) {
+        this.tradingGateway.broadcastPositionUpdate();
+        return;
+      }
       if (channel !== MARKET_TICK_CHANNEL) return;
       let payload: any;
       try {
@@ -165,6 +185,10 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     if (tick.isFinal && persist) {
       await this.marketDataService.upsertLiveCandle(tickerId, candle);
     }
+
+    // When the worker owns execution (Phase 3c-3), it runs mark-price / hard exits /
+    // evaluate+execute itself; this process must not, or orders would be placed twice.
+    if (this.liveExecutionSource === 'worker') return;
 
     await this.updateOpenPositionsMarkPrice(tickerId, tick.close);
 
