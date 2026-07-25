@@ -1,6 +1,7 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Not, Repository } from 'typeorm';
+import Redis from 'ioredis';
 import { Ticker, TickerStatus } from '../../entities/ticker.entity';
 import { Position, PositionStatus, PositionSide } from '../../entities/position.entity';
 import { BinanceAdapter, LiveKlineTick } from '../provider/adapters/binance.adapter';
@@ -9,6 +10,10 @@ import { MarketDataSeedService } from './market-data-seed.service';
 import { TradingGateway } from '../../websockets/trading.gateway';
 import { StrategyEngineService } from '../strategy/strategy-engine.service';
 import { ExecutionService } from '../risk-execution/execution.service';
+import { REDIS_SUBSCRIBER } from '../../common/redis/redis.module';
+
+// Must match worker-py's redis_bus.MARKET_TICK_CHANNEL.
+export const MARKET_TICK_CHANNEL = 'market:tick';
 
 /**
  * Owns live Binance kline WebSocket subscriptions for every ACTIVE ticker. Runs inside
@@ -21,6 +26,13 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MarketStreamService.name);
   private readonly activeStreams = new Map<string, any>(); // tickerId -> WebsocketStream handle
 
+  // 'internal' (default) = own the Binance WS in-process (legacy). 'redis' = consume live
+  // ticks the Python worker publishes to market:tick — the worker then owns ingestion and
+  // is the writer of record for candles (Phase 1, see MIGRATION.md). Never run the worker's
+  // live stream AND 'internal' at once (double ingestion).
+  private readonly liveStreamSource: 'internal' | 'redis' =
+    process.env.LIVE_STREAM_SOURCE === 'redis' ? 'redis' : 'internal';
+
   constructor(
     @InjectRepository(Ticker) private readonly tickerRepo: Repository<Ticker>,
     @InjectRepository(Position) private readonly positionRepo: Repository<Position>,
@@ -30,6 +42,7 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     private readonly tradingGateway: TradingGateway,
     private readonly strategyEngineService: StrategyEngineService,
     private readonly executionService: ExecutionService,
+    @Inject(REDIS_SUBSCRIBER) private readonly redisSubscriber: Redis,
   ) {}
 
   async onModuleInit() {
@@ -42,14 +55,62 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Market-data seed failed: ${err.message}`);
     }
 
-    // Stream for any ticker that has real data behind it (ACTIVE = live-strategy-managed,
-    // ONBOARDING = added but strategy generation hasn't completed yet) — the dashboard's
-    // live chart is useful for any managed ticker, not only ones with a live strategy.
-    // INACTIVE means backfill failed; nothing to stream.
+    // Redis mode: the worker owns the Binance stream and publishes ticks; we just consume
+    // them here (broadcast + evaluate/execute). No in-process sockets are opened, so a
+    // backend restart never interrupts ingestion.
+    if (this.liveStreamSource === 'redis') {
+      this.subscribeToWorkerTicks();
+      this.logger.log(`Live ticks sourced from worker via Redis '${MARKET_TICK_CHANNEL}'; in-process Binance streams disabled.`);
+      return;
+    }
+
+    // Internal (legacy) mode: open in-process streams for any ticker that has real data
+    // behind it (ACTIVE = live-strategy-managed, ONBOARDING = added but strategy generation
+    // hasn't completed yet). INACTIVE means backfill failed; nothing to stream.
     const streamableTickers = await this.tickerRepo.find({ where: { status: Not(TickerStatus.INACTIVE) } });
     for (const ticker of streamableTickers) {
       this.startStream(ticker);
     }
+  }
+
+  /**
+   * Subscribe to the worker's live-tick channel and drive the same handleTick path the
+   * in-process stream used — but WITHOUT persisting (the worker already wrote the candle to
+   * ohlcv_data; the backend is now purely a consumer for chart + evaluate/execute).
+   */
+  private subscribeToWorkerTicks() {
+    this.redisSubscriber.subscribe(MARKET_TICK_CHANNEL, (err) => {
+      if (err) {
+        this.logger.error(`Failed to subscribe to ${MARKET_TICK_CHANNEL}: ${err.message}`);
+      }
+    });
+
+    this.redisSubscriber.on('message', (channel, message) => {
+      if (channel !== MARKET_TICK_CHANNEL) return;
+      let payload: any;
+      try {
+        payload = JSON.parse(message);
+      } catch (e) {
+        this.logger.error(`Failed to parse market:tick payload: ${e.message}`);
+        return;
+      }
+      const tick: LiveKlineTick = {
+        symbol: payload.symbol,
+        interval: payload.interval,
+        openTime: payload.openTime,
+        closeTime: payload.closeTime,
+        open: payload.open,
+        high: payload.high,
+        low: payload.low,
+        close: payload.close,
+        volume: payload.volume,
+        isFinal: payload.isFinal,
+      };
+      // Fire-and-forget: a slow/failed tick must not stall the subscriber.
+      this.handleTick(payload.tickerId, tick, { persist: false }).catch((err) =>
+        this.logger.error(`handleTick failed for ticker ${payload.tickerId}: ${err.message}`),
+      );
+    });
   }
 
   onModuleDestroy() {
@@ -79,7 +140,12 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleTick(tickerId: string, tick: LiveKlineTick) {
+  private async handleTick(
+    tickerId: string,
+    tick: LiveKlineTick,
+    opts: { persist?: boolean } = {},
+  ) {
+    const persist = opts.persist !== false; // default true (in-process/legacy path)
     const candle = {
       timestamp: new Date(tick.openTime),
       open: tick.open,
@@ -94,8 +160,9 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     this.tradingGateway.broadcastPriceUpdate(tickerId, { ...candle, isFinal: tick.isFinal });
 
     // Only persist to TimescaleDB on candle close to avoid rewriting the same row on
-    // every ~2s tick; upsert handles the case where it arrives more than once.
-    if (tick.isFinal) {
+    // every ~2s tick; upsert handles the case where it arrives more than once. Skipped when
+    // the tick came from the worker (persist:false) — the worker is the writer of record.
+    if (tick.isFinal && persist) {
       await this.marketDataService.upsertLiveCandle(tickerId, candle);
     }
 

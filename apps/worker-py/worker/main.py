@@ -83,10 +83,28 @@ async def main() -> None:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:  # pragma: no cover — e.g. Windows
             pass
+
+    # --- Live ingestion (native, Phase 1) — worker owns the Binance kline stream and is
+    # the writer of record for live candles. Gated so it doesn't double-ingest while the
+    # backend still streams in-process (see LIVE_STREAM_ENABLED / MIGRATION.md).
+    live_task: asyncio.Task | None = None
+    if config.live_stream_enabled:
+        from .live_stream import run_live_stream
+
+        live_task = asyncio.create_task(run_live_stream(stop))
+        log.info("Live ingestion pipeline started (worker owns the kline stream).")
+    else:
+        log.info("Live ingestion disabled (LIVE_STREAM_ENABLED=false); backend still streams.")
+
     await stop.wait()
 
     log.info("Shutting down…")
     scheduler.shutdown(wait=False)
+    if live_task is not None:
+        await live_task
+    from .redis_bus import close_redis
+
+    await close_redis()
     await close_pool()
 
 

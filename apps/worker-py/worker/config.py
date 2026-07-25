@@ -32,6 +32,13 @@ class Config:
     # data.binance.vision public archive (no auth). Spot monthly/daily kline zips.
     binance_vision_base: str = os.getenv("BINANCE_VISION_BASE", "https://data.binance.vision")
     binance_api_base: str = os.getenv("BINANCE_API_BASE", "https://api.binance.com")
+    # Live kline WebSocket (public, unauthenticated). Phase 1: the worker owns this stream,
+    # writes final candles to ohlcv_data, and publishes every tick to Redis for the backend.
+    binance_ws_base: str = os.getenv("BINANCE_WS_BASE", "wss://stream.binance.com:9443")
+    # Master switch for the live-ingestion pipeline. Keep this OFF while the backend still
+    # streams in-process (LIVE_STREAM_SOURCE=internal) so the same candle isn't ingested
+    # twice; flip both together at cutover (worker on, backend -> redis).
+    live_stream_enabled: bool = os.getenv("LIVE_STREAM_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
     # Single base interval = the minimum Binance publishes (1m). Everything else is a
     # DB-level roll-up via TimescaleDB time_bucket (see worker/candles.py), so we store
