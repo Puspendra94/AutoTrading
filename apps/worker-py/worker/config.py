@@ -28,6 +28,11 @@ class Config:
     backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3009")
     internal_api_key: str = os.getenv("INTERNAL_API_KEY", "")
     balance_sync_interval_minutes: int = int(os.getenv("BALANCE_SYNC_INTERVAL_MINUTES", "5"))
+    # How scheduled jobs reach the backend (Phase 2, see MIGRATION.md):
+    #   http  (default) = POST /internal/jobs/* synchronously (worker depends on backend).
+    #   redis           = publish the job name to jobs:trigger; backend consumes it async,
+    #                     so the worker no longer blocks on or depends on the backend.
+    job_dispatch: str = os.getenv("JOB_DISPATCH", "http").lower()
 
     # data.binance.vision public archive (no auth). Spot monthly/daily kline zips.
     binance_vision_base: str = os.getenv("BINANCE_VISION_BASE", "https://data.binance.vision")

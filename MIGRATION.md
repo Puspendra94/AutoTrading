@@ -81,11 +81,24 @@ streams to Redis Streams later if at-least-once delivery is needed.
   ingestion).
 - **Solves problems 1, 2 (partial), 3.**
 
-### Phase 2 — Job execution → worker
-- Move the six `/internal/jobs/*` bodies (`InternalJobsService`) into the worker so it
-  *executes*, not just *triggers*. Remove the HTTP round-trip and the backend↔worker
-  runtime dependency.
-- **Completes problem 2.**
+### Phase 2 — Async job dispatch (decouple worker from backend)  ✅ (this change)
+- **Refinement of the original "move bodies to worker" step.** Four of the six jobs
+  (`balance-sync`, `reconciliation`, `allocation-rebalance`, `strategy-reevaluation`) depend
+  on the Binance provider adapter, credential handling, and the LLM — i.e. the exact code
+  Phase 3 ports. Re-implementing them in Python now would pull Phase 3's risk forward, so
+  the **bodies stay in the backend** for now and move in Phase 3 with their dependencies.
+- What changes instead: the **trigger** becomes async. The worker publishes a job name to
+  Redis `jobs:trigger` (instead of a synchronous `POST /internal/jobs/*`); the backend's
+  `InternalJobsRedisConsumer` picks it up and runs the same proven `InternalJobsService`
+  body. The worker no longer blocks on — or fails because of — the backend, so the two
+  deploy and restart independently.
+- Gated by `JOB_DISPATCH` (worker): `http` (default, legacy) or `redis` (decoupled). The
+  backend always listens on `jobs:trigger`, so cutover is a worker-only flag flip. The
+  guarded HTTP endpoints remain for manual/debug triggers.
+- Delivery is fire-and-forget pub/sub: if the backend is down, that periodic tick is skipped
+  and runs next cadence (fine for 5-min/hourly jobs). Upgrade to Redis Streams later if
+  at-least-once delivery is needed.
+- **Completes problem 2** (independent deploy + async comms).
 
 ### Phase 3 — Strategy analysis, guardrails, execution, and the Strategy Supervisor → worker
 - Port strategy generation (LLM), evaluation, the risk gate, and order execution into the

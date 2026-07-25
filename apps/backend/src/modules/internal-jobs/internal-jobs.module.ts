@@ -11,6 +11,7 @@ import { MarketDataModule } from '../market-data/market-data.module';
 import { StrategyModule } from '../strategy/strategy.module';
 import { InternalJobsService } from './internal-jobs.service';
 import { InternalJobsController } from './internal-jobs.controller';
+import { InternalJobsRedisConsumer } from './internal-jobs-redis.consumer';
 
 // API-process module hosting the former worker jobs as internal, secret-guarded endpoints
 // the Python worker triggers on a schedule. Reuses the exact services the old jobs called.
@@ -24,7 +25,7 @@ import { InternalJobsController } from './internal-jobs.controller';
     MarketDataModule,
     StrategyModule,
   ],
-  providers: [InternalJobsService],
+  providers: [InternalJobsService, InternalJobsRedisConsumer],
   controllers: [InternalJobsController],
 })
 export class InternalJobsModule {}
