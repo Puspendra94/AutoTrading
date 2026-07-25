@@ -16,8 +16,11 @@ log = logging.getLogger("worker.execution.riskgate")
 
 
 class PgRiskGateStore:
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, flatten_fn=None) -> None:
         self.pool = pool
+        # Set by the live-execution factory (3c-2/3c-3) to ExecutionService.flatten so a
+        # daily-loss breach actually flattens positions. Until wired, flatten is a loud no-op.
+        self._flatten_fn = flatten_fn
 
     async def get_ticker(self, ticker_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
@@ -107,10 +110,12 @@ class PgRiskGateStore:
             )
 
     async def flatten_all_positions(self, provider_id: str, reason: str) -> None:
-        # Places real close orders — deferred to Phase 3c-2. For now, surface loudly so a
-        # breach is never silently un-flattened once this gate is wired live.
-        log.error("flatten_all_positions requested for provider %s (%s) but execution is not "
-                  "ported yet (Phase 3c-2); positions NOT flattened by the worker.", provider_id, reason)
+        if self._flatten_fn is not None:
+            await self._flatten_fn(provider_id, reason)
+            return
+        # No execution wired in — surface loudly so a breach is never silently un-flattened.
+        log.error("flatten_all_positions requested for provider %s (%s) but no execution engine "
+                  "is wired to this gate; positions NOT flattened.", provider_id, reason)
 
     async def count_open_positions(self, ticker_id: str) -> int:
         async with self.pool.acquire() as conn:

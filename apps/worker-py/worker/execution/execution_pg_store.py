@@ -1,0 +1,156 @@
+"""asyncpg-backed ExecutionStore — production DB adapter for the execution engine (3c-2).
+
+Not exercised until the live loop is wired and enabled (3c-3); unit tests use a fake store.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Optional
+
+import asyncpg
+
+log = logging.getLogger("worker.execution.store")
+
+API_FAILURE_KILL_THRESHOLD = int(os.getenv("PROVIDER_API_FAILURE_THRESHOLD", "5"))
+
+
+class PgExecutionStore:
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self.pool = pool
+
+    async def get_ticker(self, ticker_id: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id, symbol, provider_id FROM tickers WHERE id = $1", ticker_id)
+        return {"id": str(row["id"]), "symbol": row["symbol"], "providerId": str(row["provider_id"])} if row else None
+
+    async def get_provider(self, provider_id: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, name, trading_mode, type, use_testnet FROM providers WHERE id = $1", provider_id
+            )
+        if not row:
+            return None
+        return {"id": str(row["id"]), "name": row["name"], "tradingMode": row["trading_mode"],
+                "type": row["type"], "useTestnet": row["use_testnet"]}
+
+    async def get_credential(self, provider_id: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT credential_json FROM provider_credentials WHERE provider_id = $1", provider_id)
+        return row["credential_json"] if row else None
+
+    async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation) -> str:
+        async with self.pool.acquire() as conn:
+            pid = await conn.fetchval(
+                """
+                INSERT INTO positions
+                    (ticker_id, strategy_id, side, status, entry_price, current_price, quantity,
+                     unrealized_pl, realized_pl, is_probation)
+                VALUES ($1, $2, $3, 'open', $4, $4, $5, 0, 0, $6)
+                RETURNING id
+                """,
+                ticker_id, strategy_id, side, entry_price, quantity, is_probation,
+            )
+        return str(pid)
+
+    async def insert_order(self, *, position_id, provider_order_id, side, quantity, price) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO orders (position_id, provider_order_id, side, quantity, price, order_type, status, filled_at)
+                VALUES ($1, $2, $3, $4, $5, 'market', 'filled', now())
+                """,
+                position_id, provider_order_id, side, quantity, price,
+            )
+
+    async def get_position(self, position_id: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT p.id, p.ticker_id, p.side, p.status, p.entry_price, p.current_price, p.quantity,
+                       t.provider_id, t.symbol
+                FROM positions p LEFT JOIN tickers t ON t.id = p.ticker_id
+                WHERE p.id = $1
+                """,
+                position_id,
+            )
+        if not row:
+            return None
+        return {"id": str(row["id"]), "tickerId": str(row["ticker_id"]), "side": row["side"],
+                "status": row["status"], "entryPrice": row["entry_price"], "currentPrice": row["current_price"],
+                "quantity": row["quantity"], "providerId": str(row["provider_id"]) if row["provider_id"] else None,
+                "symbol": row["symbol"]}
+
+    async def close_position_row(self, *, position_id, exit_price, realized_pl) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE positions
+                SET status = 'closed', exit_price = $2, current_price = $2, realized_pl = $3,
+                    unrealized_pl = 0, closed_at = now()
+                WHERE id = $1
+                """,
+                position_id, exit_price, realized_pl,
+            )
+
+    async def find_open_positions_by_ticker(self, ticker_id: str) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT p.id, p.side, p.entry_price, p.current_price, p.quantity, t.provider_id
+                FROM positions p LEFT JOIN tickers t ON t.id = p.ticker_id
+                WHERE p.ticker_id = $1 AND p.status = 'open'
+                """,
+                ticker_id,
+            )
+        return [{"id": str(r["id"]), "side": r["side"], "entryPrice": r["entry_price"],
+                 "currentPrice": r["current_price"], "quantity": r["quantity"],
+                 "providerId": str(r["provider_id"]) if r["provider_id"] else None} for r in rows]
+
+    async def find_open_positions_by_provider(self, provider_id: str) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT p.id, p.entry_price, p.current_price
+                FROM positions p LEFT JOIN tickers t ON t.id = p.ticker_id
+                WHERE t.provider_id = $1 AND p.status = 'open'
+                """,
+                provider_id,
+            )
+        return [{"id": str(r["id"]), "entryPrice": r["entry_price"], "currentPrice": r["current_price"]} for r in rows]
+
+    async def get_hard_caps(self, provider_id: str) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT hard_stop_loss_pct, hard_take_profit_pct FROM risk_limits WHERE provider_id = $1", provider_id
+            )
+        if not row:
+            return None
+        return {"hardStopLossPct": row["hard_stop_loss_pct"], "hardTakeProfitPct": row["hard_take_profit_pct"]}
+
+    async def record_api_success(self, provider_id: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("UPDATE providers SET api_failure_count = 0 WHERE id = $1 AND api_failure_count != 0", provider_id)
+
+    async def record_api_failure(self, provider_id: str) -> None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT kill_switch_active, api_failure_count, name FROM providers WHERE id = $1", provider_id
+            )
+            if not row or row["kill_switch_active"]:
+                return
+            new_count = int(row["api_failure_count"]) + 1
+            await conn.execute("UPDATE providers SET api_failure_count = $2 WHERE id = $1", provider_id, new_count)
+            if new_count >= API_FAILURE_KILL_THRESHOLD:
+                reason = f"{new_count} consecutive provider API failures (threshold {API_FAILURE_KILL_THRESHOLD})."
+                await conn.execute(
+                    "UPDATE providers SET kill_switch_active = true, kill_switch_reason = $2 WHERE id = $1",
+                    provider_id, reason,
+                )
+                # NOTE(3c-3): also publish to Redis alerts:created for live dashboard delivery.
+                await conn.execute(
+                    "INSERT INTO alerts (severity, category, message, related_entity_type, related_entity_id) "
+                    "VALUES ('critical', 'KILL_SWITCH_TRIGGERED', $2, 'Provider', $1)",
+                    provider_id,
+                    f"Kill switch triggered for provider {row['name']}: {reason}. All new orders blocked until manually cleared.",
+                )

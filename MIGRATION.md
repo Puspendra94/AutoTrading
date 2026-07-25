@@ -148,12 +148,20 @@ Split into sub-phases by risk (money/AI logic last):
     `risk-gate.service.spec.ts` plus the sizing/probation/breach math
     (`tests/test_risk_gate.py`, 10 cases). Places NO orders and is not wired to any caller —
     `flatten_all_positions` is a loud no-op until 3c-2.
-  - **3c-2 — Execution + live loop.** Port `execution.service.ts` (Binance market orders via a
-    Python adapter, position/order writes, closePosition, flattenAllPositionsForProvider, hard
-    stop-loss/take-profit exits) and move the tick → evaluate → risk-gate → execute loop into
-    the worker. Worker publishes `positions:update` / fills to Redis; backend forwards to
-    browsers. **Highest risk (real capital)** — do after validating 3a/3b and behind a live
-    cutover flag.
+  - **3c-2 — Execution engine  ✅ (this change).** Faithful port of `execution.service.ts` →
+    `worker/execution/execution.py`: executeTradeSignal (gate → live-or-simulated fill →
+    position+order write), closePosition (P/L), flattenAllPositionsForProvider, and
+    enforceHardExits. A real order is placed ONLY in `live` + `binance` + creds
+    (`BinanceOrderPlacer`, `binance-connector`); otherwise a simulated `SIM_*` fill at the real
+    streamed price. `record_api_failure` trips the kill switch at the threshold. Order placement
+    is behind an `OrderPlacer` and DB behind `ExecutionStore` (`execution_pg_store.py`), so the
+    whole flow is unit-tested on the simulated + live-branch paths with fakes — never touching
+    Binance (`tests/test_execution.py`, 11 cases). The risk gate's `flatten_all_positions` now
+    delegates here when wired. **Not connected to the live tick loop yet.**
+  - **3c-3 — Live-loop integration + cutover.** Port `evaluateLiveSignal` (Mode A rules / Mode B
+    AI decision) and move the tick → evaluate → risk-gate → execute loop into the worker;
+    publish `positions:update` / fills to Redis for the backend to forward. Behind a live
+    cutover flag, on testnet first. **This is the step that moves real capital.**
 - **Solves problem 4.**
 
 ## Strategy Supervisor (Phase 3) — deterministic memory + gated regeneration

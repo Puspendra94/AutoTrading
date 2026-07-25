@@ -16,6 +16,7 @@ dependencies = [
     "langchain-anthropic>=0.3",
     "langchain-aws>=0.2",
     "langchain-deepseek>=0.1",
+    "binance-connector>=3.0",   # live market-order placement (Phase 3c-2 execution)
 ]
 
 [project.optional-dependencies]
