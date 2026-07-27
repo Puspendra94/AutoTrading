@@ -82,6 +82,13 @@ async def alert_digest():
 
 
 async def strategy_reevaluation():
+    # Phase B: when the worker owns the strategy engine, run the divergence check in-process
+    # (pure DB + math, and it triggers regeneration via the worker's own strategy:generate consumer)
+    # instead of asking the backend to.
+    if config.generation_source == "worker":
+        from .strategy.divergence import run_divergence_check
+
+        return await run_divergence_check()
     return await trigger("strategy-reevaluation")
 
 
