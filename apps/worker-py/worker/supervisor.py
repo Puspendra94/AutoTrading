@@ -17,7 +17,7 @@ import logging
 
 from .config import config
 from .db import get_pool
-from .redis_bus import STRATEGY_REGENERATE_CHANNEL, get_redis
+from .redis_bus import STRATEGY_GENERATE_CHANNEL, STRATEGY_REGENERATE_CHANNEL, get_redis
 
 log = logging.getLogger("worker.supervisor")
 
@@ -159,20 +159,24 @@ async def run_supervisor_once() -> dict:
 
         _flagged.add(s["id"])
         try:
-            if config.supervisor_generate_inline:
+            if config.generation_source == "worker":
+                # Worker owns generation (Phase B): hand it to our own strategy:generate consumer,
+                # which runs it sequentially and decoupled from this deterministic sweep.
+                import uuid
+                payload = {"requestId": str(uuid.uuid4()), "tickerId": s["ticker_id"], "reason": reason}
+                await get_redis().publish(STRATEGY_GENERATE_CHANNEL, json.dumps(payload))
+                dest = "worker generate consumer"
+            elif config.supervisor_generate_inline:
                 await _regenerate_inline(s["ticker_id"], reason)
+                dest = "in-process"
             else:
-                payload = {
-                    "tickerId": s["ticker_id"],
-                    "strategyId": s["id"],
-                    "reason": reason,
-                    "triggeredBy": "supervisor",
-                }
+                payload = {"tickerId": s["ticker_id"], "strategyId": s["id"], "reason": reason,
+                           "triggeredBy": "supervisor"}
                 await get_redis().publish(STRATEGY_REGENERATE_CHANNEL, json.dumps(payload))
+                dest = "backend"
             triggered += 1
-            log.warning("Strategy %s (ticker %s) tripped a guardrail — %s. Regeneration %s.",
-                        s["id"], s["ticker_id"], reason,
-                        "run in-process" if config.supervisor_generate_inline else "requested from backend")
+            log.warning("Strategy %s (ticker %s) tripped a guardrail — %s. Regeneration -> %s.",
+                        s["id"], s["ticker_id"], reason, dest)
         except Exception as err:  # noqa: BLE001 — a failure must not kill the sweep
             _flagged.discard(s["id"])  # allow a retry next cycle
             log.warning("Regeneration trigger failed for strategy %s: %s", s["id"], err)
