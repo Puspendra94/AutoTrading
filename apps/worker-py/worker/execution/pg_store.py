@@ -8,11 +8,20 @@ in the live path until 3c-2.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import Optional
 
 import asyncpg
 
 log = logging.getLogger("worker.execution.riskgate")
+
+
+def _as_date(value) -> date:
+    """Coerce a 'YYYY-MM-DD' string (what the risk gate passes) to a datetime.date so asyncpg can
+    bind it to a `date` column — asyncpg's date codec calls .toordinal() and rejects a raw str."""
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
 
 class PgRiskGateStore:
@@ -69,8 +78,8 @@ class PgRiskGateStore:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT realized_pl, unrealized_pl, limit_breached FROM daily_loss_tracking "
-                "WHERE provider_id = $1 AND tracking_date = $2::date",
-                provider_id, today,
+                "WHERE provider_id = $1 AND tracking_date = $2",
+                provider_id, _as_date(today),
             )
         if not row:
             return None
@@ -89,16 +98,16 @@ class PgRiskGateStore:
             await conn.execute(
                 "INSERT INTO daily_loss_tracking "
                 "(provider_id, tracking_date, capital_under_management_base, realized_pl, unrealized_pl, limit_breached) "
-                "VALUES ($1, $2::date, $3, 0, 0, false)",
-                provider_id, today, cum_base,
+                "VALUES ($1, $2, $3, 0, 0, false)",
+                provider_id, _as_date(today), cum_base,
             )
 
     async def mark_breached(self, provider_id: str, today: str) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "UPDATE daily_loss_tracking SET limit_breached = true, breached_at = now() "
-                "WHERE provider_id = $1 AND tracking_date = $2::date",
-                provider_id, today,
+                "WHERE provider_id = $1 AND tracking_date = $2",
+                provider_id, _as_date(today),
             )
 
     async def create_alert(self, severity: str, category: str, message: str, related_type: str, related_id: str) -> None:
