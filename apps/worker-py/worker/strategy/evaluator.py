@@ -20,6 +20,9 @@ import random
 from decimal import ROUND_HALF_DOWN, ROUND_HALF_UP, Decimal
 from typing import Any
 
+from .dsl.interpreter import simulate_from_ir
+from .dsl.ir import count_ir_parameters, resolve_ir
+
 MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000
 
 
@@ -65,67 +68,18 @@ def _estimate_periods_per_year(candles: list[dict]) -> float:
 
 
 def _count_tunable_parameters(params: Any) -> int:
-    indicator_config = (params or {}).get("indicatorConfig")
-    if not isinstance(indicator_config, dict):
-        return 0
-    return sum(1 for v in indicator_config.values() if v is not None)
+    ir = resolve_ir(params)
+    return count_ir_parameters(ir) if ir else 0
 
 
 def _simulate_trades(candles: list[dict], params: dict) -> dict:
-    trades: list[float] = []
-    position = "NONE"
-    entry_price = 0.0
-    equity = 10000.0
-    peak_equity = equity
-    max_drawdown = 0.0
-    current_dd_duration = 0
-    max_dd_duration = 0
-
-    cfg = params.get("indicatorConfig") or {}
-    ema_fast_period = cfg.get("emaFastPeriod") or 12
-    ema_slow_period = cfg.get("emaSlowPeriod") or 26
-    stop_loss_pct = (cfg.get("stopLossPct") or 1.5) / 100
-    take_profit_pct = (cfg.get("takeProfitPct") or 3.5) / 100
-
-    if len(candles) <= ema_slow_period:
-        return {"trades": trades, "maxDrawdown": 0.0, "drawdownDuration": 0}
-
-    closes = [float(c["close"]) for c in candles]
-    fast_ema = _calculate_ema(closes, ema_fast_period)
-    slow_ema = _calculate_ema(closes, ema_slow_period)
-
-    for i in range(ema_slow_period, len(candles)):
-        price = closes[i]
-
-        if equity > peak_equity:
-            peak_equity = equity
-            current_dd_duration = 0
-        else:
-            current_dd_duration += 1
-            dd = ((peak_equity - equity) / peak_equity) * 100
-            if dd > max_drawdown:
-                max_drawdown = dd
-            if current_dd_duration > max_dd_duration:
-                max_dd_duration = current_dd_duration
-
-        if position == "NONE":
-            if fast_ema[i] > slow_ema[i] and fast_ema[i - 1] <= slow_ema[i - 1]:
-                position = "LONG"
-                entry_price = price * 1.0005  # 0.05% slippage on entry
-        elif position == "LONG":
-            return_pct = (price - entry_price) / entry_price
-            is_stop_loss = return_pct <= -stop_loss_pct
-            is_take_profit = return_pct >= take_profit_pct
-            is_cross_down = fast_ema[i] < slow_ema[i]
-
-            if is_stop_loss or is_take_profit or is_cross_down:
-                exit_price = price * 0.9995  # 0.05% slippage on exit
-                net_return_pct = (exit_price - entry_price) / entry_price - 0.0015  # 0.15% roundtrip fee
-                equity += equity * net_return_pct
-                trades.append(net_return_pct)
-                position = "NONE"
-
-    return {"trades": trades, "maxDrawdown": max_drawdown, "drawdownDuration": max_dd_duration}
+    # One code path for every strategy: resolve to a rule tree (legacy params auto-translated)
+    # and run the shared DSL interpreter (identical slippage/fee/equity accounting to the TS side).
+    # Invalid params -> no trades. Mirrors strategy-evaluator.service.ts::simulateTrades.
+    ir = resolve_ir(params)
+    if not ir:
+        return {"trades": [], "maxDrawdown": 0.0, "drawdownDuration": 0}
+    return simulate_from_ir(candles, ir)
 
 
 def _compute_metrics(sim: dict, periods_per_year: float) -> dict:
@@ -295,7 +249,11 @@ def evaluate_strategy(candles: list[dict], params: dict, policy: dict) -> dict:
     passed_sharpe = oos_metrics["sharpe"] >= _num(policy.get("minSharpe"))
     passed_drawdown = out_of_sample_sim["maxDrawdown"] <= _num(policy.get("maxDrawdownPct"))
     passed_profit_factor = oos_metrics["profitFactor"] >= _num(policy.get("minProfitFactor"))
-    passed_trade_count = trade_count >= _num(policy.get("minTradeCount")) or trade_count >= 5
+    # Honest, self-consistent trade-count gate: require the policy's minTradeCount directly (no
+    # hidden ">=5" override, which used to make the policy lie to the LLM — its lessons kept
+    # chasing "100 trades" when the real bar was 5). minTradeCount is tuned to what's actually
+    # reachable on the eval interval so it stays meaningful without being impossible.
+    passed_trade_count = trade_count >= _num(policy.get("minTradeCount"))
 
     parameter_count = _count_tunable_parameters(params)
     passed_parameter_count = parameter_count <= _num(policy.get("maxParameterCount"))

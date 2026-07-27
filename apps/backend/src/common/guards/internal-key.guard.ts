@@ -1,4 +1,5 @@
 import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { config } from '../../config/configuration';
 
 /**
  * Guards the /internal/* endpoints the Python worker triggers on a schedule. Auth is a
@@ -11,7 +12,7 @@ export class InternalKeyGuard implements CanActivate {
   private readonly logger = new Logger(InternalKeyGuard.name);
 
   canActivate(context: ExecutionContext): boolean {
-    const expected = process.env.INTERNAL_API_KEY;
+    const expected = config.internalApiKey;
     if (!expected) {
       this.logger.error('INTERNAL_API_KEY is not set — rejecting internal job request.');
       throw new UnauthorizedException('Internal API not configured');

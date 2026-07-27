@@ -1,13 +1,14 @@
 import { Global, Module } from '@nestjs/common';
 import Redis from 'ioredis';
+import { config } from '../../config/configuration';
 
 export const REDIS_PUBLISHER = 'REDIS_PUBLISHER';
 export const REDIS_SUBSCRIBER = 'REDIS_SUBSCRIBER';
 
 function createClient(): Redis {
   return new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379,
+    host: config.redis.host,
+    port: config.redis.port,
     lazyConnect: false,
     retryStrategy: (times) => Math.min(times * 200, 5000),
   });

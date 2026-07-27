@@ -1,5 +1,4 @@
-import { Module, OnModuleInit } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { dataSourceOptions } from './database/data-source';
 import { AuthModule } from './modules/auth/auth.module';
@@ -14,11 +13,11 @@ import { LlmModule } from './modules/llm/llm.module';
 import { InternalJobsModule } from './modules/internal-jobs/internal-jobs.module';
 import { WebsocketsModule } from './websockets/websockets.module';
 import { RedisModule } from './common/redis/redis.module';
-import dataSource from './database/data-source';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    // Environment is loaded and validated by config/configuration.ts (imported wherever
+    // config is read, including database/data-source.ts below) — no ConfigModule needed.
     TypeOrmModule.forRoot(dataSourceOptions),
     RedisModule,
     AuthModule,
@@ -34,18 +33,4 @@ import dataSource from './database/data-source';
     WebsocketsModule,
   ],
 })
-export class AppModule implements OnModuleInit {
-  async onModuleInit() {
-    // Run TypeORM schema migrations automatically on startup (Section 14.1)
-    try {
-      if (!dataSource.isInitialized) {
-        await dataSource.initialize();
-      }
-      console.log('Running database migrations...');
-      await dataSource.runMigrations();
-      console.log('Database migrations completed successfully.');
-    } catch (err) {
-      console.warn('Migration auto-run warning:', err.message);
-    }
-  }
-}
+export class AppModule {}

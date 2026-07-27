@@ -27,16 +27,33 @@ class PgSignalStore:
             )
         return [float(r["close"]) for r in reversed(rows)]
 
+    async def load_recent_candles(self, ticker_id: str, limit: int) -> list[dict]:
+        """OHLC candles (ASC, ms timestamps) for the DSL interpreter. NOTE: raw 1m base — align
+        to the aggregated eval interval before enabling WORKER_OWNS_EXECUTION (see project memory)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT timestamp, open, high, low, close, volume FROM ohlcv_data "
+                "WHERE ticker_id = $1 ORDER BY timestamp DESC LIMIT $2",
+                ticker_id, limit,
+            )
+        return [
+            {"open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]),
+             "close": float(r["close"]), "volume": float(r["volume"]),
+             "timestamp": int(r["timestamp"].timestamp() * 1000)}
+            for r in reversed(rows)
+        ]
+
     async def get_open_position_for_strategy(self, ticker_id: str, strategy_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, entry_price, unrealized_pl FROM positions "
+                "SELECT id, entry_price, unrealized_pl, opened_at FROM positions "
                 "WHERE ticker_id = $1 AND strategy_id = $2 AND status = 'open' LIMIT 1",
                 ticker_id, strategy_id,
             )
         if not row:
             return None
-        return {"id": str(row["id"]), "entryPrice": row["entry_price"], "unrealizedPl": row["unrealized_pl"]}
+        return {"id": str(row["id"]), "entryPrice": row["entry_price"], "unrealizedPl": row["unrealized_pl"],
+                "openedAt": int(row["opened_at"].timestamp() * 1000) if row["opened_at"] else None}
 
     async def get_ticker(self, ticker_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:

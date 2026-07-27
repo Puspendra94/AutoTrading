@@ -71,7 +71,7 @@ The platform is split into three long-running services plus shared infrastructur
 ├── infra/
 │   └── docker-compose.yml  # TimescaleDB (5433), Redis (55000), Redis Commander (8081)
 ├── docker-compose.yml    # Project-level stack: backend + frontend + worker-py
-├── .env.example          # Environment template
+│                         # (each service has its own .env / .env.example in its dir)
 ├── DESIGN.md             # Product/UI design reference
 ├── PROGRESS.md           # Build progress log
 └── CONVENTIONS.md        # Coding conventions
@@ -119,15 +119,26 @@ npm run infra:down        # stop
 
 ### 2. Configure environment
 
+Each service loads its **own** `.env` from its own directory — there is no root `.env`.
+Copy the templates you need:
+
 ```bash
-cp .env.example .env
+cp apps/backend/.env.example   apps/backend/.env
+cp apps/worker-py/.env.example apps/worker-py/.env
+cp apps/frontend/.env.example  apps/frontend/.env
+cp infra/.env.example          infra/.env
 ```
 
-Edit `.env` and set at least:
+Edit `apps/backend/.env` and set at least:
 
-- `ANTHROPIC_API_KEY` (or `LLM_PROVIDER=bedrock` + AWS credentials)
-- `JWT_SECRET` (use a real 32+ char secret outside dev)
-- `INTERNAL_API_KEY` — shared secret guarding `/internal/jobs/*`; must match `worker-py`
+- `LLM_MODELS` — the provider fallback chain (e.g. `direct_api:claude-opus-4-8`), plus the
+  matching key for whichever providers it names (`ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` /
+  `AWS_*` for `bedrock`)
+- `JWT_SECRET` — **required**, the app fails fast at startup if unset (use a real 32+ char secret)
+- `INTERNAL_API_KEY` — **required**, shared secret guarding `/internal/jobs/*`; must match `worker-py`
+
+Every backend key is declared, typed, and validated in `apps/backend/src/config/configuration.ts`
+(the single source of truth); the worker mirrors this in `apps/worker-py/worker/config.py`.
 
 ### 3. Start the backend (NestJS API + WebSocket gateway)
 
@@ -186,18 +197,18 @@ Networking notes:
 
 ## Configuration
 
-Key environment variables (see `.env.example` for the full list):
+Key backend environment variables (see `apps/backend/.env.example` for the full, authoritative list):
 
 | Variable                              | Purpose                                            |
 | ------------------------------------- | -------------------------------------------------- |
-| `PORT` / `WS_PORT`                    | Backend HTTP / WebSocket ports (default 3009)      |
+| `PORT`                                | Backend HTTP + WebSocket port (default 3009)       |
 | `DATABASE_*`                          | Postgres/Timescale connection + `Algo_Trading` schema |
-| `REDIS_HOST` / `REDIS_PORT`           | Redis connection                                   |
-| `JWT_SECRET` / `JWT_EXPIRATION`       | Auth token signing + lifetime (default 7d)         |
-| `LLM_PROVIDER`                        | `direct_api` (Anthropic) or `bedrock` (AWS)        |
-| `ANTHROPIC_API_KEY`                   | Anthropic API key when using `direct_api`          |
-| `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Bedrock credentials          |
-| `INTERNAL_API_KEY`                    | Shared secret for `/internal/jobs/*` (backend ↔ worker) |
+| `REDIS_HOST` / `REDIS_PORT`           | Redis connection (default port 55000)              |
+| `JWT_SECRET` / `JWT_EXPIRATION`       | Auth token signing + lifetime (default 7d); `JWT_SECRET` required |
+| `LLM_MODELS`                          | Provider fallback chain — comma-separated `provider:modelId` pairs (`direct_api` / `bedrock` / `deepseek`) tried in order |
+| `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the `direct_api` / `deepseek` entries in `LLM_MODELS` |
+| `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credentials for `bedrock` entries in `LLM_MODELS` |
+| `INTERNAL_API_KEY`                    | Shared secret for `/internal/jobs/*` (backend ↔ worker); required |
 | `DEFAULT_DAILY_LOSS_LIMIT_PCT`        | Daily loss circuit-breaker (default 2.0%)          |
 | `DEFAULT_MAX_CONCURRENT_POSITIONS`    | Max open positions (default 1)                     |
 | `DEFAULT_PROBATION_SIZE_PCT`          | Reduced position size for new strategies (default 25%) |
@@ -277,9 +288,31 @@ Real-time: Socket.IO gateway (`/socket.io`) streams live ticks and alerts to the
 | `npm run build:backend` | Build the backend                                  |
 | `npm run build:frontend`| Build the frontend                                 |
 | `npm run test:backend`  | Run backend tests (Jest)                           |
+| `npm run reset`         | **Wipe all data** (drops the Postgres + Redis Docker volumes) and bring infra back up — see below |
 
 Backend-specific: `npm run migration:generate`, `npm run migration:run`,
 `npm run migration:revert` (from `apps/backend`).
+
+### Reset to a clean slate
+
+All persistent state lives in two Docker volumes (`postgres_data`, `redis_data`). To start
+completely fresh — as if running for the very first time:
+
+```bash
+npm run reset        # docker compose down -v (drops both volumes) + up -d
+```
+
+Then restart the backend and worker:
+
+```bash
+npm run dev:backend  # re-runs migrations, recreates the system BTCUSDT market-data ticker
+npm run dev:worker   # backfills real history from Binance
+```
+
+There is **no mock/seed data** — the reset only recreates metadata (the system provider +
+`BTCUSDT` ticker) and then re-ingests **real** market data from Binance's public API. A clean
+run therefore starts empty (no users, providers, strategies, positions, or alerts) and fills
+its candle history from the live source.
 
 ---
 

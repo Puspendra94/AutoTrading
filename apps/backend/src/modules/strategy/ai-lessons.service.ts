@@ -8,6 +8,7 @@ import { LiveVsBacktestDivergence } from '../../entities/live-vs-backtest-diverg
 import { Ticker } from '../../entities/ticker.entity';
 import { LlmService } from '../llm/llm.service';
 import { LlmPurpose } from '../../entities/llm-cost-log.entity';
+import { strategyTypeTag, describeStrategy } from './dsl/strategy-ir';
 
 /**
  * Spec Section 4.11 — AI Memory & Continuous Learning. Retrieval is deliberately
@@ -83,15 +84,18 @@ pattern/cause, not a trade-by-trade recap. Ticker: ${ticker.symbol}. Strategy pa
       divergence ? `${divergence.divergencePct}% on the tracked metric` : 'n/a'
     }. Respond with plain text only, no JSON.`;
 
-    let summaryText: string;
+    // Deterministic fallback — used whenever the LLM summary is unavailable OR empty (reasoning
+    // models can return no text after spending the whole budget on hidden reasoning).
+    const fallbackText = `Strategy v${retiredStrategy.version} for ${ticker.symbol} was retired (${reason}). Backtest Sharpe ${retiredBacktest?.sharpe ?? 'n/a'}, profit factor ${retiredBacktest?.profitFactor ?? 'n/a'}.`;
+    let summaryText = '';
     try {
-      const llmRes = await this.llmService.generateCompletion(summaryPrompt, { maxTokens: 200 });
-      summaryText = llmRes.content.trim();
+      const llmRes = await this.llmService.generateCompletion(summaryPrompt, { maxTokens: 800 });
+      summaryText = (llmRes.content || '').trim();
       await this.llmService.logCost(ticker.id, retiredStrategy.id, LlmPurpose.RE_EVALUATION, llmRes);
     } catch (err) {
       this.logger.warn(`Lesson summarization LLM call failed, using a structured fallback: ${err.message}`);
-      summaryText = `Strategy v${retiredStrategy.version} for ${ticker.symbol} was retired (${reason}). Backtest Sharpe ${retiredBacktest?.sharpe ?? 'n/a'}, profit factor ${retiredBacktest?.profitFactor ?? 'n/a'}.`;
     }
+    if (!summaryText) summaryText = fallbackText;
 
     const lesson = this.lessonRepo.create({
       sourceStrategyId: retiredStrategy.id,
@@ -106,11 +110,112 @@ pattern/cause, not a trade-by-trade recap. Ticker: ${ticker.symbol}. Strategy pa
     return this.lessonRepo.save(lesson);
   }
 
+  /**
+   * Spec 4.11 continuous learning, applied to the FAILURE path: when a whole generation cycle
+   * fails the evaluation gate (nothing promoted), distill *why* — the parameters tried and the
+   * gate conditions they missed — into a reusable FAILURE lesson. Retrieval feeds it straight
+   * back into the next generation prompt, so the model steers away from the same dead ends
+   * instead of rediscovering them. No source strategy exists (nothing was persisted), so
+   * sourceStrategyId is null.
+   */
+  async recordFailureLesson(params: {
+    ticker: Ticker;
+    attemptedParams: any;
+    evaluation: any;
+    failingConditions: string[];
+    reason: string;
+  }): Promise<AiLessonLearned> {
+    const { ticker, attemptedParams, evaluation, failingConditions, reason } = params;
+    const conditions = failingConditions.join('; ') || 'unknown';
+    const metrics = JSON.stringify({
+      sharpe: evaluation?.sharpe,
+      profitFactor: evaluation?.profitFactor,
+      maxDrawdown: evaluation?.maxDrawdown,
+      tradeCount: evaluation?.tradeCount,
+    });
+
+    const summaryPrompt = `A strategy generation attempt just failed the evaluation gate and was discarded (never traded). Distill this into ONE short, generalized, reusable lesson (2-3 sentences) for the next strategy generation on this or similar tickers — focus on what to change to clear the gate and improve profitability, not a trade-by-trade recap. Ticker: ${ticker.symbol}. Attempted parameters: ${JSON.stringify(
+      attemptedParams,
+    )}. Out-of-sample backtest metrics: ${metrics}. Failing gate conditions: ${conditions}. Trigger: ${reason}. Respond with plain text only, no JSON.`;
+
+    // Deterministic fallback with the concrete params + failing conditions — used whenever the
+    // LLM summary is unavailable OR empty. Reasoning models (e.g. deepseek-v4-pro) can spend the
+    // whole token budget on hidden reasoning and return no text, which would otherwise persist a
+    // blank, useless lesson and starve the learning loop.
+    const fallbackText = `A generated ${describeStrategy(attemptedParams)} for ${ticker.symbol} failed the gate (${conditions}); out-of-sample Sharpe ${evaluation?.sharpe ?? 'n/a'}, profit factor ${evaluation?.profitFactor ?? 'n/a'}.`;
+    let summaryText = '';
+    try {
+      const llmRes = await this.llmService.generateCompletion(summaryPrompt, { maxTokens: 800 });
+      summaryText = (llmRes.content || '').trim();
+      await this.llmService.logCost(ticker.id, null, LlmPurpose.RE_EVALUATION, llmRes);
+    } catch (err) {
+      this.logger.warn(`Failure-lesson summarization LLM call failed, using a structured fallback: ${err.message}`);
+    }
+    if (!summaryText) summaryText = fallbackText;
+
+    const lesson = this.lessonRepo.create({
+      sourceStrategyId: null,
+      sourceDivergenceId: null,
+      tickerId: ticker.id,
+      marketType: ticker.marketType?.name,
+      strategyType: this.inferStrategyType(attemptedParams),
+      regimeTags: [],
+      outcome: LessonOutcome.FAILURE,
+      summaryText,
+    });
+    return this.lessonRepo.save(lesson);
+  }
+
+  /**
+   * Live-performance memory (adaptive loop): distill how the ACTIVE strategy is really doing —
+   * from its real-data replay + live closed positions + backtest divergence — into an insight the
+   * meta-planner reads before the next generation. This is the "how it's working / what to
+   * improve" memory, separate from failed-generation lessons. Tagged 'live_insight'.
+   */
+  async recordLiveInsightLesson(params: {
+    strategy: Strategy;
+    ticker: Ticker;
+    performance: any; // StrategyPerformance row (real-data replay), may be null
+    closedPositions: { count: number; netPnlUsd: number };
+    divergence?: LiveVsBacktestDivergence | null;
+  }): Promise<AiLessonLearned> {
+    const { strategy, ticker, performance, closedPositions, divergence } = params;
+    const perf = performance || {};
+    const outcome = Number(perf.totalReturnPct ?? 0) > 0 ? LessonOutcome.SUCCESS : LessonOutcome.FAILURE;
+
+    const summaryPrompt = `A live trading strategy is being reviewed before the next generation cycle. In 2-3 sentences, summarize how it is actually performing and what would make the NEXT strategy better — focus on actionable direction (timeframe, EMA periods, the trend filter, stop/target sizing, trade frequency), not a trade-by-trade recap. Ticker: ${ticker.symbol}. Strategy parameters: ${JSON.stringify(
+      strategy.parametersJson,
+    )}. Real-data backtest: total return ${perf.totalReturnPct ?? 'n/a'}%, Sharpe ${perf.sharpe ?? 'n/a'}, win rate ${perf.winRate ?? 'n/a'}%, max drawdown ${perf.maxDrawdownPct ?? 'n/a'}%, trades ${perf.tradeCount ?? 'n/a'}. Live closed positions: ${closedPositions.count} (net P/L ${closedPositions.netPnlUsd.toFixed(2)} USD). Live-vs-backtest divergence: ${
+      divergence ? `${divergence.divergencePct}%` : 'n/a'
+    }. Respond with plain text only, no JSON.`;
+
+    const fallbackText = `Live review of ${ticker.symbol} ${describeStrategy(strategy.parametersJson)}: real-data total return ${perf.totalReturnPct ?? 'n/a'}%, Sharpe ${perf.sharpe ?? 'n/a'}, ${perf.tradeCount ?? 'n/a'} trades, ${closedPositions.count} live trades (net ${closedPositions.netPnlUsd.toFixed(2)}).`;
+    let summaryText = '';
+    try {
+      const llmRes = await this.llmService.generateCompletion(summaryPrompt, { maxTokens: 800 });
+      summaryText = (llmRes.content || '').trim();
+      await this.llmService.logCost(ticker.id, strategy.id, LlmPurpose.RE_EVALUATION, llmRes);
+    } catch (err) {
+      this.logger.warn(`Live-insight summarization failed, using a structured fallback: ${err.message}`);
+    }
+    if (!summaryText) summaryText = fallbackText;
+
+    const lesson = this.lessonRepo.create({
+      sourceStrategyId: strategy.id,
+      sourceDivergenceId: divergence?.id,
+      tickerId: ticker.id,
+      marketType: ticker.marketType?.name,
+      strategyType: this.inferStrategyType(strategy.parametersJson),
+      regimeTags: ['live_insight'],
+      outcome,
+      summaryText,
+    });
+    return this.lessonRepo.save(lesson);
+  }
+
   private inferStrategyType(params: Record<string, any>): string {
-    // Coarse tag from the indicator config the LLM proposed — enough to group similar
-    // strategies for retrieval without a taxonomy the spec doesn't ask for.
-    if (params?.indicatorConfig?.rsiPeriod) return 'ema_rsi_trend';
-    if (params?.indicatorConfig?.emaFastPeriod) return 'ema_crossover';
-    return 'unclassified';
+    // Coarse tag (distinct indicator kinds in the rule tree) — enough to group similar
+    // strategies for retrieval. Legacy params are auto-translated first. See strategyTypeTag.
+    return strategyTypeTag(params);
   }
 }

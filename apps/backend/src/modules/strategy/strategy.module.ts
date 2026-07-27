@@ -11,6 +11,7 @@ import { AiLessonLearned } from '../../entities/ai-lesson-learned.entity';
 import { StrategyPerformance } from '../../entities/strategy-performance.entity';
 import { LlmModule } from '../llm/llm.module';
 import { MarketDataModule } from '../market-data/market-data.module';
+import { RiskExecutionModule } from '../risk-execution/risk-execution.module';
 import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
@@ -33,6 +34,7 @@ import { StrategyRegenerateConsumer } from './strategy-regenerate.consumer';
     ]),
     LlmModule,
     MarketDataModule,
+    RiskExecutionModule,
   ],
   providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService, StrategyRegenerateConsumer],
   controllers: [StrategyController],

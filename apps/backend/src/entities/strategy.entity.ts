@@ -38,6 +38,12 @@ export class Strategy {
   @Column({ name: 'parameters_json', type: 'jsonb' })
   parametersJson: Record<string, any>;
 
+  // The timeframe this strategy was generated/backtested on AND is evaluated live on. Stored per
+  // strategy (not just the global config default) so what trades live is exactly what was
+  // promoted, and so the generation timeframe can be chosen per run. Null -> fall back to config.
+  @Column({ name: 'eval_interval', type: 'varchar', nullable: true })
+  evalInterval: string | null;
+
   @Column({ name: 'generated_by', default: 'claude-3-5-sonnet' })
   generatedBy: string;
 

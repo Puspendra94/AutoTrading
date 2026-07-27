@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ..config import config
+
 log = logging.getLogger("worker.llm.chain")
 
 KNOWN_PROVIDERS = ("direct_api", "bedrock", "deepseek")
@@ -32,7 +34,7 @@ def parse_chain() -> list[ModelSpec]:
     """Parse LLM_MODELS into an ordered fallback chain. Mirrors LlmChainBuilder.parseChain:
     default 'direct_api:claude-opus-4-8', validate provider, split on the FIRST ':' only
     (Bedrock model ids contain colons)."""
-    raw = os.getenv("LLM_MODELS") or "direct_api:claude-opus-4-8"
+    raw = config.llm_models
     specs: list[ModelSpec] = []
     for entry in (e.strip() for e in raw.split(",")):
         if not entry:
@@ -56,7 +58,7 @@ def build_model(spec: ModelSpec, max_tokens: int) -> Any:
     """Instantiate the LangChain chat model for a spec, using the same env vars and
     credential precedence as the backend's buildModel."""
     if spec.provider == "direct_api":
-        api_key = re.sub(r"^[\"']|[\"']$", "", os.getenv("ANTHROPIC_API_KEY", "")).strip()
+        api_key = re.sub(r"^[\"']|[\"']$", "", config.anthropic_api_key).strip()
         if not api_key or len(api_key) < 10:
             raise ValueError("ANTHROPIC_API_KEY not configured for direct_api provider.")
         from langchain_anthropic import ChatAnthropic
@@ -64,7 +66,7 @@ def build_model(spec: ModelSpec, max_tokens: int) -> Any:
         return ChatAnthropic(api_key=api_key, model=spec.model_id, max_tokens=max_tokens)
 
     if spec.provider == "deepseek":
-        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        api_key = config.deepseek_api_key.strip()
         if not api_key or len(api_key) < 10:
             raise ValueError("DEEPSEEK_API_KEY not configured for deepseek provider.")
         from langchain_deepseek import ChatDeepSeek
@@ -72,15 +74,15 @@ def build_model(spec: ModelSpec, max_tokens: int) -> Any:
         return ChatDeepSeek(api_key=api_key, model=spec.model_id, max_tokens=max_tokens)
 
     if spec.provider == "bedrock":
-        region = os.getenv("AWS_REGION")
+        region = config.aws_region
         if not region:
             raise ValueError("AWS_REGION not configured for bedrock provider.")
         from langchain_aws import ChatBedrockConverse
 
-        bearer_token = os.getenv("AWS_BEDROCK_API_KEY", "").strip()
-        access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-        session_token = os.getenv("AWS_SESSION_TOKEN")
+        bearer_token = config.aws_bedrock_api_key.strip()
+        access_key = config.aws_access_key_id
+        secret_key = config.aws_secret_access_key
+        session_token = config.aws_session_token
 
         kwargs: dict[str, Any] = {"model": spec.model_id, "region_name": region, "max_tokens": max_tokens}
         if bearer_token:

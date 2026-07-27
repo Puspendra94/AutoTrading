@@ -6,6 +6,7 @@ import { User } from '../../entities/user.entity';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
+import { config } from '../../config/configuration';
 
 @Module({
   imports: [
@@ -13,8 +14,8 @@ import { JwtStrategy } from './jwt.strategy';
     PassportModule,
     JwtModule.registerAsync({
       useFactory: () => ({
-        secret: process.env.JWT_SECRET || 'algo_trading_jwt_secret_dev_key_2026',
-        signOptions: { expiresIn: process.env.JWT_EXPIRATION || '7d' },
+        secret: config.auth.jwtSecret,
+        signOptions: { expiresIn: config.auth.jwtExpiration },
       }),
     }),
   ],

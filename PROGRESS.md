@@ -1,6 +1,61 @@
 # Progress
 
-## Status (latest session): Closed the safety-critical gaps found auditing the running system against the spec — see "Round 2" below. Prior status retained beneath it.
+## Status (latest session): Fixed live auto-trading + chart intents, then a round of dashboard UX fixes (see "Round 4 follow-up"). The dashboard now shows the active strategy's buy/sell intents across the chart AND autonomously opens/closes paper trades from those intents (no manual "Test trade" needed). See "Round 4" immediately below. Prior rounds retained beneath it.
+
+## Round 4 follow-up — dashboard UX fixes (per user feedback)
+
+- **"Opened X ago" was wrong on open trades.** `positions.opened_at` was a bare `@CreateDateColumn` → `timestamp without time zone`; the pg driver re-interpreted the stored UTC instant in the server's local zone on read, shifting it by the local offset (open trade read as "7h ago" when ~1.5h old). `closed_at` was already `timestamptz`. Fixed: entity now `@CreateDateColumn({ type: 'timestamptz' })` + migration `1700000012000-MakePositionOpenedAtTimestamptz` (`ALTER … TYPE timestamptz USING opened_at AT TIME ZONE 'UTC'`, preserving existing instants).
+- **P/L showed a bare "$-0".** A tiny-size position's real P/L (a few tenths of a cent) rounded to a mis-formatted "$-0". New `fmtMoney()` puts the sign before the `$`, never emits negative-zero, and gives sub-cent-but-nonzero amounts extra precision (e.g. `-$0.0022`). Used for the trade cards and the top P/L banner. Also deleted the one leftover 0.0001-BTC position that the earlier paper-sizing bug had created, so realized P/L reads cleanly.
+- **Open-position P/L now updates in real time.** The card, the top banner, and the new paper bar all recompute money + % on every `live_positions_update` WS tick (the paper bar's equity/unrealized are derived live between the periodic summary fetches).
+- **Manual Close button.** Each OPEN trade card has a "Close" button → `POST /execution/positions/:id/close` at the live mark (paper = simulated fill, never hits Binance). Verified end-to-end via Playwright.
+- **Paper Performance moved to a horizontal bar.** The vertical card under Live Trades was replaced by a horizontal bar above the chart (mirroring the P/L banner), shown only in PAPER mode — Equity / ROI / Available / Realized / Unrealized / Win Rate / Trades + the Test-trade button.
+- Frontend `astro check`: 0 errors, 0 warnings.
+
+
+## Round 4 — live auto-trading visibly working (intents on chart + autonomous paper trades)
+
+Reported symptoms: "I activated the max-return strategy but (1) intents don't show on the chart, and (2) it never auto-trades — I have to click Test trade myself." Binance was intentionally disconnected (paper-only). Diagnosed against the running system and fixed four real issues; the execution pipeline itself (risk gate → paper fill) was already sound.
+
+- **Chart intents were window-starved.** The dashboard fetched strategy signals with `limit=500` while the rule tree needs a long warmup (the active strategy has a 200-bar trend EMA) before it emits its *first* signal — so the entire visible page sat inside the warmup zone and rendered **zero** markers at 15m (and only a few clustered at the right edge at 5m). Fixed in `apps/frontend/src/pages/index.astro` (`loadSignals`): the signal lookback is now 6000 bars, far larger than the visible page, so every crossover on-screen (and further back, revealed on scroll) is marked. Verified: 15m went from 0 → 52 markers, rendered on-chart via Playwright.
+- **Live loop only reacted to a fresh entry *edge*, so it never reconciled to the strategy's intended state.** `evaluateRulesSignal` entered only when the current bar was a fresh `crossAbove` — so a strategy activated (or a backend restarted) while already mid-trend stayed **flat until the next crossover**, which reads as "I turned it on and nothing happened." Added `intendedPositionState(ir, candles)` to the DSL interpreter (same stateful replay the backtest/chart use) and the live entry branch now opens a position when the strategy's intended exposure is LONG, not only on the edge. In steady state this is identical to the old edge check; it only self-heals when the live position has drifted out of sync with the strategy's own signals. This is what makes activation immediately open the matching paper trade.
+- **Paper orders were sized off a stale real-account balance instead of the paper wallet.** The risk gate used the latest `provider_balance_snapshots.tradable_balance` as capital-under-management for *all* modes. With Binance disconnected, the last real snapshot was ~23 USDT, so every paper order silently shrank to ~$6 (0.0001 BTC). Fixed in `risk-gate.service.ts`: PAPER mode now sizes off `config.paper.startingBalanceUsd` (the same $10k the Paper Performance panel reports); LIVE mode still uses the real synced balance. Probation sizing (25%) then yields a visible ~$2.5k paper position.
+- **Live trading interval was decoupled from what the chart showed.** The promoted strategy (v2) had a null `eval_interval` → the live loop defaulted to **1h** (a genuine multi-day-cadence swing signal), while the chart showed intents at the *display* interval (5m) — so the intents the user saw never corresponded to a trade. Set the live strategy's `eval_interval` to `5m` (the chart's default view) so shown intents == traded signals and the cadence is observable. Only the live loop reads `strategy.eval_interval`; the +256% real-data performance panel uses the global config interval separately, so it's unaffected. Reversible (set back to `1h`/null for the original swing cadence).
+- **Added auto-trade logging** in `MarketStreamService.evaluateAndExecute` (`AUTO-TRADE: opened/closed LONG …`), since the happy path was previously silent — makes autonomous trades visible in the backend log and easy to verify.
+
+Verified end-to-end with Playwright + DB inspection: on the next candle close the system autonomously opened a strategy-scoped paper LONG (SIM_* fill, not a manual Test trade), the chart renders intents across timeframes, and sizing is now the correct paper notional. **Deliberate change to flag: the live strategy's timeframe was moved from 1h → 5m to make auto-trading observable; revert if you want the original swing cadence.**
+
+## Round 3 — config centralization, env/doc sync, secrets & data reset
+
+A cleanup pass (not feature work) addressing four issues found reading the running system:
+
+- **Typed, validated config layer.** Every backend `process.env` read (~22 scattered sites,
+  several with *divergent* inline defaults — e.g. Redis port defaulted to 6379 in code while
+  the app runs 55000) was replaced by a single frozen, typed, validated singleton in
+  `apps/backend/src/config/configuration.ts`. Nothing in `src/` reads `process.env` directly
+  anymore; required secrets (`JWT_SECRET`, `INTERNAL_API_KEY`) now fail fast at startup instead
+  of silently falling back to a baked-in dev value. The old hardcoded dev JWT secret fallback
+  was removed. On the worker side, the three modules that bypassed `worker/config.py`
+  (`main.py`, `llm/chain_builder.py`, `execution/execution_pg_store.py`) were routed through it,
+  so each service has exactly one config surface. Added a shared `publishJson` Redis helper.
+- **`.env.example` sync + root removal.** Each service's `.env.example` was rebuilt to match the
+  keys its code actually reads (the backend example was missing `FRONTEND_URL`,
+  `HISTORICAL_BACKFILL_ENABLED`, `PROVIDER_API_FAILURE_THRESHOLD`, `TYPEORM_LOGGING`,
+  `LIVE_STREAM_SOURCE`, `LIVE_EXECUTION_SOURCE`; the worker example was missing its Supervisor /
+  execution / Binance / LLM keys). The stale **root** `.env`/`.env.example` (which still
+  described the retired `LLM_PROVIDER` model and was never even loaded by the backend) were
+  deleted — each service now owns its own `.env` in its own directory.
+- **Secrets hygiene.** Deleted two real AWS credential CSV exports from `infra/` and scrubbed the
+  real AWS access key/secret + DeepSeek key that were sitting in `apps/backend/.env` back to
+  placeholders. **These keys were in plaintext on disk and should be rotated.**
+- **Data reset.** Added `npm run reset` (drops the `postgres_data` + `redis_data` Docker volumes
+  and brings infra back up) plus a "Reset to a clean slate" README section. Confirmed the seed
+  path inserts **no mock data** — it only recreates metadata (system provider + `BTCUSDT`
+  ticker) and re-ingests real Binance data.
+- **Docs.** Fixed the stale NestJS-in-process-worker references (see the correction on Round 1
+  below) in `CONVENTIONS.md` and the README; the background-jobs scheduler has been the Python
+  `worker-py` (APScheduler) since the migration — see `MIGRATION.md`.
+
+---
 
 ## Round 2 — LLM provider rewrite + spec-compliance audit + fixes
 
@@ -38,7 +93,7 @@ A prior agent (Gemini 3.5 Flash) built the initial `apps/backend`/`apps/frontend
 
 - **Stage 0 — Foundation**: `git init`, this file, `CONVENTIONS.md`. Found and scrubbed a real Anthropic API key that had been committed into `apps/backend/.env.example` (a template file, not gitignored) — fixed via commit amend since it was the sole, unpushed local commit. **The user should still rotate that key** since it sat in plaintext on disk.
 - **Stage 1 — Real Binance integration**: `apps/backend/src/modules/provider/adapters/binance.adapter.ts` wraps the official `@binance/connector` SDK (REST + WS, HMAC auth). `ProviderService.syncBalance()` now calls the real authenticated account endpoint and returns an explicit "not synced" state instead of a fake `$10,000`. `MarketDataService.backfillHistoricalData()` pulls real historical klines from Binance's public API (no synthetic fallback — verified live: real BTCUSDT candles around $66,4xx landed in the DB). `MarketStreamService` opens a real live Binance kline WebSocket per active/onboarding ticker and pushes ticks through `TradingGateway` — verified live, including real-time mark-to-market updates on open positions. `Provider.tradingMode` (`paper`/`live`, default `paper`) and `Provider.useTestnet` (default `true`) are new explicit safety switches (see Deviations); `ExecutionService` places real Binance market orders only when both a provider is `live` and real credentials exist, otherwise falls through to a simulated fill seeded by the real streamed price.
-- **Stage 2 — Background worker**: `apps/backend/src/worker.ts`/`worker.module.ts` is a separate process (`NestFactory.createApplicationContext`, no HTTP/WS) running all five Section-10 jobs under `src/jobs/`: balance sync (interval, `BALANCE_SYNC_INTERVAL_MINUTES`), reconciliation (hourly), strategy re-evaluation/divergence (daily), allocation rebalance (daily), data-quality sweep (every 6h), and a warning-tier alert digest (every 4h). Verified booting cleanly against live infra. Run via `npm run dev:worker` (root) / `worker:dev` (backend).
+- **Stage 2 — Background worker** *(SUPERSEDED — this in-process NestJS worker described below was later retired and replaced by the standalone Python `worker-py`/APScheduler, which now triggers these same jobs via the backend's `/internal/jobs/*` endpoints; see `MIGRATION.md` and Round 3 above. `apps/backend/src/worker.ts`, `worker.module.ts`, and `src/jobs/` no longer exist.)*: `apps/backend/src/worker.ts`/`worker.module.ts` was a separate process (`NestFactory.createApplicationContext`, no HTTP/WS) running all five Section-10 jobs under `src/jobs/`: balance sync (interval, `BALANCE_SYNC_INTERVAL_MINUTES`), reconciliation (hourly), strategy re-evaluation/divergence (daily), allocation rebalance (daily), data-quality sweep (every 6h), and a warning-tier alert digest (every 4h). Verified booting cleanly against live infra. Run via `npm run dev:worker` (root) / `worker:dev` (backend).
 - **Stage 3 — Quant fixes**: `strategy-evaluator.service.ts` rewritten — real trades-per-year annualization (replacing a `sqrt(100)` fudge constant), Monte Carlo `minSharpe`/`maxDrawdown` now come from the actual percentile distribution across 100 reshuffled runs (not the single-run Sharpe scaled by arbitrary constants), `regimeBreakdown` re-runs the backtest on volatility/trend-classified sub-windows instead of scaling one number three ways, and walk-forward validation (70/30 in-sample/out-of-sample split) is implemented — the metrics stored in `backtest_results` are the out-of-sample fold's, never the full-sample run. Verified live: a real generation run against real BTCUSDT data produced varying, non-fudged numbers (distinct in-sample/out-of-sample Sharpe, real regime buckets, real gate rejection on insufficient OOS trade count).
 - **Stage 4 — Allocation/reconciliation/notification**: `AllocationService` now applies a Sharpe-derived performance multiplier (clamped 0.5x–1.5x) on top of equal-weight, then a diversification cap (`ALLOCATION_DIVERSIFICATION_CAP_PCT`, default 40%) with proportional redistribution of the excess. `ReconciliationService` does a real diff against Binance's actual account balances for `live`-mode providers (paper-mode providers correctly report "nothing to reconcile" rather than a fake clean/dirty result). `NotificationService` publishes every created alert to Redis (`RedisAlertsBridgeService` in the API process re-broadcasts to WebSocket clients — this is how alerts created in the worker process, which has no Socket.IO server, still reach the frontend live) and optionally pushes Critical-tier alerts to Telegram if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are set.
 - **Stage 5 — `ai_lessons_learned`**: new entity + migration (previously the only spec Section 8 table entirely missing). `AiLessonsService` retrieves tag-matched lessons (ticker + inferred strategy type) before every strategy generation prompt, and records a new lesson (LLM-summarized, with a structured fallback if that call fails) whenever a `LIVE` strategy is retired/replaced — wired into `StrategyEngineService.generateStrategyForTicker()`. A daily divergence-check method (`runDivergenceCheckForAllLiveStrategies`) was added to actually drive the worker's re-evaluation job, comparing live closed-trade profit factor against backtest-expected and auto-regenerating on >30% divergence.

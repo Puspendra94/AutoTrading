@@ -32,11 +32,13 @@ export class MarketDataController {
     @Param('id') id: string,
     @Query('limit') limit?: string,
     @Query('interval') interval?: string,
+    @Query('before') before?: string,
   ) {
     return this.marketDataService.getCandlesForInterval(
       id,
       interval || '1m',
       limit ? parseInt(limit, 10) : 500,
+      before ? parseInt(before, 10) : undefined,
     );
   }
 

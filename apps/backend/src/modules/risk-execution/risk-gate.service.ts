@@ -5,13 +5,14 @@ import { RiskLimit } from '../../entities/risk-limit.entity';
 import { DailyLossTracking } from '../../entities/daily-loss-tracking.entity';
 import { Position, PositionStatus, PositionSide } from '../../entities/position.entity';
 import { Ticker, TickerStatus } from '../../entities/ticker.entity';
-import { Provider } from '../../entities/provider.entity';
+import { Provider, TradingMode } from '../../entities/provider.entity';
 import { ProviderSchedule } from '../../entities/provider-schedule.entity';
 import { ProviderBalanceSnapshot } from '../../entities/provider-balance-snapshot.entity';
 import { AllocationSnapshot } from '../../entities/allocation-snapshot.entity';
 import { Strategy, StrategyStatus } from '../../entities/strategy.entity';
 import { Alert, AlertSeverity } from '../../entities/alert.entity';
 import { ExecutionService } from './execution.service';
+import { config } from '../../config/configuration';
 
 export interface OrderIntent {
   tickerId: string;
@@ -110,11 +111,23 @@ export class RiskGateService {
     const today = new Date().toISOString().split('T')[0];
     let dailyTracker = await this.dailyLossRepo.findOne({ where: { providerId, trackingDate: today } });
 
+    // Capital under management, used both for the daily-loss % and for position sizing.
+    // PAPER trades are simulated against a fixed paper wallet (config.paper.startingBalanceUsd) —
+    // the SAME balance the Paper Performance panel reports — so they must be sized off that, NOT
+    // off a real-account balance snapshot. Sizing paper off the synced Binance balance is wrong:
+    // when the exchange is disconnected the last snapshot is stale/near-zero (here ~23 USDT),
+    // which silently shrank every paper order to a few dollars. LIVE mode still sizes off the
+    // real synced balance (falling back to 10k only until the first sync lands).
     const latestBalance = await this.balanceRepo.findOne({
       where: { providerId },
       order: { syncedAt: 'DESC' },
     });
-    const cumBase = latestBalance ? Number(latestBalance.tradableBalance) : 10000;
+    const cumBase =
+      provider.tradingMode === TradingMode.PAPER
+        ? config.paper.startingBalanceUsd
+        : latestBalance
+          ? Number(latestBalance.tradableBalance)
+          : 10000;
 
     if (!dailyTracker) {
       dailyTracker = this.dailyLossRepo.create({

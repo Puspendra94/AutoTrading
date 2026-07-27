@@ -18,6 +18,10 @@ class FakeSignalStore:
 
     async def get_live_strategy(self, t): return self._live
     async def load_recent_closes(self, t, limit): return self._closes[-limit:]
+    async def load_recent_candles(self, t, limit):
+        cs = self._closes[-limit:]
+        return [{"open": c, "high": c, "low": c, "close": c, "volume": 0, "timestamp": i * 60000}
+                for i, c in enumerate(cs)]
     async def get_open_position_for_strategy(self, t, s): return self._open
     async def get_ticker(self, t): return {"symbol": "BTCUSDT", "interval": "1m"}
     async def retrieve_lessons(self, t, st, limit=5): return []

@@ -4,7 +4,9 @@ import { Repository } from 'typeorm';
 import Redis from 'ioredis';
 import { Alert, AlertSeverity } from '../../entities/alert.entity';
 import { REDIS_PUBLISHER } from '../../common/redis/redis.module';
+import { publishJson } from '../../common/redis/redis-publish.util';
 import { ALERTS_CHANNEL } from '../../websockets/redis-alerts-bridge.service';
+import { config } from '../../config/configuration';
 
 @Injectable()
 export class NotificationService {
@@ -35,9 +37,7 @@ export class NotificationService {
     // Cross-process live delivery: works whether this was called from the API process
     // (which also has a local TradingGateway) or the worker (which doesn't) — the API
     // process's RedisAlertsBridgeService is the only subscriber and forwards to sockets.
-    this.redisPublisher.publish(ALERTS_CHANNEL, JSON.stringify(alert)).catch((err) =>
-      this.logger.warn(`Failed to publish alert to Redis: ${err.message}`),
-    );
+    publishJson(this.redisPublisher, ALERTS_CHANNEL, alert, this.logger);
 
     if (severity === AlertSeverity.CRITICAL) {
       await this.sendTelegramPush(alert).catch((err) =>
@@ -49,8 +49,7 @@ export class NotificationService {
   }
 
   private async sendTelegramPush(alert: Alert) {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_CHAT_ID;
+    const { botToken: token, chatId } = config.telegram;
     if (!token || !chatId) {
       this.logger.debug('TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set — critical alert recorded in DB only.');
       return;

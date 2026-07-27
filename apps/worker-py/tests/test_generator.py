@@ -19,9 +19,8 @@ STRICT = {"minSharpe": 1.0, "maxDrawdownPct": 20.0, "minProfitFactor": 1.3, "min
 RELAXED = {"minSharpe": -100.0, "maxDrawdownPct": 100.0, "minProfitFactor": 0.0, "minTradeCount": 1, "maxParameterCount": 20}
 
 FALLBACK_PARAMS = {
-    "strategyName": "Adaptive Trend Breakout + RSI Filter",
-    "indicatorConfig": {"emaFastPeriod": 12, "emaSlowPeriod": 26, "rsiPeriod": 14,
-                        "rsiBuyThreshold": 45, "rsiSellThreshold": 65, "stopLossPct": 1.5, "takeProfitPct": 3.5},
+    "strategyName": "Adaptive Trend Breakout",
+    "indicatorConfig": {"emaFastPeriod": 12, "emaSlowPeriod": 26, "stopLossPct": 1.5, "takeProfitPct": 3.5},
     "reasoning": "test",
 }
 
@@ -33,8 +32,17 @@ def _high_freq_candles(n: int = 900) -> list[dict]:
 
 # ------------------------------------------------------------------ pure helpers
 def test_infer_strategy_type():
-    assert infer_strategy_type({"indicatorConfig": {"emaFastPeriod": 12, "rsiPeriod": 14}}) == "ema_rsi_trend"
-    assert infer_strategy_type({"indicatorConfig": {"emaFastPeriod": 12}}) == "ema_crossover"
+    # Tags are now the distinct indicator kinds in the (auto-translated) rule tree. A legacy
+    # EMA-crossover blob translates to EMA-only indicators -> "ema" (the old rsiPeriod field is
+    # not simulated and is dropped by the translation).
+    assert infer_strategy_type({"indicatorConfig": {"emaFastPeriod": 12, "rsiPeriod": 14}}) == "ema"
+    assert infer_strategy_type({"indicatorConfig": {"emaFastPeriod": 12}}) == "ema"
+    # A rule tree using RSI + EMA tags as "ema_rsi".
+    assert infer_strategy_type({
+        "entry": {"op": "lt", "left": {"op": "indicator", "kind": "rsi", "period": 14}, "right": {"op": "const", "value": 30}},
+        "exit": {"op": "crossBelow", "left": {"op": "indicator", "kind": "ema", "period": 10}, "right": {"op": "indicator", "kind": "ema", "period": 30}},
+        "risk": {"stopLossPct": 2, "takeProfitPct": 4},
+    }) == "ema_rsi"
     assert infer_strategy_type({"indicatorConfig": {}}) == "unclassified"
     assert infer_strategy_type(None) == "unclassified"
 
@@ -147,8 +155,8 @@ async def test_generate_persists_and_promotes_when_gate_passes():
     assert result["saved"] is True
     assert result["attempts"] == 1
     assert store.inserted_strategy["version"] == 1
-    # Unset optional fields are excluded; here all rsi fields are set -> 7 knobs.
-    assert store.inserted_backtest["parameterCount"] == 7
+    # The four knobs the engine actually trades on (emaFast/emaSlow/stopLoss/takeProfit).
+    assert store.inserted_backtest["parameterCount"] == 4
     assert "insert_strategy" in store.calls and "insert_backtest" in store.calls
     assert store.calls.index("promote_strategy") > store.calls.index("insert_strategy")
     assert "set_ticker_active_ready" in store.calls
@@ -162,6 +170,16 @@ async def test_generate_fails_gate_persists_nothing():
     assert result["attempts"] == gen.MAX_ATTEMPTS
     assert "insert_strategy" not in store.calls
     assert store.stages[-1] == gen.STAGE_FAILED
+    # The report names the exact failing condition (sharpe below the 1.0 floor here).
+    assert result["failingConditions"]
+    assert any("sharpe" in c for c in result["failingConditions"])
+    # A failed cycle still teaches the next one: a FAILURE lesson is recorded, with no source
+    # strategy (nothing was persisted under the gate-before-save contract).
+    assert "insert_lesson" in store.calls
+    lesson = store.lessons_inserted[0]
+    assert lesson["outcome"] == "failure"
+    assert lesson["source_strategy_id"] is None
+    assert lesson["strategy_type"] == "ema"  # legacy EMA blob auto-translates to an EMA-only tree
 
 
 async def test_generate_retires_previous_live_and_records_lesson():

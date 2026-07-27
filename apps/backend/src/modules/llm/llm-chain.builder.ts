@@ -3,6 +3,7 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { ChatDeepSeek } from '@langchain/deepseek';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { config } from '../../config/configuration';
 
 const KNOWN_PROVIDERS = ['direct_api', 'bedrock', 'deepseek'] as const;
 export type ProviderKind = (typeof KNOWN_PROVIDERS)[number];
@@ -32,7 +33,7 @@ export class LlmChainBuilder {
   private readonly logger = new Logger(LlmChainBuilder.name);
 
   parseChain(): ModelSpec[] {
-    const raw = process.env.LLM_MODELS || 'direct_api:claude-opus-4-8';
+    const raw = config.llm.models;
     const specs = raw
       .split(',')
       .map((entry) => entry.trim())
@@ -60,7 +61,7 @@ export class LlmChainBuilder {
   buildModel(spec: ModelSpec, maxTokens: number): BaseChatModel {
     switch (spec.provider) {
       case 'direct_api': {
-        const apiKey = (process.env.ANTHROPIC_API_KEY || '').replace(/^["']|["']$/g, '').trim();
+        const apiKey = config.llm.anthropicApiKey.replace(/^["']|["']$/g, '').trim();
         if (!apiKey || apiKey.length < 10) {
           throw new Error('ANTHROPIC_API_KEY not configured for direct_api provider.');
         }
@@ -68,7 +69,7 @@ export class LlmChainBuilder {
       }
 
       case 'deepseek': {
-        const apiKey = (process.env.DEEPSEEK_API_KEY || '').trim();
+        const apiKey = config.llm.deepseekApiKey.trim();
         if (!apiKey || apiKey.length < 10) {
           throw new Error('DEEPSEEK_API_KEY not configured for deepseek provider.');
         }
@@ -76,14 +77,14 @@ export class LlmChainBuilder {
       }
 
       case 'bedrock': {
-        const region = process.env.AWS_REGION;
+        const region = config.aws.region;
         if (!region) {
           throw new Error('AWS_REGION not configured for bedrock provider.');
         }
-        const bearerToken = (process.env.AWS_BEDROCK_API_KEY || '').trim();
-        const accessKey = process.env.AWS_ACCESS_KEY_ID;
-        const secretKey = process.env.AWS_SECRET_ACCESS_KEY;
-        const sessionToken = process.env.AWS_SESSION_TOKEN;
+        const bearerToken = config.aws.bedrockApiKey.trim();
+        const accessKey = config.aws.accessKeyId;
+        const secretKey = config.aws.secretAccessKey;
+        const sessionToken = config.aws.sessionToken;
 
         return new ChatBedrockConverse({
           model: spec.modelId,

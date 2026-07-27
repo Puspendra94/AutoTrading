@@ -44,17 +44,14 @@ def price_for(model_id: str) -> dict[str, float]:
 
 # Canned defaults for the deterministic fallback path (identical to llm.service.ts).
 _FALLBACK_PARAMS = {
-    "strategyName": "Adaptive Trend Breakout + RSI Filter",
+    "strategyName": "Adaptive Trend Breakout",
     "indicatorConfig": {
         "emaFastPeriod": 12,
         "emaSlowPeriod": 26,
-        "rsiPeriod": 14,
-        "rsiBuyThreshold": 45,
-        "rsiSellThreshold": 65,
         "stopLossPct": 1.5,
         "takeProfitPct": 3.5,
     },
-    "reasoning": "Calculated statistical momentum continuation with RSI divergence filter on 1m/5m timeframe.",
+    "reasoning": "Trend-following EMA fast/slow crossover with fixed stop-loss and take-profit on 1m/5m timeframe.",
 }
 
 
@@ -102,7 +99,7 @@ class LlmService:
         prompt: str,
         schema: Type[BaseModel],
         schema_name: str = "propose_strategy_params",  # kept for parity; Python derives the tool name from the class
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,  # reasoning models need room to "think" AND still emit complete JSON
     ) -> dict:
         from langchain_core.messages import HumanMessage
 
@@ -123,6 +120,15 @@ class LlmService:
                 input_tokens = int(usage.get("input_tokens") or 0)
                 output_tokens = int(usage.get("output_tokens") or 0)
                 parsed = result.get("parsed") if isinstance(result, dict) else result
+                # LangChain returns parsed=None (instead of raising) when the model's text can't
+                # be coerced into the schema — common with reasoning models that truncate their
+                # JSON. Treat it as a model failure so the chain falls through to the next model /
+                # synthetic fallback, never handing None downstream (which crashes the evaluator).
+                if parsed is None:
+                    raise ValueError(
+                        f"Structured output could not be parsed into the schema (parsed=None) "
+                        f"for {spec.provider}:{spec.model_id}"
+                    )
                 return {
                     "data": parsed,
                     "inputTokens": input_tokens,

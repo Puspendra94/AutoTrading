@@ -9,8 +9,9 @@ import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets
 import { BinanceAdapter } from './adapters/binance.adapter';
 import { NotificationService } from '../notification/notification.service';
 import { AlertSeverity } from '../../entities/alert.entity';
+import { config } from '../../config/configuration';
 
-const API_FAILURE_KILL_THRESHOLD = parseInt(process.env.PROVIDER_API_FAILURE_THRESHOLD || '5', 10);
+const API_FAILURE_KILL_THRESHOLD = config.risk.providerApiFailureThreshold;
 
 @Injectable()
 export class ProviderService {
@@ -63,10 +64,10 @@ export class ProviderService {
 
     const riskLimit = this.riskLimitRepo.create({
       providerId: provider.id,
-      dailyLossLimitPct: parseFloat(process.env.DEFAULT_DAILY_LOSS_LIMIT_PCT || '2.0'),
-      maxConcurrentPositionsPerTicker: parseInt(process.env.DEFAULT_MAX_CONCURRENT_POSITIONS || '1', 10),
-      probationSizePct: parseFloat(process.env.DEFAULT_PROBATION_SIZE_PCT || '25.0'),
-      probationTradesCount: parseInt(process.env.DEFAULT_PROBATION_TRADES_COUNT || '10', 10),
+      dailyLossLimitPct: config.risk.defaultDailyLossLimitPct,
+      maxConcurrentPositionsPerTicker: config.risk.defaultMaxConcurrentPositions,
+      probationSizePct: config.risk.defaultProbationSizePct,
+      probationTradesCount: config.risk.defaultProbationTradesCount,
     });
     await this.riskLimitRepo.save(riskLimit);
 
@@ -190,9 +191,23 @@ export class ProviderService {
   async updateTradingMode(providerId: string, tradingMode?: TradingMode, useTestnet?: boolean) {
     const provider = await this.providerRepo.findOne({ where: { id: providerId } });
     if (!provider) throw new NotFoundException('Provider not found');
+    const networkChanged = useTestnet !== undefined && useTestnet !== provider.useTestnet;
     if (tradingMode !== undefined) provider.tradingMode = tradingMode;
     if (useTestnet !== undefined) provider.useTestnet = useTestnet;
-    return this.providerRepo.save(provider);
+    const saved = await this.providerRepo.save(provider);
+
+    // On a network flip, refresh the balance snapshot for the newly-active network before
+    // returning, so consumers of the latest snapshot (the dashboard's /providers balance)
+    // reflect the network just switched to. Without this, the last snapshot is whatever was
+    // synced on the *previous* network (e.g. testnet's 10k faucet), which then reads as a
+    // stale balance on mainnet. Best-effort: no keys / an API failure must not fail the
+    // switch itself — the header toggle already surfaces the "add keys" state separately.
+    if (networkChanged) {
+      await this.syncBalance(providerId).catch((err) =>
+        this.logger.warn(`Balance sync after network switch failed for provider ${providerId}: ${err.message}`),
+      );
+    }
+    return saved;
   }
 
   /**

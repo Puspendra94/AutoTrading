@@ -95,7 +95,10 @@ export class LlmService implements LLMProvider {
     schema: ZodType<T>,
     options?: { maxTokens?: number; schemaName?: string },
   ): Promise<LlmStructuredCompletionResponse<T>> {
-    const maxTokens = options?.maxTokens || 1024;
+    // Reasoning models (e.g. deepseek-v4-*) spend a chunk of the budget "thinking" before
+    // emitting the JSON, so a tight budget truncates the JSON and it fails to parse. Give them
+    // generous room by default.
+    const maxTokens = options?.maxTokens || 2048;
 
     for (const spec of this.modelChain) {
       try {
@@ -112,6 +115,14 @@ export class LlmService implements LLMProvider {
           ...(spec.provider === 'deepseek' ? { method: 'jsonMode' } : {}),
         });
         const result = await structuredModel.invoke([new HumanMessage(prompt)]);
+        // LangChain returns parsed:null (instead of throwing) when the model's text can't be
+        // coerced into the schema — common with reasoning models that truncate their JSON.
+        // Treat it as a model failure so the chain falls through to the next model / synthetic
+        // fallback, rather than handing null downstream (which crashes the evaluator on
+        // params.indicatorConfig and 500s the whole request).
+        if (result.parsed == null) {
+          throw new Error(`Structured output could not be parsed into the schema (parsed=null) for ${spec.provider}:${spec.modelId}`);
+        }
         const usage = (result.raw as any)?.usage_metadata as
           | { input_tokens?: number; output_tokens?: number }
           | undefined;
@@ -141,43 +152,12 @@ export class LlmService implements LLMProvider {
       }
     }
 
-    this.logger.warn(`All models in LLM_MODELS chain failed structured output — using quantitative fallback.`);
-    return this.syntheticStructuredFallback(schema, this.modelChain[0]?.modelId);
-  }
-
-  /** Same intent as syntheticFallback, but for the structured-output path — reuses the
-   * same canned defaults, validated against `schema` so callers never get a shape
-   * mismatch even on the fallback path. */
-  private syntheticStructuredFallback<T extends Record<string, any>>(
-    schema: ZodType<T>,
-    requestedModel?: string,
-  ): LlmStructuredCompletionResponse<T> {
-    const modelName = requestedModel || 'unknown-model';
-    const fallback = schema.parse({
-      strategyName: 'Adaptive Trend Breakout + RSI Filter',
-      indicatorConfig: {
-        emaFastPeriod: 12,
-        emaSlowPeriod: 26,
-        rsiPeriod: 14,
-        rsiBuyThreshold: 45,
-        rsiSellThreshold: 65,
-        stopLossPct: 1.5,
-        takeProfitPct: 3.5,
-      },
-      reasoning: 'Calculated statistical momentum continuation with RSI divergence filter on 1m/5m timeframe.',
-    });
-
-    const inputTokens = 210;
-    const outputTokens = 140;
-    const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
-
-    return {
-      data: fallback,
-      inputTokens,
-      outputTokens,
-      costUsd,
-      model: `${modelName}-fallback`,
-    };
+    // No synthetic fallback for structured output. Previously this returned a canned EMA-crossover
+    // strategy, which meant every failed LLM call silently promoted an EMA strategy — the root
+    // cause of "it only ever generates crossovers". Now a total chain failure throws, so the
+    // caller treats it as a failed attempt (discard + retry) and no canned strategy is ever
+    // persisted. Callers that need graceful degradation (the generation planner) catch this.
+    throw new Error('All models in the LLM_MODELS chain failed structured output.');
   }
 
   /**
@@ -190,17 +170,14 @@ export class LlmService implements LLMProvider {
   private syntheticFallback(requestedModel?: string): LlmCompletionResponse {
     const modelName = requestedModel || 'unknown-model';
     const syntheticResponse = JSON.stringify({
-      strategyName: 'Adaptive Trend Breakout + RSI Filter',
+      strategyName: 'Adaptive Trend Breakout',
       indicatorConfig: {
         emaFastPeriod: 12,
         emaSlowPeriod: 26,
-        rsiPeriod: 14,
-        rsiBuyThreshold: 45,
-        rsiSellThreshold: 65,
         stopLossPct: 1.5,
         takeProfitPct: 3.5,
       },
-      reasoning: 'Calculated statistical momentum continuation with RSI divergence filter on 1m/5m timeframe.',
+      reasoning: 'Trend-following EMA fast/slow crossover with fixed stop-loss and take-profit on 1m/5m timeframe.',
     });
 
     const inputTokens = 210;

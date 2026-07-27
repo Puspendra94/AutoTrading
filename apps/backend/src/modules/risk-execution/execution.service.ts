@@ -1,15 +1,17 @@
 import { Injectable, BadRequestException, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Position, PositionStatus, PositionSide } from '../../entities/position.entity';
+import { Position, PositionStatus, PositionSide, TradeMode, TradeNetwork } from '../../entities/position.entity';
 import { Order, OrderSide, OrderType, OrderStatus } from '../../entities/order.entity';
 import { Ticker } from '../../entities/ticker.entity';
 import { Provider, ProviderType, TradingMode } from '../../entities/provider.entity';
+import { Strategy, StrategyStatus } from '../../entities/strategy.entity';
 import { RiskLimit } from '../../entities/risk-limit.entity';
 import { RiskGateService } from './risk-gate.service';
 import { BinanceAdapter } from '../provider/adapters/binance.adapter';
 import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets-provider';
 import { ProviderService } from '../provider/provider.service';
+import { config } from '../../config/configuration';
 
 @Injectable()
 export class ExecutionService {
@@ -26,6 +28,8 @@ export class ExecutionService {
     private readonly providerRepo: Repository<Provider>,
     @InjectRepository(RiskLimit)
     private readonly riskLimitRepo: Repository<RiskLimit>,
+    @InjectRepository(Strategy)
+    private readonly strategyRepo: Repository<Strategy>,
     @Inject(forwardRef(() => RiskGateService))
     private readonly riskGateService: RiskGateService,
     private readonly binanceAdapter: BinanceAdapter,
@@ -89,6 +93,16 @@ export class ExecutionService {
       }
     }
 
+    // Stamp HOW this trade executed so the dashboard can filter by the active selection.
+    // A real Binance order (isLiveOrder) is 'live' on the provider's active network; anything
+    // else is a simulated paper fill, which is network-agnostic (network stays null).
+    const tradeMode = isLiveOrder ? TradeMode.LIVE : TradeMode.PAPER;
+    const network = isLiveOrder
+      ? provider?.useTestnet
+        ? TradeNetwork.TESTNET
+        : TradeNetwork.MAINNET
+      : null;
+
     const position = this.positionRepo.create({
       tickerId,
       strategyId,
@@ -100,6 +114,8 @@ export class ExecutionService {
       unrealizedPl: 0,
       realizedPl: 0,
       isProbation: riskCheck.isProbation,
+      tradeMode,
+      network,
     });
     await this.positionRepo.save(position);
 
@@ -202,6 +218,33 @@ export class ExecutionService {
       } catch (err) {
         this.logger.error(`Auto-flatten failed for position ${position.id} (${reason}): ${err.message}`);
       }
+    }
+    return { flattenedCount: closed.length, positionIds: closed };
+  }
+
+  /**
+   * Flatten every open position for a ticker — called when a strategy is replaced so no
+   * position opened by the now-retired strategy is left orphaned (the incoming strategy
+   * scopes its exits to its own strategyId and would never manage it). Each position is
+   * closed via closePosition, which for a live provider places the real exchange close
+   * order and for paper does the simulated exit; exit price is the last mark.
+   */
+  async flattenOpenPositionsForTicker(tickerId: string, reason: string) {
+    const openPositions = await this.positionRepo.find({
+      where: { tickerId, status: PositionStatus.OPEN },
+    });
+    const closed: string[] = [];
+    for (const position of openPositions) {
+      try {
+        const exitPrice = Number(position.currentPrice) || Number(position.entryPrice);
+        const result = await this.closePosition(position.id, exitPrice);
+        closed.push(result.position.id);
+      } catch (err) {
+        this.logger.error(`Strategy-switch flatten failed for position ${position.id} (${reason}): ${err.message}`);
+      }
+    }
+    if (closed.length > 0) {
+      this.logger.log(`Flattened ${closed.length} open position(s) for ticker ${tickerId} on strategy switch (${reason}).`);
     }
     return { flattenedCount: closed.length, positionIds: closed };
   }
@@ -325,6 +368,29 @@ export class ExecutionService {
     return results;
   }
 
+  /**
+   * The Live Trades feed: every trade (open AND closed) that matches the dashboard's currently-
+   * selected Mode + Network, newest first. Paper is network-agnostic (a paper fill calls no
+   * exchange), so a paper selection ignores the network filter; a live selection matches the
+   * exact network the order hit. `source` mirrors trade_mode for the panel's paper/live badge.
+   */
+  async getTradesForView(mode: TradeMode, network: TradeNetwork | undefined, limit = 100) {
+    const where: Record<string, unknown> = { tradeMode: mode };
+    if (mode === TradeMode.LIVE && network) where.network = network;
+
+    const positions = await this.positionRepo.find({
+      where,
+      relations: ['ticker', 'strategy'],
+      order: { openedAt: 'DESC' },
+      take: limit,
+    });
+
+    return positions.map((p) => ({
+      ...p,
+      source: p.tradeMode === TradeMode.LIVE ? 'live' : 'paper',
+    }));
+  }
+
   /** Base asset from a spot symbol (BTCUSDT -> BTC), stripping the common quote assets. */
   private baseAsset(symbol: string): string {
     for (const quote of ['USDT', 'USDC', 'BUSD', 'FDUSD', 'TUSD', 'USD']) {
@@ -339,5 +405,70 @@ export class ExecutionService {
       order: { openedAt: 'DESC' },
       take: 100,
     });
+  }
+
+  /**
+   * Manual paper-only test trade (dashboard "Test paper trade" button): opens a long on the
+   * ticker's active strategy at `price` when flat, or closes the open one — so paper P/L, ROI and
+   * the trade feed can be exercised on demand without waiting for a live signal. Refuses in LIVE
+   * mode so it can never place a real exchange order by accident.
+   */
+  async placeTestPaperTrade(tickerId: string, price: number) {
+    const ticker = await this.tickerRepo.findOne({ where: { id: tickerId } });
+    if (!ticker) throw new BadRequestException('Invalid ticker');
+    const provider = await this.providerRepo.findOne({ where: { id: ticker.providerId } });
+    if (provider?.tradingMode === TradingMode.LIVE) {
+      throw new BadRequestException('Test trade is paper-only — switch the provider to PAPER mode first.');
+    }
+    if (!price || price <= 0) throw new BadRequestException('A positive price is required.');
+
+    const strategy = await this.strategyRepo.findOne({ where: { tickerId, status: StrategyStatus.LIVE } });
+    const strategyId = strategy?.id;
+
+    const openPosition = await this.positionRepo.findOne({
+      where: { tickerId, status: PositionStatus.OPEN },
+    });
+    if (openPosition) {
+      const { position } = await this.closePosition(openPosition.id, price);
+      return { action: 'closed', position };
+    }
+    const result = await this.executeTradeSignal(tickerId, PositionSide.LONG, price, strategyId);
+    return { action: 'opened', ...result };
+  }
+
+  /**
+   * Paper-trading performance summary for the dashboard: a simulated equity curve seeded by a
+   * fixed starting balance (config.paper.startingBalanceUsd) plus realized P/L from closed paper
+   * trades and unrealized P/L from open ones. Paper is network-agnostic (simulated fills touch no
+   * exchange), so this aggregates ALL paper positions regardless of testnet/mainnet.
+   */
+  async getPaperSummary() {
+    const positions = await this.positionRepo.find({ where: { tradeMode: TradeMode.PAPER } });
+    const open = positions.filter((p) => p.status === PositionStatus.OPEN);
+    const closed = positions.filter((p) => p.status === PositionStatus.CLOSED);
+
+    const realizedPl = closed.reduce((s, p) => s + Number(p.realizedPl || 0), 0);
+    const unrealizedPl = open.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
+    const investedInOpen = open.reduce((s, p) => s + Number(p.entryPrice) * Number(p.quantity), 0);
+    const starting = config.paper.startingBalanceUsd;
+    const equity = starting + realizedPl + unrealizedPl;
+    const availableBalance = starting + realizedPl - investedInOpen;
+    const roiPct = starting > 0 ? ((equity - starting) / starting) * 100 : 0;
+    const wins = closed.filter((p) => Number(p.realizedPl) > 0).length;
+    const winRate = closed.length > 0 ? (wins / closed.length) * 100 : 0;
+
+    const r2 = (n: number) => Number(n.toFixed(2));
+    return {
+      startingBalance: r2(starting),
+      equity: r2(equity),
+      availableBalance: r2(availableBalance),
+      realizedPl: r2(realizedPl),
+      unrealizedPl: r2(unrealizedPl),
+      roiPct: r2(roiPct),
+      openCount: open.length,
+      closedCount: closed.length,
+      totalTrades: positions.length,
+      winRate: r2(winRate),
+    };
   }
 }

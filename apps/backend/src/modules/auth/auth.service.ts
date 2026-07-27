@@ -6,6 +6,7 @@ import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { User } from '../../entities/user.entity';
 import { RegisterDto, LoginDto, ForgotPasswordDto, ResetPasswordDto } from './dto/auth.dto';
+import { config } from '../../config/configuration';
 
 @Injectable()
 export class AuthService {
@@ -70,13 +71,12 @@ export class AuthService {
     user.passwordResetExpiresAt = new Date(Date.now() + AuthService.RESET_TTL_MS);
     await this.userRepo.save(user);
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4321';
-    const resetLink = `${frontendUrl}/reset-password?token=${rawToken}`;
+    const resetLink = `${config.frontendUrl}/reset-password?token=${rawToken}`;
     this.logger.log(`Password reset requested for ${user.email}: ${resetLink}`);
 
     // In production, never return the link in the response body (would leak the token to
     // anyone who can hit the endpoint). Return it only in dev so the flow is testable.
-    if (process.env.NODE_ENV === 'production') {
+    if (config.isProduction) {
       return { ok: true };
     }
     return { ok: true, resetLink };

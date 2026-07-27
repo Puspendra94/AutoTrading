@@ -13,13 +13,18 @@ from pydantic import BaseModel, Field
 
 
 class IndicatorConfig(BaseModel):
+    # The knobs the backtest AND live engines actually trade on — every one is really used
+    # (unlike the old phantom RSI). trendEmaPeriod is a REAL, optional trend-regime filter wired
+    # into the simulate/live/replay paths of both engines (parity-verified by
+    # tools/parity_evaluator.py); when set, LONG entries are only taken while price is above it.
     emaFastPeriod: int = Field(..., ge=2, le=100, description="Fast EMA period in candles")
     emaSlowPeriod: int = Field(..., ge=5, le=300, description="Slow EMA period in candles")
-    rsiPeriod: Optional[int] = Field(
-        None, ge=2, le=50, description="RSI lookback period, if the strategy uses RSI"
+    trendEmaPeriod: Optional[int] = Field(
+        None, ge=20, le=400,
+        description="Long-term trend EMA period; LONG entries are only taken when price is above "
+        "this EMA (trend-regime filter that cuts whipsaws in ranging/down markets). Should be "
+        "longer than emaSlowPeriod. Omit to disable the filter.",
     )
-    rsiBuyThreshold: Optional[float] = Field(None, ge=0, le=100)
-    rsiSellThreshold: Optional[float] = Field(None, ge=0, le=100)
     stopLossPct: float = Field(..., ge=0.1, le=20, description="Stop-loss as a percent, e.g. 1.5 for 1.5%")
     takeProfitPct: float = Field(..., ge=0.1, le=50, description="Take-profit as a percent, e.g. 3.5 for 3.5%")
 

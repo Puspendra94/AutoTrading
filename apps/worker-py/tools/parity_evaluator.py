@@ -70,9 +70,7 @@ PARAMS = {
     "indicatorConfig": {
         "emaFastPeriod": 12,
         "emaSlowPeriod": 26,
-        "rsiPeriod": 14,
-        "rsiBuyThreshold": 45,
-        "rsiSellThreshold": 65,
+        "trendEmaPeriod": 200,  # exercise the trend-regime filter path (TS vs PY must match)
         "stopLossPct": 1.5,
         "takeProfitPct": 3.5,
     },

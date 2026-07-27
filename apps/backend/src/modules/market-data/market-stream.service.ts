@@ -11,6 +11,7 @@ import { TradingGateway } from '../../websockets/trading.gateway';
 import { StrategyEngineService } from '../strategy/strategy-engine.service';
 import { ExecutionService } from '../risk-execution/execution.service';
 import { REDIS_SUBSCRIBER } from '../../common/redis/redis.module';
+import { config } from '../../config/configuration';
 
 // Must match worker-py's redis_bus channel names.
 export const MARKET_TICK_CHANNEL = 'market:tick';
@@ -31,16 +32,14 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
   // ticks the Python worker publishes to market:tick — the worker then owns ingestion and
   // is the writer of record for candles (Phase 1, see MIGRATION.md). Never run the worker's
   // live stream AND 'internal' at once (double ingestion).
-  private readonly liveStreamSource: 'internal' | 'redis' =
-    process.env.LIVE_STREAM_SOURCE === 'redis' ? 'redis' : 'internal';
+  private readonly liveStreamSource: 'internal' | 'redis' = config.liveStreamSource;
 
   // Who runs the live trading loop (mark-price, hard exits, evaluate+execute). 'backend'
   // (default) keeps it here; 'worker' means the Python worker owns execution (Phase 3c-3),
   // so this process must NOT also execute — it only broadcasts price + forwards position
   // updates the worker publishes. Set to 'worker' only together with the worker's
   // WORKER_OWNS_EXECUTION, never one alone (double orders / no execution).
-  private readonly liveExecutionSource: 'backend' | 'worker' =
-    process.env.LIVE_EXECUTION_SOURCE === 'worker' ? 'worker' : 'backend';
+  private readonly liveExecutionSource: 'backend' | 'worker' = config.liveExecutionSource;
 
   constructor(
     @InjectRepository(Ticker) private readonly tickerRepo: Repository<Ticker>,
@@ -214,6 +213,8 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
         const result = await this.executionService.executeTradeSignal(tickerId, PositionSide.LONG, closePrice, strategyId);
         if (result.status === 'REJECTED') {
           this.logger.warn(`Live BUY signal rejected for ticker ${tickerId}: ${result.reason}`);
+        } else {
+          this.logger.log(`AUTO-TRADE: opened LONG on ticker ${tickerId} @ ${closePrice} (strategy ${strategyId}).`);
         }
       } else if (signal === 'SELL') {
         const openPosition = await this.positionRepo.findOne({
@@ -221,6 +222,7 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
         });
         if (openPosition) {
           await this.executionService.closePosition(openPosition.id, closePrice);
+          this.logger.log(`AUTO-TRADE: closed LONG on ticker ${tickerId} @ ${closePrice} (strategy ${strategyId}).`);
         }
       }
     } catch (err) {

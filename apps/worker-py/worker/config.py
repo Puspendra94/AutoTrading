@@ -56,6 +56,25 @@ class Config:
     )
     # Binance spot BTCUSDT history starts 2017-08. Override to shrink for testing.
     backfill_start: str = os.getenv("BACKFILL_START", "2017-08")
+    # Run a gap-fill on every startup (cheap — resumes from the last stored month).
+    backfill_on_start: bool = os.getenv("BACKFILL_ON_START", "true").lower() in ("1", "true", "yes", "on")
+
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Consecutive provider-API failures before the execution store trips the kill switch —
+    # matches the backend's PROVIDER_API_FAILURE_THRESHOLD.
+    provider_api_failure_threshold: int = int(os.getenv("PROVIDER_API_FAILURE_THRESHOLD", "5"))
+
+    # --- LLM (provider-agnostic fallback chain — mirrors the backend's LLM_MODELS). ---
+    llm_models: str = os.getenv("LLM_MODELS") or "direct_api:claude-opus-4-8"
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+    # Only needed for 'bedrock' entries in LLM_MODELS.
+    aws_region: str = os.getenv("AWS_REGION", "")
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    aws_session_token: str = os.getenv("AWS_SESSION_TOKEN", "")
+    aws_bedrock_api_key: str = os.getenv("AWS_BEDROCK_API_KEY", "")
 
     # --- Strategy Supervisor (Phase 3a) — deterministic, no-AI health monitor that watches
     # live strategies against guardrails and, on a trip, asks the backend to regenerate.

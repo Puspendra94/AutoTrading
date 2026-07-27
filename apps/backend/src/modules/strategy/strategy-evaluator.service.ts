@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { StrategyEvaluationPolicy } from '../../entities/strategy-evaluation-policy.entity';
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
+import { simulateFromIR, generateSignalsFromIR } from './dsl/interpreter';
+import { resolveIR, countIRParameters } from './dsl/strategy-ir';
 
 export interface BacktestPerformanceMetrics {
   sharpe: number;
@@ -106,10 +108,11 @@ export class StrategyEvaluatorService {
     const passedSharpe = oosMetrics.sharpe >= Number(policy.minSharpe);
     const passedDrawdown = outOfSampleSim.maxDrawdown <= Number(policy.maxDrawdownPct);
     const passedProfitFactor = oosMetrics.profitFactor >= Number(policy.minProfitFactor);
-    // Small local historical windows (e.g. a freshly-onboarded ticker with only hours of
-    // 1m data) won't realistically hit a 100-trade minimum — same pragmatic floor the
-    // original implementation used, now applied to the out-of-sample fold specifically.
-    const passedTradeCount = tradeCount >= Number(policy.minTradeCount) || tradeCount >= 5;
+    // Honest, self-consistent trade-count gate: require the policy's minTradeCount directly (no
+    // hidden ">=5" override, which used to make the policy lie to the LLM — its lessons kept
+    // chasing "100 trades" when the real bar was 5). minTradeCount is tuned to what's actually
+    // reachable on the eval interval so it stays meaningful without being impossible.
+    const passedTradeCount = tradeCount >= Number(policy.minTradeCount);
 
     // Overfitting check (spec 7.2) — count actual tunable parameters the LLM proposed
     // (indicatorConfig's own keys) against the policy's cap, and factor it into the
@@ -145,12 +148,12 @@ export class StrategyEvaluatorService {
     };
   }
 
-  /** Counts the strategy's actual tunable knobs (indicatorConfig's own defined keys) —
-   * more parameters means more ways to have overfit the in-sample window. */
+  /** Counts the strategy's DISTINCT tunable knobs across the resolved rule tree (a legacy
+   * indicatorConfig blob is auto-translated first) — more knobs means more ways to have overfit
+   * the in-sample window. Invalid params count as 0 (they also produce no trades). */
   private countTunableParameters(params: any): number {
-    const indicatorConfig = params?.indicatorConfig;
-    if (!indicatorConfig || typeof indicatorConfig !== 'object') return 0;
-    return Object.values(indicatorConfig).filter((v) => v !== undefined && v !== null).length;
+    const ir = resolveIR(params);
+    return ir ? countIRParameters(ir) : 0;
   }
 
   /** Average ms between consecutive candles, converted to periods/year — used to
@@ -164,108 +167,24 @@ export class StrategyEvaluatorService {
   }
 
   /**
-   * Replays the strategy's entry/exit rules over a candle series and emits the buy/sell
-   * intents it would produce — the same EMA-crossover + stop-loss/take-profit logic
-   * simulateTrades() uses, but surfaced as timestamped markers for the chart rather than
-   * collapsed into a return series. Deterministic; represents intent, not execution.
+   * Replays the strategy's rule tree over a candle series and emits the buy/sell intents it
+   * would produce — timestamped markers for the chart. Delegates to the DSL interpreter so it
+   * matches exactly what simulateTrades() (and the live engine) decide. A legacy indicatorConfig
+   * blob is auto-translated to an equivalent rule tree first.
    */
   generateSignals(candles: Array<{ close: any; timestamp: any }>, params: any): StrategySignal[] {
-    const signals: StrategySignal[] = [];
-    const emaFastPeriod = params?.indicatorConfig?.emaFastPeriod || 12;
-    const emaSlowPeriod = params?.indicatorConfig?.emaSlowPeriod || 26;
-    const stopLossPct = (params?.indicatorConfig?.stopLossPct || 1.5) / 100;
-    const takeProfitPct = (params?.indicatorConfig?.takeProfitPct || 3.5) / 100;
-    if (!candles || candles.length <= emaSlowPeriod) return signals;
-
-    const closes = candles.map((c) => Number(c.close));
-    const times = candles.map((c) => Math.floor(new Date(c.timestamp).getTime() / 1000));
-    const fastEma = this.calculateEma(closes, emaFastPeriod);
-    const slowEma = this.calculateEma(closes, emaSlowPeriod);
-
-    let position: 'NONE' | 'LONG' = 'NONE';
-    let entryPrice = 0;
-    for (let i = emaSlowPeriod; i < candles.length; i++) {
-      const price = closes[i];
-      if (!Number.isFinite(price) || !Number.isFinite(times[i])) continue;
-      if (position === 'NONE') {
-        if (fastEma[i] > slowEma[i] && fastEma[i - 1] <= slowEma[i - 1]) {
-          position = 'LONG';
-          entryPrice = price;
-          signals.push({ time: times[i], side: 'buy', price, reason: 'EMA cross up' });
-        }
-      } else {
-        const returnPct = (price - entryPrice) / entryPrice;
-        let reason = '';
-        if (returnPct <= -stopLossPct) reason = 'Stop loss';
-        else if (returnPct >= takeProfitPct) reason = 'Take profit';
-        else if (fastEma[i] < slowEma[i]) reason = 'EMA cross down';
-        if (reason) {
-          position = 'NONE';
-          signals.push({ time: times[i], side: 'sell', price, reason });
-        }
-      }
-    }
-    return signals;
+    const ir = resolveIR(params);
+    if (!ir || !candles) return [];
+    return generateSignalsFromIR(candles as any, ir);
   }
 
   private simulateTrades(candles: OhlcvData[], params: any): TradeSimResult {
-    const trades: number[] = [];
-    let position: 'NONE' | 'LONG' = 'NONE';
-    let entryPrice = 0;
-    let equity = 10000;
-    let peakEquity = equity;
-    let maxDrawdown = 0;
-    let currentDrawdownDuration = 0;
-    let maxDrawdownDuration = 0;
-
-    const emaFastPeriod = params.indicatorConfig?.emaFastPeriod || 12;
-    const emaSlowPeriod = params.indicatorConfig?.emaSlowPeriod || 26;
-    const stopLossPct = (params.indicatorConfig?.stopLossPct || 1.5) / 100;
-    const takeProfitPct = (params.indicatorConfig?.takeProfitPct || 3.5) / 100;
-
-    if (candles.length <= emaSlowPeriod) {
-      return { trades, maxDrawdown: 0, drawdownDuration: 0 };
-    }
-
-    const closes = candles.map((c) => Number(c.close));
-    const fastEma = this.calculateEma(closes, emaFastPeriod);
-    const slowEma = this.calculateEma(closes, emaSlowPeriod);
-
-    for (let i = emaSlowPeriod; i < candles.length; i++) {
-      const price = closes[i];
-
-      if (equity > peakEquity) {
-        peakEquity = equity;
-        currentDrawdownDuration = 0;
-      } else {
-        currentDrawdownDuration++;
-        const dd = ((peakEquity - equity) / peakEquity) * 100;
-        if (dd > maxDrawdown) maxDrawdown = dd;
-        if (currentDrawdownDuration > maxDrawdownDuration) maxDrawdownDuration = currentDrawdownDuration;
-      }
-
-      if (position === 'NONE') {
-        if (fastEma[i] > slowEma[i] && fastEma[i - 1] <= slowEma[i - 1]) {
-          position = 'LONG';
-          entryPrice = price * 1.0005; // 0.05% slippage on entry
-        }
-      } else if (position === 'LONG') {
-        const returnPct = (price - entryPrice) / entryPrice;
-        const isStopLoss = returnPct <= -stopLossPct;
-        const isTakeProfit = returnPct >= takeProfitPct;
-        const isCrossDown = fastEma[i] < slowEma[i];
-
-        if (isStopLoss || isTakeProfit || isCrossDown) {
-          const exitPrice = price * 0.9995; // 0.05% slippage on exit
-          const netReturnPct = (exitPrice - entryPrice) / entryPrice - 0.0015; // 0.15% roundtrip fee
-          equity += equity * netReturnPct;
-          trades.push(netReturnPct);
-          position = 'NONE';
-        }
-      }
-    }
-
-    return { trades, maxDrawdown, drawdownDuration: maxDrawdownDuration };
+    // One code path for every strategy: resolve to a rule tree (legacy params auto-translated)
+    // and run the shared interpreter, which uses the identical slippage/fee/equity accounting the
+    // pre-DSL engine used. Invalid params -> no trades.
+    const ir = resolveIR(params);
+    if (!ir) return { trades: [], maxDrawdown: 0, drawdownDuration: 0 };
+    return simulateFromIR(candles as any, ir);
   }
 
   private computeMetrics(sim: TradeSimResult, periodsPerYear: number, totalDurationMs?: number) {
@@ -410,15 +329,5 @@ export class StrategyEvaluatorService {
       choppy: Number(avg(buckets.choppy).toFixed(2)),
       highVol: Number(avg(buckets.highVol).toFixed(2)),
     };
-  }
-
-  private calculateEma(prices: number[], period: number): number[] {
-    const ema: number[] = new Array(prices.length).fill(0);
-    const k = 2 / (period + 1);
-    ema[0] = prices[0];
-    for (let i = 1; i < prices.length; i++) {
-      ema[i] = prices[i] * k + ema[i - 1] * (1 - k);
-    }
-    return ema;
   }
 }

@@ -44,8 +44,28 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       </div>
     </section>
 
-    <!-- Chart + side panels -->
-    <div class="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_380px]">
+    <!-- Paper Performance bar — horizontal, mirrors the P/L banner above and is shown ONLY in
+         PAPER mode (it replaces the old vertical card that sat under Live Trades). -->
+    <section id="paperBar" hidden class="card flex flex-wrap items-center justify-between gap-x-8 gap-y-4 px-5 py-4">
+      <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
+        <div class="flex items-center gap-2">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="text-brand" aria-hidden="true"><path d="M9 3h6M12 3v4M7 7h10l-1.2 12.2a2 2 0 0 1-2 1.8H10.2a2 2 0 0 1-2-1.8L7 7Z"/></svg>
+          <span class="eyebrow text-brand">Paper Performance</span>
+        </div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">Equity</span><span id="ppEquity" class="tabular text-[0.95rem] font-bold">—</span></div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">ROI</span><span id="ppRoi" class="tabular text-[0.95rem] font-bold">—</span></div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">Available</span><span id="ppAvail" class="tabular text-[0.95rem] font-bold">—</span></div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">Realized P/L</span><span id="ppReal" class="tabular text-[0.95rem] font-bold">—</span></div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">Unrealized P/L</span><span id="ppUnreal" class="tabular text-[0.95rem] font-bold">—</span></div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">Win Rate</span><span id="ppWin" class="tabular text-[0.95rem] font-bold">—</span></div>
+        <div class="flex flex-col gap-0.5"><span class="eyebrow">Trades (open/closed)</span><span id="ppTrades" class="tabular text-[0.95rem] font-bold">—</span></div>
+      </div>
+      <button id="testTradeBtn" class="rounded-md border border-brand/40 px-3 py-1.5 text-xs font-semibold text-brand transition-colors hover:bg-brand/10 disabled:opacity-40" title="Open a simulated position on the active strategy at the live price (or close the open one) — to watch tracking update on demand.">Test trade</button>
+    </section>
+
+    <!-- Chart + side panels. items-start so a taller side column (e.g. the paper panel) never
+         stretches the chart's row height — the chart keeps its own fixed height. -->
+    <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_380px]">
       <!-- Chart -->
       <section class="card flex min-w-0 flex-col overflow-hidden">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
@@ -72,7 +92,10 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       <aside class="flex flex-col gap-5">
         <section class="card flex flex-col overflow-hidden">
           <div class="flex items-center justify-between border-b border-border px-4 py-2.5">
-            <span class="eyebrow">Live Trades</span>
+            <span class="flex items-center gap-2">
+              <span class="eyebrow">Live Trades</span>
+              <span id="tradesLabel" class="rounded bg-surface-2 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-muted">paper</span>
+            </span>
             <span class="flex items-center gap-1.5 text-[0.65rem] font-semibold tracking-wide text-brand"><span class="live-dot"></span> LIVE</span>
           </div>
           <div id="positionsList" class="flex flex-col" aria-live="polite">
@@ -127,10 +150,13 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     type PosAnnotation = { source?: 'paper' | 'live'; exchangeVerified?: boolean | null };
     type Position = PosAnnotation & {
       id: string; ticker: { symbol: string }; side: 'long' | 'short';
-      entryPrice: number; currentPrice: number; quantity: number;
-      unrealizedPl: number; realizedPl: number; isProbation: boolean; openedAt: string;
+      status: 'open' | 'closed';
+      entryPrice: number; currentPrice: number; exitPrice?: number; quantity: number;
+      unrealizedPl: number; realizedPl: number; isProbation: boolean;
+      openedAt: string; closedAt?: string | null;
+      tradeMode: 'paper' | 'live'; network: 'testnet' | 'mainnet' | null;
     };
-    type Provider = { id: string; type: string; tradingMode: 'paper' | 'live'; hasCredentials?: boolean; tradableBalance: number | null; currency: string | null };
+    type Provider = { id: string; type: string; tradingMode: 'paper' | 'live'; useTestnet?: boolean; hasCredentials?: boolean; tradableBalance: number | null; currency: string | null };
     type Strategy = { id: string; version: number; status: string; executionMode: string; parametersJson: any };
     type Backtest = { sharpe: number; profitFactor: number; maxDrawdown: number; tradeCount: number; passedEvaluationGate: boolean };
     type Bar = { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number };
@@ -138,6 +164,16 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     const $ = (id: string) => document.getElementById(id)!;
     const esc = (s: string) => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
     const fmt = (n: number, d = 2) => Number(n).toLocaleString('en-US', { maximumFractionDigits: d });
+    // Signed currency, sign BEFORE the $ (so never a bare "$-0"). Sub-cent-but-nonzero amounts
+    // (e.g. a 0.0001-BTC position's P/L) get extra precision so they read as a real value instead
+    // of rounding to "$0.00"; zero shows plain "$0.00".
+    const fmtMoney = (n: number) => {
+      const v = Number(n) || 0;
+      const a = Math.abs(v);
+      const digits = a > 0 && a < 0.005 ? 4 : 2;
+      const body = `$${a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: digits })}`;
+      return v < 0 ? `-${body}` : v > 0 ? `+${body}` : body;
+    };
     const compact = (n: number) => { const a = Math.abs(n); if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B'; if (a >= 1e6) return (n / 1e6).toFixed(2) + 'M'; if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K'; return fmt(n); };
 
     const INTERVAL_MS: Record<string, number> = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3 };
@@ -172,6 +208,10 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       volSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false });
       chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
       new ResizeObserver(() => chart?.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight })).observe(chartEl);
+      // When the user scrolls back near the left edge, pull the next page of older history.
+      chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (range && range.from < 20) loadOlderCandles();
+      });
     }
 
     const toSec = (raw: string | number): UTCTimestamp => {
@@ -186,11 +226,17 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     });
     const volPoint = (b: Bar) => ({ time: b.time as UTCTimestamp, value: b.volume, color: b.close >= b.open ? 'rgba(0,200,150,0.32)' : 'rgba(255,59,107,0.32)' });
 
+    const PAGE_SIZE = 500;
+    let loadingOlder = false;   // guards against overlapping scroll-back fetches
+    let reachedGenesis = false; // no older candles left for this interval
+
     async function loadCandles(interval: string) {
       if (!tickerId) return;
       chartEmpty.hidden = false;
+      loadingOlder = false;
+      reachedGenesis = false;
       try {
-        const raw = await apiGet<any[]>(`/market-data/tickers/${tickerId}/candles?interval=${interval}&limit=500`);
+        const raw = await apiGet<any[]>(`/market-data/tickers/${tickerId}/candles?interval=${interval}&limit=${PAGE_SIZE}`);
         bars = raw.map(normalize).filter((b) => Number.isFinite(b.close));
         series?.setData(bars);
         volSeries?.setData(bars.map(volPoint));
@@ -206,13 +252,42 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       }
     }
 
+    // Page older history in as the user scrolls toward the left edge, so the full backfilled
+    // range (not just the initial 500-bar window) is reachable by scrolling/zooming out.
+    async function loadOlderCandles() {
+      if (!tickerId || loadingOlder || reachedGenesis || !bars.length) return;
+      loadingOlder = true;
+      const before = (bars[0].time as number) * 1000; // epoch ms cursor = oldest loaded bar
+      try {
+        const raw = await apiGet<any[]>(`/market-data/tickers/${tickerId}/candles?interval=${currentInterval}&limit=${PAGE_SIZE}&before=${before}`);
+        const older = raw.map(normalize).filter((b) => Number.isFinite(b.close) && (b.time as number) < (bars[0].time as number));
+        if (!older.length) { reachedGenesis = true; return; }
+        bars = older.concat(bars);
+        // setData preserves the user's current view; prepended bars are simply scrollable-to.
+        series?.setData(bars);
+        volSeries?.setData(bars.map(volPoint));
+        loadSignals(currentInterval);
+      } catch {
+        /* transient — allow a retry on the next scroll */
+      } finally {
+        loadingOlder = false;
+      }
+    }
+
     // Overlay the active strategy's buy/sell intents as chart markers. Recomputed by the
     // backend over the same interval-rolled candles, so a BUY/SELL sits on its exact bar.
+    // The lookback is deliberately far larger than the visible page (PAGE_SIZE): the rule
+    // tree needs a long warmup (e.g. a 200-bar trend EMA) before it emits its FIRST signal,
+    // so a 500-bar request left the entire visible window inside the warmup zone → zero
+    // markers. A wide window means every crossover on-screen (and further back, revealed on
+    // scroll) is rendered, while markers outside the loaded candles simply wait until those
+    // bars page in. setMarkers is cheap even at a few hundred markers.
+    const SIGNAL_LOOKBACK = 6000;
     type Signal = { time: number; side: 'buy' | 'sell'; price: number; reason: string };
     async function loadSignals(interval: string) {
       if (!tickerId || !series) return;
       try {
-        const res = await apiGet<{ signals: Signal[] }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=500`);
+        const res = await apiGet<{ signals: Signal[] }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=${SIGNAL_LOOKBACK}`);
         const markers = (res.signals || [])
           .slice()
           .sort((a, b) => a.time - b.time)
@@ -286,7 +361,8 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       $('msRange').textContent = `$${fmt(low)} – $${fmt(high)}  ·  ${rangePct.toFixed(2)}%`;
     }
 
-    onPriceUpdate(({ tickerId: tid, candle }) => { if (tid === tickerId) applyLiveTick(candle); });
+    let lastPrice = 0;
+    onPriceUpdate(({ tickerId: tid, candle }) => { if (tid === tickerId) { lastPrice = Number(candle.close) || lastPrice; applyLiveTick(candle); } });
 
     // ---------- Timeframe tabs ----------
     function paintTf() {
@@ -306,71 +382,176 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       loadCandles(currentInterval);
     });
 
-    // ---------- Positions ----------
-    const positionsList = $('positionsList'), mUnrealized = $('mUnrealized'), mRealized = $('mRealized'), mOpen = $('mOpen');
-    // Exchange-reconciliation labels, keyed by position id, refreshed from the reconciled
-    // endpoint (which hits Binance) and merged onto the fast WS position pushes.
-    const posAnnotations = new Map<string, PosAnnotation>();
+    // ---------- Live Trades feed ----------
+    // Shows every trade (open + closed) matching the ACTIVE Mode + Network selection, newest
+    // first. Paper is network-agnostic (paper fills call no exchange), so the network only
+    // narrows a 'live' selection. `activeMode`/`activeNetwork` are kept in sync by the Mode
+    // toggle and the header Network toggle below.
+    const positionsList = $('positionsList'), tradesLabel = $('tradesLabel');
+    const mUnrealized = $('mUnrealized'), mRealized = $('mRealized'), mOpen = $('mOpen');
+    let activeMode: 'paper' | 'live' = 'paper';
+    let activeNetwork: 'testnet' | 'mainnet' = 'testnet';
+    let tradesCache: Position[] = [];
 
-    function exchangeBadge(p: Position): string {
-      const a = posAnnotations.get(p.id) || { source: p.source, exchangeVerified: p.exchangeVerified };
-      if (a.source === 'paper') return '<span class="badge badge-muted" title="Simulated fill — not sent to Binance">Paper</span>';
-      if (a.source === 'live' && a.exchangeVerified === false)
-        return '<span class="rounded bg-bear/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-bear" title="No matching balance on Binance — likely a stale/ghost trade">⚠ Not on Binance</span>';
-      if (a.source === 'live' && a.exchangeVerified === true)
-        return '<span class="rounded bg-brand/15 px-1.5 py-0.5 text-[0.6rem] font-semibold text-brand" title="Verified against your live Binance balance">✓ On Binance</span>';
-      return '';
+    function paintTradesLabel() {
+      if (tradesLabel) tradesLabel.textContent = activeMode === 'live' ? `live · ${activeNetwork}` : 'paper';
     }
 
-    function renderPositions(positions: Position[]) {
-      mOpen.textContent = String(positions.length);
-      const unreal = positions.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
-      const real = positions.reduce((s, p) => s + Number(p.realizedPl || 0), 0);
-      mUnrealized.textContent = `${unreal >= 0 ? '+' : ''}$${fmt(unreal)}`;
+    function modeBadge(p: Position): string {
+      if (p.tradeMode === 'paper')
+        return '<span class="badge badge-muted" title="Simulated fill — not sent to any exchange">Paper</span>';
+      const net = p.network || activeNetwork;
+      const cls = net === 'mainnet' ? 'bg-amber-500/15 text-amber-400' : 'bg-sky-500/15 text-sky-400';
+      return `<span class="rounded ${cls} px-1.5 py-0.5 text-[0.6rem] font-semibold" title="Live order on Binance ${net}">Live · ${net}</span>`;
+    }
+
+    function renderTrades() {
+      const open = tradesCache.filter((p) => p.status === 'open');
+      const unreal = open.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
+      const real = tradesCache.filter((p) => p.status === 'closed').reduce((s, p) => s + Number(p.realizedPl || 0), 0);
+      mOpen.textContent = String(open.length);
+      mUnrealized.textContent = fmtMoney(unreal);
       mUnrealized.className = `tabular text-[0.95rem] font-bold ${unreal >= 0 ? 'text-brand' : 'text-bear'}`;
-      mRealized.textContent = `${real >= 0 ? '+' : ''}$${fmt(real)}`;
+      mRealized.textContent = fmtMoney(real);
       mRealized.className = `tabular text-[0.95rem] font-bold ${real >= 0 ? 'text-brand' : 'text-bear'}`;
 
-      if (!positions.length) { positionsList.innerHTML = `<p class="p-4 text-sm text-muted">No open positions right now.</p>`; return; }
-      positionsList.innerHTML = positions.map((p) => {
-        const bull = Number(p.unrealizedPl) >= 0;
-        const plPct = p.entryPrice ? (Number(p.unrealizedPl) / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
-        const mins = Math.floor((Date.now() - new Date(p.openedAt).getTime()) / 60000);
-        const age = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+      // Keep the paper bar's live fields (equity + unrealized) moving on every WS tick, not just
+      // on the ~4s/15s summary poll — the open position's mark-to-market updates in real time.
+      if (activeMode === 'paper' && lastPaper) {
+        const liveEquity = Number(lastPaper.startingBalance) + Number(lastPaper.realizedPl) + unreal;
+        $('ppUnreal').textContent = fmtMoney(unreal); $('ppUnreal').className = plClass(unreal);
+        $('ppEquity').textContent = `$${fmt(liveEquity)}`;
+      }
+
+      if (!tradesCache.length) {
+        positionsList.innerHTML = `<p class="p-4 text-sm text-muted">No ${activeMode} trades yet${activeMode === 'live' ? ` on ${activeNetwork}` : ''}.</p>`;
+        return;
+      }
+      positionsList.innerHTML = tradesCache.map((p) => {
+        const isOpen = p.status === 'open';
+        const pl = isOpen ? Number(p.unrealizedPl) : Number(p.realizedPl);
+        const bull = pl >= 0;
+        const plPct = p.entryPrice ? (pl / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
+        const when = isOpen ? p.openedAt : (p.closedAt || p.openedAt);
+        const mins = Math.floor((Date.now() - new Date(when).getTime()) / 60000);
+        const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
         return `
           <div class="border-b border-border/60 px-4 py-3 transition-colors hover:bg-surface-2/60">
             <div class="mb-1.5 flex items-center justify-between">
               <span class="flex items-center gap-2 text-sm font-bold">${esc(p.ticker?.symbol || 'BTCUSDT')}
                 <span class="badge ${p.side === 'long' ? 'badge-brand' : 'badge-bear'}">${p.side.toUpperCase()}</span>
-                ${exchangeBadge(p)}</span>
-              <span class="tabular text-sm font-bold ${bull ? 'text-brand' : 'text-bear'}">${bull ? '+' : ''}$${fmt(Number(p.unrealizedPl))}</span>
+                ${modeBadge(p)}</span>
+              <span class="tabular text-sm font-bold ${bull ? 'text-brand' : 'text-bear'}">${fmtMoney(pl)}</span>
             </div>
             <div class="flex items-center justify-between text-xs text-muted">
-              <span>Entry <span class="tabular text-fg">$${fmt(Number(p.entryPrice))}</span></span>
+              <span>Entry <span class="tabular text-fg">$${fmt(Number(p.entryPrice))}</span>${isOpen ? '' : ` → Exit <span class="tabular text-fg">$${fmt(Number(p.exitPrice))}</span>`}</span>
               <span class="tabular ${bull ? 'text-brand' : 'text-bear'}">${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%</span>
             </div>
             <div class="mt-0.5 flex items-center justify-between text-[0.7rem] text-dim">
               <span class="tabular">Size ${fmt(Number(p.quantity), 6)}</span>
-              <span>${p.isProbation ? 'Probation' : 'Full'} · ${age}</span>
+              <span class="flex items-center gap-2">
+                <span>${isOpen ? `<span class="text-brand">OPEN</span> · ` : ''}${ago}</span>
+                ${isOpen ? `<button type="button" data-close="${esc(p.id)}" class="close-pos rounded border border-bear/40 px-2 py-0.5 text-[0.65rem] font-semibold text-bear transition-colors hover:bg-bear/10 disabled:opacity-40" title="Close this paper position now at the live price">Close</button>` : ''}
+              </span>
             </div>
           </div>`;
       }).join('');
     }
-    // Fast path: WS pushes raw positions for instant PnL — reuse cached exchange labels.
-    onPositionsUpdate((positions) => renderPositions(positions as Position[]));
 
-    // Slow path: reconciled endpoint refreshes the paper/on-Binance labels (hits the exchange).
-    async function loadPositions() {
+    // Fast path: WS pushes ALL open positions for instant PnL. Merge live PnL into the cached
+    // OPEN trades that match the active selection (ignore ones for another mode/network).
+    onPositionsUpdate((raw) => {
+      const live = raw as Position[];
+      let touched = false;
+      for (const p of tradesCache) {
+        if (p.status !== 'open') continue;
+        const m = live.find((x) => x.id === p.id);
+        if (m) { p.unrealizedPl = m.unrealizedPl; p.currentPrice = m.currentPrice; touched = true; }
+      }
+      if (touched) { renderTrades(); throttledPaperRefresh(); }
+    });
+
+    // Refresh the paper card from live position ticks, but at most every ~4s (WS pushes ~0.5Hz+).
+    let lastPaperRefresh = 0;
+    function throttledPaperRefresh() {
+      if (activeMode !== 'paper') return;
+      const now = Date.now();
+      if (now - lastPaperRefresh < 4000) return;
+      lastPaperRefresh = now;
+      loadPaperSummary();
+    }
+
+    async function loadTrades() {
       try {
-        const positions = await apiGet<Position[]>('/execution/positions/open/reconciled');
-        posAnnotations.clear();
-        for (const p of positions) posAnnotations.set(p.id, { source: p.source, exchangeVerified: p.exchangeVerified });
-        renderPositions(positions);
+        const q = `mode=${activeMode}${activeMode === 'live' ? `&network=${activeNetwork}` : ''}`;
+        tradesCache = await apiGet<Position[]>(`/execution/trades?${q}`);
+        renderTrades();
       } catch {
-        positionsList.innerHTML = `<p class="p-4 text-sm text-muted">Failed to load positions.</p>`;
+        positionsList.innerHTML = `<p class="p-4 text-sm text-muted">Failed to load trades.</p>`;
       }
     }
-    setInterval(loadPositions, 20000); // keep exchange labels fresh without hammering Binance
+    setInterval(loadTrades, 20000); // pick up newly-opened/closed trades without a page reload
+
+    // Manual close: the "Close" button on an OPEN position card exits it right now at the live
+    // price (falling back to the position's last mark if no tick has arrived yet). Same paper/live
+    // path the strategy's own exits use — for paper it's a simulated fill, so nothing hits Binance.
+    positionsList.addEventListener('click', async (e) => {
+      const btn = (e.target as HTMLElement).closest('.close-pos') as HTMLButtonElement | null;
+      if (!btn) return;
+      const id = btn.dataset.close;
+      if (!id) return;
+      const pos = tradesCache.find((p) => p.id === id);
+      const exitPrice = lastPrice || Number(pos?.currentPrice) || Number(pos?.entryPrice) || 0;
+      if (!exitPrice) { alert('No live price yet — try again in a moment.'); return; }
+      btn.disabled = true; btn.textContent = 'Closing…';
+      try {
+        await apiPost(`/execution/positions/${id}/close`, { exitPrice });
+        await Promise.all([loadTrades(), loadPaperSummary()]);
+      } catch (err) {
+        alert(err instanceof ApiError ? err.message : 'Failed to close position');
+        btn.disabled = false; btn.textContent = 'Close';
+      }
+    });
+
+    // ---------- Paper performance (horizontal bar, paper mode only) ----------
+    type PaperSummary = { startingBalance: number; equity: number; availableBalance: number; realizedPl: number; unrealizedPl: number; roiPct: number; openCount: number; closedCount: number; totalTrades: number; winRate: number };
+    const paperBar = $('paperBar'), testTradeBtn = $('testTradeBtn') as HTMLButtonElement;
+    const signed = fmtMoney;
+    const plClass = (n: number) => `tabular text-[0.95rem] font-bold ${n >= 0 ? 'text-brand' : 'text-bear'}`;
+    // Last authoritative summary — renderTrades reuses its startingBalance/realizedPl to keep
+    // equity + unrealized moving live between the periodic /paper-summary fetches.
+    let lastPaper: PaperSummary | null = null;
+
+    function renderPaper(s: PaperSummary) {
+      lastPaper = s;
+      $('ppEquity').textContent = `$${fmt(s.equity)}`;
+      $('ppRoi').textContent = `${s.roiPct >= 0 ? '+' : ''}${s.roiPct.toFixed(2)}%`;
+      $('ppRoi').className = plClass(s.roiPct);
+      $('ppAvail').textContent = `$${fmt(s.availableBalance)}`;
+      $('ppReal').textContent = signed(s.realizedPl); $('ppReal').className = plClass(s.realizedPl);
+      $('ppUnreal').textContent = signed(s.unrealizedPl); $('ppUnreal').className = plClass(s.unrealizedPl);
+      $('ppWin').textContent = `${s.winRate.toFixed(1)}%`;
+      $('ppTrades').textContent = `${s.openCount} / ${s.closedCount}`;
+    }
+    async function loadPaperSummary() {
+      paperBar.hidden = activeMode !== 'paper';
+      if (activeMode !== 'paper') return;
+      try { renderPaper(await apiGet<PaperSummary>('/execution/paper-summary')); } catch { /* leave placeholders */ }
+    }
+    setInterval(loadPaperSummary, 15000);
+
+    testTradeBtn?.addEventListener('click', async () => {
+      if (!tickerId || !lastPrice) return;
+      testTradeBtn.disabled = true;
+      try {
+        await apiPost('/execution/test-trade', { tickerId, price: lastPrice });
+        await Promise.all([loadTrades(), loadPaperSummary()]);
+      } catch (e) {
+        alert(e instanceof ApiError ? e.message : 'Test trade failed');
+      } finally {
+        testTradeBtn.disabled = false;
+      }
+    });
 
     // ---------- Active Alpha (bottom band) ----------
     const alphaWrap = $('alphaWrap'), alphaBody = $('alphaBody'), alphaBandName = $('alphaBandName');
@@ -518,6 +699,12 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     }
     function applyProvider(p: Provider | null) {
       boundProvider = p;
+      // Keep the trades feed's selection in sync with the provider the toggles control.
+      activeMode = p?.tradingMode || 'paper';
+      if (p && p.useTestnet !== undefined) activeNetwork = p.useTestnet ? 'testnet' : 'mainnet';
+      paintTradesLabel();
+      loadTrades();
+      loadPaperSummary();
       const connected = !!p && !!p.hasCredentials;
       if (!connected) { paintMode('paper', true); mBalance.textContent = '—'; return; }
       paintMode(p!.tradingMode || 'paper', false);
@@ -526,12 +713,20 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     async function switchMode(mode: 'paper' | 'live') {
       if (!boundProvider?.hasCredentials || mode === boundProvider.tradingMode) return;
       paintMode(mode, false);
+      activeMode = mode; paintTradesLabel(); loadTrades(); loadPaperSummary();
       try { const u = await apiPatch<Provider>(`/providers/${boundProvider.id}/trading-mode`, { tradingMode: mode }); boundProvider.tradingMode = u.tradingMode; }
-      catch { paintMode(boundProvider.tradingMode, false); }
+      catch { paintMode(boundProvider.tradingMode, false); activeMode = boundProvider.tradingMode; paintTradesLabel(); loadTrades(); loadPaperSummary(); }
     }
     modePaper.addEventListener('click', () => switchMode('paper'));
     modeLive.addEventListener('click', () => switchMode('live'));
     window.addEventListener('connection-ready', (e: any) => { if (e.detail?.provider) applyProvider(e.detail.provider as Provider); });
+    // A header network switch (Mainnet/Testnet) rebinds the active network's balance —
+    // re-fetch so the dashboard's BALANCE and the Live Trades feed reflect the network just
+    // switched to, matching the Profile page (which already reloads on this event).
+    window.addEventListener('network-changed', (e: any) => {
+      if (e.detail?.useTestnet !== undefined) { activeNetwork = e.detail.useTestnet ? 'testnet' : 'mainnet'; paintTradesLabel(); loadTrades(); loadPaperSummary(); }
+      loadProvider();
+    });
     async function loadProvider() {
       try { const ps = await apiGet<Provider[]>('/providers'); applyProvider(ps.find((p) => p.type === 'binance' && p.hasCredentials) || ps.find((p) => p.type === 'binance') || null); }
       catch { applyProvider(null); }
@@ -540,8 +735,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     // ---------- Init ----------
     initChart();
     paintTf();
-    loadProvider();
-    loadPositions();
+    loadProvider(); // → applyProvider → loadTrades() performs the initial Live Trades fetch
     (async () => {
       const ticker = await resolveBtcTicker();
       if (!ticker) { chartEmpty.hidden = false; chartEmpty.querySelector('p')!.textContent = 'Market data initializing — refresh in a moment.'; return; }

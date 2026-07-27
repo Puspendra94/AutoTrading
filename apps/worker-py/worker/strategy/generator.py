@@ -34,13 +34,10 @@ STAGE_FAILED = "failed"
 
 # ---------------------------------------------------------------- pure helpers
 def infer_strategy_type(params: Any) -> str:
-    """Coarse tag from the indicator config (mirrors inferStrategyTypeTag / inferStrategyType)."""
-    cfg = (params or {}).get("indicatorConfig") if isinstance(params, dict) else None
-    if cfg and cfg.get("rsiPeriod"):
-        return "ema_rsi_trend"
-    if cfg and cfg.get("emaFastPeriod"):
-        return "ema_crossover"
-    return "unclassified"
+    """Coarse tag = distinct indicator kinds in the rule tree (mirrors strategyTypeTag).
+    Legacy indicatorConfig blobs are auto-translated first."""
+    from .dsl.ir import strategy_type_tag
+    return strategy_type_tag(params) if isinstance(params, dict) else "unclassified"
 
 
 def format_lessons_for_prompt(lessons: list[dict]) -> str:
@@ -63,17 +60,54 @@ def build_generation_prompt(symbol: str, interval: str, latest_price: float, les
     return (
         f"Analyze ticker {symbol} (Interval: {interval}, Latest Price: {_js_num(latest_price)}).\n"
         "Propose optimal quantitative indicator parameters for an automated trend-following trading strategy: EMA\n"
-        "fast/slow crossover periods, optional RSI filter, and stop-loss/take-profit percentages.\n"
+        "fast/slow crossover periods and stop-loss/take-profit percentages.\n"
         "\n"
         "Respond in JSON with exactly these fields: strategyName (string), indicatorConfig.emaFastPeriod (integer, candles),\n"
-        "indicatorConfig.emaSlowPeriod (integer, candles), indicatorConfig.rsiPeriod (integer, optional),\n"
-        "indicatorConfig.rsiBuyThreshold (0-100, optional), indicatorConfig.rsiSellThreshold (0-100, optional),\n"
-        "indicatorConfig.stopLossPct (percent, e.g. 1.5), indicatorConfig.takeProfitPct (percent, e.g. 3.5), and\n"
+        "indicatorConfig.emaSlowPeriod (integer, candles), indicatorConfig.trendEmaPeriod (integer, optional long-term trend\n"
+        "EMA), indicatorConfig.stopLossPct (percent, e.g. 1.5), indicatorConfig.takeProfitPct (percent, e.g. 3.5), and\n"
         "reasoning (string).\n"
+        "\n"
+        f"Guidance for a {interval} timeframe: size the EMA periods and stop-loss/take-profit to that bar duration.\n"
+        "Crossovers that are too fast whipsaw and bleed the ~0.15% round-trip fee, so keep a clear separation between the\n"
+        "fast and slow EMA (e.g. fast >= 20, slow >= 2x the fast) and set stops/targets wide enough for a real multi-bar\n"
+        "swing (e.g. stopLossPct 3-6, takeProfitPct 4-12). STRONGLY prefer setting trendEmaPeriod (e.g. 100-200, longer than\n"
+        "emaSlowPeriod): longs are only taken while price is above that long trend EMA, which cuts the whipsaw losses plain\n"
+        "crossovers suffer in ranging/down markets and materially lifts the profit factor. Prioritize a positive out-of-sample\n"
+        "Sharpe (>= 1) and profit factor (>= 1.3) over trade frequency. Move decisively away from any parameters the lessons\n"
+        "below show failing (low/negative Sharpe or profit factor under 1) — do NOT propose near-identical values to a\n"
+        "documented failure.\n"
         "\n"
         "Relevant lessons from past strategies on this ticker/strategy type (steer away from documented failures, keep\n"
         f"successful approaches in mind):\n{lessons_block}"
     )
+
+
+def _num(v: Any) -> float:
+    """Mirror the evaluator's Number() coercion for policy fields (may be str/None -> NaN)."""
+    if v is None:
+        return float("nan")
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def gate_failure_reasons(ev: dict, policy: dict) -> list[str]:
+    """Human-readable list of which policy conditions a backtest failed — purely for logging,
+    so a discarded attempt says *why* it was rejected instead of a bare 'failed the gate'.
+    Mirrors the exact conditions in evaluate_strategy (out-of-sample metrics vs. policy)."""
+    reasons: list[str] = []
+    if ev["sharpe"] < _num(policy.get("minSharpe")):
+        reasons.append(f"sharpe {ev['sharpe']} < minSharpe {_num(policy.get('minSharpe'))}")
+    if ev["maxDrawdown"] > _num(policy.get("maxDrawdownPct")):
+        reasons.append(f"maxDrawdown {ev['maxDrawdown']}% > maxDrawdownPct {_num(policy.get('maxDrawdownPct'))}%")
+    if ev["profitFactor"] < _num(policy.get("minProfitFactor")):
+        reasons.append(f"profitFactor {ev['profitFactor']} < minProfitFactor {_num(policy.get('minProfitFactor'))}")
+    if ev["tradeCount"] < _num(policy.get("minTradeCount")):
+        reasons.append(f"tradeCount {ev['tradeCount']} < minTradeCount {_num(policy.get('minTradeCount'))}")
+    if ev["parameterCount"] > _num(policy.get("maxParameterCount")):
+        reasons.append(f"parameterCount {ev['parameterCount']} > maxParameterCount {_num(policy.get('maxParameterCount'))}")
+    return reasons
 
 
 def build_lesson_prompt(symbol: str, params: dict, backtest: Optional[dict], reason: str, divergence: Optional[dict]) -> str:
@@ -92,6 +126,29 @@ def build_lesson_prompt(symbol: str, params: dict, backtest: Optional[dict], rea
         f"pattern/cause, not a trade-by-trade recap. Ticker: {symbol}. Strategy parameters: {json.dumps(params, separators=(',', ':'))}. "
         f"Backtest metrics: {json.dumps(metrics, separators=(',', ':'))}. Retirement reason: {reason}. "
         f"Live-vs-backtest divergence: {divergence_str}. Respond with plain text only, no JSON."
+    )
+
+
+def build_failure_lesson_prompt(
+    symbol: str, params: dict, evaluation: Optional[dict], failing_conditions: list[str], reason: str
+) -> str:
+    """Mirror AiLessonsService.recordFailureLesson's summaryPrompt (JSON.stringify -> compact json).
+    Distills a discarded, gate-failing generation attempt into a reusable 'what to avoid' lesson."""
+    conditions = "; ".join(failing_conditions) or "unknown"
+    metrics = {
+        "sharpe": (evaluation or {}).get("sharpe"),
+        "profitFactor": (evaluation or {}).get("profitFactor"),
+        "maxDrawdown": (evaluation or {}).get("maxDrawdown"),
+        "tradeCount": (evaluation or {}).get("tradeCount"),
+    }
+    return (
+        "A strategy generation attempt just failed the evaluation gate and was discarded (never traded). "
+        "Distill this into ONE short, generalized, reusable lesson (2-3 sentences) for the next strategy "
+        "generation on this or similar tickers — focus on what to change to clear the gate and improve "
+        "profitability, not a trade-by-trade recap. "
+        f"Ticker: {symbol}. Attempted parameters: {json.dumps(params, separators=(',', ':'))}. "
+        f"Out-of-sample backtest metrics: {json.dumps(metrics, separators=(',', ':'))}. "
+        f"Failing gate conditions: {conditions}. Trigger: {reason}. Respond with plain text only, no JSON."
     )
 
 
@@ -170,10 +227,13 @@ class StrategyGenerator:
             )
 
             if not eval_result["passedEvaluationGate"]:
+                failures = gate_failure_reasons(eval_result, policy)
                 log.warning(
-                    "Strategy attempt %d/%d for ticker %s failed the gate (sharpe %s, PF %s, DD %s%%, trades %s). Discarding.",
-                    attempt, MAX_ATTEMPTS, ticker_id, eval_result["sharpe"], eval_result["profitFactor"],
-                    eval_result["maxDrawdown"], eval_result["tradeCount"],
+                    "Strategy attempt %d/%d for ticker %s failed the gate. Failing conditions: %s. "
+                    "(sharpe %s, PF %s, DD %s%%, trades %s, params %s). Discarding.",
+                    attempt, MAX_ATTEMPTS, ticker_id, "; ".join(failures) or "unknown",
+                    eval_result["sharpe"], eval_result["profitFactor"], eval_result["maxDrawdown"],
+                    eval_result["tradeCount"], eval_result["parameterCount"],
                 )
                 continue
 
@@ -201,13 +261,66 @@ class StrategyGenerator:
             log.info("Strategy v%d promoted LIVE for ticker %s (attempt %d).", existing_count + 1, ticker_id, attempt)
             return {"strategyId": strategy_id, "evaluation": eval_result, "saved": True, "attempts": attempt}
 
-        # No attempt cleared the gate — nothing is persisted.
+        # No attempt cleared the gate — nothing is persisted, but record WHY so the next
+        # generation cycle can learn from it (spec 4.11 continuous learning, failure path).
         await self.store.set_onboarding_stage(ticker_id, STAGE_FAILED)
+        last_failures = gate_failure_reasons(last_eval, policy) if last_eval else []
+        if last_eval and last_params:
+            try:
+                await self._record_failure_lesson(ticker, last_params, last_eval, last_failures, retirement_reason)
+            except Exception as err:  # noqa: BLE001 — learning is best-effort, never fail the cycle
+                log.warning("Failure-lesson recording failed (non-fatal): %s", err)
         return {
             "strategyId": None, "evaluation": last_eval, "params": last_params,
             "saved": False, "attempts": MAX_ATTEMPTS,
-            "message": f"No generated strategy passed the evaluation gate after {MAX_ATTEMPTS} attempts.",
+            "failingConditions": last_failures,
+            "message": (
+                f"No generated strategy passed the evaluation gate after {MAX_ATTEMPTS} attempts."
+                + (f" Last attempt failed on: {'; '.join(last_failures)}." if last_failures else "")
+            ),
         }
+
+    async def _record_failure_lesson(
+        self, ticker: dict, params: dict, evaluation: Optional[dict], failing_conditions: list[str], reason: str
+    ) -> None:
+        """Record a FAILURE lesson when no attempt cleared the gate (mirrors
+        AiLessonsService.recordFailureLesson). Non-fatal — the caller wraps this in try/except."""
+        prompt = build_failure_lesson_prompt(ticker["symbol"], params or {}, evaluation, failing_conditions, reason)
+        # Deterministic fallback with the concrete params + failing conditions — used whenever the
+        # LLM summary is unavailable OR empty. Reasoning models (e.g. deepseek-v4-pro) can spend
+        # the whole token budget "thinking" and return no text, which would otherwise persist a
+        # blank, useless lesson.
+        cfg = (params or {}).get("indicatorConfig") or {}
+        conditions = "; ".join(failing_conditions) or "unknown"
+        fallback_text = (
+            f"A generated strategy for {ticker['symbol']} failed the gate ({conditions}). "
+            f"Attempted EMA {cfg.get('emaFastPeriod')}/{cfg.get('emaSlowPeriod')}, "
+            f"SL {cfg.get('stopLossPct')}% / TP {cfg.get('takeProfitPct')}%; "
+            f"out-of-sample Sharpe {(evaluation or {}).get('sharpe', 'n/a')}, "
+            f"profit factor {(evaluation or {}).get('profitFactor', 'n/a')}."
+        )
+        summary_text = ""
+        try:
+            llm_res = await self.llm.generate_completion(prompt, max_tokens=800)
+            summary_text = (llm_res.get("content") or "").strip()
+            await self.llm.log_cost(
+                getattr(self.store, "pool", None), ticker["id"], None, LlmPurpose.RE_EVALUATION, llm_res
+            )
+        except Exception as err:  # noqa: BLE001
+            log.warning("Failure-lesson summarization LLM call failed, using a structured fallback: %s", err)
+        if not summary_text:
+            summary_text = fallback_text
+
+        await self.store.insert_lesson(
+            source_strategy_id=None,
+            source_divergence_id=None,
+            ticker_id=ticker["id"],
+            market_type=ticker.get("market_type_name"),
+            strategy_type=infer_strategy_type(params),
+            regime_tags=[],
+            outcome="failure",
+            summary_text=summary_text,
+        )
 
     async def _record_lesson(self, ticker: dict, previous_live: dict, reason: str) -> None:
         """Faithful port of AiLessonsService.recordLesson."""
@@ -218,20 +331,25 @@ class StrategyGenerator:
         outcome = "failure" if is_failure else "success"
 
         prompt = build_lesson_prompt(ticker["symbol"], previous_live.get("parametersJson") or {}, backtest, reason, divergence)
+        # Deterministic fallback — used whenever the LLM summary is unavailable OR empty (reasoning
+        # models can return no text after using the whole budget on hidden reasoning).
+        sharpe = backtest.get("sharpe") if backtest else "n/a"
+        pf = backtest.get("profitFactor") if backtest else "n/a"
+        fallback_text = (
+            f"Strategy v{previous_live.get('version')} for {ticker['symbol']} was retired ({reason}). "
+            f"Backtest Sharpe {sharpe}, profit factor {pf}."
+        )
+        summary_text = ""
         try:
-            llm_res = await self.llm.generate_completion(prompt, max_tokens=200)
-            summary_text = llm_res["content"].strip()
+            llm_res = await self.llm.generate_completion(prompt, max_tokens=800)
+            summary_text = (llm_res.get("content") or "").strip()
             await self.llm.log_cost(
                 getattr(self.store, "pool", None), ticker["id"], previous_live["id"], LlmPurpose.RE_EVALUATION, llm_res
             )
         except Exception as err:  # noqa: BLE001
             log.warning("Lesson summarization LLM call failed, using a structured fallback: %s", err)
-            sharpe = backtest.get("sharpe") if backtest else "n/a"
-            pf = backtest.get("profitFactor") if backtest else "n/a"
-            summary_text = (
-                f"Strategy v{previous_live.get('version')} for {ticker['symbol']} was retired ({reason}). "
-                f"Backtest Sharpe {sharpe}, profit factor {pf}."
-            )
+        if not summary_text:
+            summary_text = fallback_text
 
         await self.store.insert_lesson(
             source_strategy_id=previous_live["id"],

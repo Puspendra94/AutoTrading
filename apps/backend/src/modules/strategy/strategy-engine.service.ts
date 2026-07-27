@@ -13,9 +13,15 @@ import { LlmPurpose } from '../../entities/llm-cost-log.entity';
 import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
 import { AiLessonsService } from './ai-lessons.service';
-import { StrategyParamsSchema } from '../llm/schemas/strategy-params.schema';
+import { StrategyGenSchema } from '../llm/schemas/strategy-gen.schema';
 import { LiveDecisionSchema } from '../llm/schemas/live-decision.schema';
+import { GenerationPlanSchema } from '../llm/schemas/generation-plan.schema';
 import { MarketDataService } from '../market-data/market-data.service';
+import { ExecutionService } from '../risk-execution/execution.service';
+import { resolveIR, warmupBars, validateIR, strategyTypeTag, StrategyIR } from './dsl/strategy-ir';
+import { STRATEGY_GRAMMAR_PROMPT } from './dsl/grammar-prompt';
+import { shouldEnter, exitReason, intendedPositionState } from './dsl/interpreter';
+import { config } from '../../config/configuration';
 
 const DIVERGENCE_FLAG_THRESHOLD_PCT = 30; // spec 7.5 — significant divergence triggers regeneration
 
@@ -43,9 +49,15 @@ export class StrategyEngineService {
     private readonly llmService: LlmService,
     private readonly aiLessonsService: AiLessonsService,
     private readonly marketDataService: MarketDataService,
+    private readonly executionService: ExecutionService,
   ) {}
 
-  async generateStrategyForTicker(tickerId: string, retirementReason = 'new strategy generation cycle') {
+  async generateStrategyForTicker(
+    tickerId: string,
+    retirementReason = 'new strategy generation cycle',
+    intervalOverride?: string,
+    skipGate = false,
+  ) {
     const ticker = await this.tickerRepo.findOne({ where: { id: tickerId }, relations: ['marketType'] });
     if (!ticker) throw new NotFoundException('Ticker not found');
 
@@ -63,14 +75,42 @@ export class StrategyEngineService {
     ticker.onboardingStage = OnboardingStage.GENERATING_STRATEGY;
     await this.tickerRepo.save(ticker);
 
-    // Generate/evaluate against RECENT history: with the full-genesis backfill running,
-    // the oldest rows are years old and unrepresentative of the regime the strategy will
-    // actually trade, so we take the most recent window and restore chronological order.
-    const candles = (await this.ohlcvRepo.find({
-      where: { tickerId },
-      order: { timestamp: 'DESC' },
-      take: 2000,
-    })).reverse();
+    // Base policy — the thresholds the AI planner may tune WITHIN hard floors; maxParameterCount
+    // stays fixed and is never AI-controlled.
+    let activePolicy = await this.policyRepo.findOne({ where: { isActive: true } });
+    if (!activePolicy) {
+      activePolicy = this.policyRepo.create({
+        name: 'Default Policy',
+        minSharpe: 1.0,
+        maxDrawdownPct: 20.0,
+        minProfitFactor: 1.3,
+        minTradeCount: 8,
+      });
+    }
+
+    // ADAPTIVE LOOP: (1) record how the CURRENT live strategy is really doing (feeds memory),
+    // then (2) let the meta-planner read ALL memory — failures + live-performance insights — and
+    // decide HOW to build the next one: interval, data window, gate strictness (clamped to safe
+    // floors), and which signals to emphasize. Both are non-fatal to the generation itself.
+    await this.recordLiveInsightForCurrentStrategy(ticker).catch((err) =>
+      this.logger.warn(`Live-insight recording failed (non-fatal): ${err.message}`),
+    );
+    const plan = await this.planGeneration(ticker, activePolicy);
+    // An explicit user-chosen timeframe overrides the planner's interval pick (and enables fast
+    // sub-hour intervals the planner enum doesn't offer). Validated against the '<n><m|h|d|w>' shape.
+    const evalInterval =
+      intervalOverride && /^(\d+)([mhdw])$/i.test(intervalOverride) ? intervalOverride : plan.interval;
+    const effectivePolicy = plan.policy;
+
+    // Backtest on the PLANNED timeframe (aggregated from the 1m base via TimescaleDB time_bucket),
+    // over the planned number of bars. 1m is noise/fee-dominated for trend following; higher
+    // intervals trade fewer, cleaner swings. Normalize raw-query rows into the evaluator's shape.
+    const rawCandles = await this.marketDataService.getCandlesForInterval(tickerId, evalInterval, plan.candleLimit);
+    const candles = rawCandles.map((c: any) => ({
+      ...c,
+      timestamp: c.timestamp instanceof Date ? c.timestamp : new Date(c.timestamp),
+      close: Number(c.close),
+    }));
 
     // Spec 4.11.2: retrieve relevant past lessons before generating, so the LLM doesn't
     // repeat a documented mistake for this ticker (or a similar strategy type).
@@ -82,37 +122,19 @@ export class StrategyEngineService {
     const lessonsBlock = this.aiLessonsService.formatLessonsForPrompt(lessons);
 
     const latestPrice = candles.length > 0 ? Number(candles[candles.length - 1].close) : 0;
-    const summaryPrompt = `Analyze ticker ${ticker.symbol} (Interval: ${ticker.interval}, Latest Price: ${latestPrice}).
-Propose optimal quantitative indicator parameters for an automated trend-following trading strategy: EMA
-fast/slow crossover periods, optional RSI filter, and stop-loss/take-profit percentages.
+    const paramBudget = Number((effectivePolicy as any).maxParameterCount ?? activePolicy.maxParameterCount ?? 8);
+    const summaryPrompt = `Design an automated trading strategy for ${ticker.symbol} (Interval: ${evalInterval}, Latest Price: ${latestPrice}).
 
-Respond in JSON with exactly these fields: strategyName (string), indicatorConfig.emaFastPeriod (integer, candles),
-indicatorConfig.emaSlowPeriod (integer, candles), indicatorConfig.rsiPeriod (integer, optional),
-indicatorConfig.rsiBuyThreshold (0-100, optional), indicatorConfig.rsiSellThreshold (0-100, optional),
-indicatorConfig.stopLossPct (percent, e.g. 1.5), indicatorConfig.takeProfitPct (percent, e.g. 3.5), and
-reasoning (string).
+${STRATEGY_GRAMMAR_PROMPT}
 
-Relevant lessons from past strategies on this ticker/strategy type (steer away from documented failures, keep
-successful approaches in mind):
-${lessonsBlock}`;
+Parameter budget for THIS strategy: at most ${paramBudget} distinct tunable knobs.
+Timeframe: size indicator periods and stop/target to a ${evalInterval} bar — give trades room for a real multi-bar swing rather than reacting to single-bar noise. Prioritize a positive out-of-sample Sharpe (>= 1) and profit factor (>= 1.3) over trade frequency.
+Move decisively away from any approach the lessons below show failing (low/negative Sharpe or profit factor under 1) — do NOT repeat a documented failure; try a different indicator family or structure when the lessons point that way.
+${plan.signalEmphasis ? `\nPlanner emphasis for this cycle (follow it): ${plan.signalEmphasis}\n` : ''}
+Relevant lessons from past strategies on this ticker/strategy type (steer away from documented failures, keep successful approaches in mind):
+${lessonsBlock}
 
-    // Forced into the exact shape strategy-evaluator.service.ts and ai-lessons.service.ts
-    // read (indicatorConfig.emaFastPeriod/emaSlowPeriod/stopLossPct/takeProfitPct/rsiPeriod)
-    // via LangChain's withStructuredOutput — regardless of which provider in LLM_MODELS
-    // answers, so a generic "respond in JSON" prompt can no longer drift into a
-    // provider-specific shape that silently gets ignored downstream. The field list above
-    // is also spelled out in prose since DeepSeek's reasoning models are forced onto the
-    // 'jsonMode' method (see llm.service.ts), which sends no structural schema to the model.
-    let activePolicy = await this.policyRepo.findOne({ where: { isActive: true } });
-    if (!activePolicy) {
-      activePolicy = this.policyRepo.create({
-        name: 'Default Policy',
-        minSharpe: 1.0,
-        maxDrawdownPct: 20.0,
-        minProfitFactor: 1.3,
-        minTradeCount: 100,
-      });
-    }
+Respond with strategyName, reasoning, and the entry, exit, and risk fields (JSON objects, not strings).`;
 
     ticker.onboardingStage = OnboardingStage.BACKTESTING;
     await this.tickerRepo.save(ticker);
@@ -124,18 +146,26 @@ ${lessonsBlock}`;
     const MAX_ATTEMPTS = 3;
     let lastEval: any = null;
     let lastParams: any = null;
+    let llmFailures = 0;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const llmRes = await this.llmService.generateStructuredCompletion(summaryPrompt, StrategyParamsSchema, {
-        schemaName: 'propose_strategy_params',
-      });
-      const parsedParams = llmRes.data;
-      const evalResult = this.evaluatorService.evaluateStrategy(candles, parsedParams, activePolicy);
-      lastEval = evalResult;
-      lastParams = parsedParams;
+      let llmRes;
+      try {
+        // Generous token budget: DeepSeek's reasoning models spend a big chunk "thinking" before
+        // emitting the JSON rule tree, so a tight cap truncates it -> parse fails -> the whole
+        // attempt is wasted. 4k keeps the structured output intact.
+        llmRes = await this.llmService.generateStructuredCompletion(summaryPrompt, StrategyGenSchema, {
+          schemaName: 'propose_strategy',
+          maxTokens: 4000,
+        });
+      } catch (err: any) {
+        llmFailures++;
+        this.logger.warn(`Strategy attempt ${attempt}/${MAX_ATTEMPTS} — LLM call failed: ${err.message}. Discarding.`);
+        continue;
+      }
 
       await this.llmService.logCost(tickerId, null, LlmPurpose.STRATEGY_GENERATION, {
-        content: JSON.stringify(parsedParams),
+        content: JSON.stringify(llmRes.data),
         inputTokens: llmRes.inputTokens,
         outputTokens: llmRes.outputTokens,
         costUsd: llmRes.costUsd,
@@ -143,22 +173,49 @@ ${lessonsBlock}`;
         provider: llmRes.provider,
       });
 
-      if (!evalResult.passedEvaluationGate) {
+      // Parse the rule-tree string into an IR and validate it structurally BEFORE backtesting.
+      // A malformed/invalid tree is a failed attempt (discarded); retry within MAX_ATTEMPTS.
+      const ir = this.parseGeneratedStrategy(llmRes.data);
+      if (!ir) {
         this.logger.warn(
-          `Strategy attempt ${attempt}/${MAX_ATTEMPTS} for ticker ${tickerId} failed the gate ` +
-            `(sharpe ${evalResult.sharpe}, PF ${evalResult.profitFactor}, DD ${evalResult.maxDrawdown}%, trades ${evalResult.tradeCount}). Discarding.`,
+          `Strategy attempt ${attempt}/${MAX_ATTEMPTS} for ticker ${tickerId} produced an invalid rule tree. Discarding.`,
         );
+        lastParams = llmRes.data;
         continue;
       }
 
-      // --- Passed the gate: persist strategy + backtest, then promote it live. ---
+      const evalResult = this.evaluatorService.evaluateStrategy(candles, ir, effectivePolicy);
+      lastEval = evalResult;
+      lastParams = ir;
+
+      const gateBypassed = skipGate && !evalResult.passedEvaluationGate;
+      if (!evalResult.passedEvaluationGate && !skipGate) {
+        const failing = this.gateFailureReasons(evalResult, effectivePolicy);
+        this.logger.warn(
+          `Strategy attempt ${attempt}/${MAX_ATTEMPTS} for ticker ${tickerId} failed the gate. ` +
+            `Failing conditions: ${failing.join('; ') || 'unknown'}. ` +
+            `(sharpe ${evalResult.sharpe}, PF ${evalResult.profitFactor}, DD ${evalResult.maxDrawdown}%, ` +
+            `trades ${evalResult.tradeCount}, params ${evalResult.parameterCount}). Discarding.`,
+        );
+        continue;
+      }
+      if (gateBypassed) {
+        this.logger.warn(
+          `TESTING: gate BYPASSED for ticker ${tickerId} — promoting a strategy that FAILED the gate ` +
+            `(sharpe ${evalResult.sharpe}, PF ${evalResult.profitFactor}, trades ${evalResult.tradeCount}). ` +
+            `Use only for exercising the execution loop.`,
+        );
+      }
+
+      // --- Passed the gate (or bypassed for testing): persist strategy + backtest, then promote. ---
       const existingCount = await this.strategyRepo.count({ where: { tickerId } });
       const strategy = this.strategyRepo.create({
         tickerId,
         version: existingCount + 1,
         status: StrategyStatus.DRAFT,
         executionMode: ExecutionMode.MODE_A_RULES,
-        parametersJson: parsedParams,
+        parametersJson: ir,
+        evalInterval,
         generatedBy: llmRes.model,
       });
       await this.strategyRepo.save(strategy);
@@ -177,7 +234,8 @@ ${lessonsBlock}`;
         monteCarloSummaryJson: evalResult.monteCarloSummary,
         regimeBreakdownJson: evalResult.regimeBreakdown,
         parameterCount: evalResult.parameterCount,
-        passedEvaluationGate: true,
+        // Truthful: reflects the real gate result even when promoted via the testing bypass.
+        passedEvaluationGate: evalResult.passedEvaluationGate,
       });
       await this.backtestRepo.save(backtest);
 
@@ -188,6 +246,13 @@ ${lessonsBlock}`;
       // keeping exactly one strategy live per ticker.
       const previousLive = await this.strategyRepo.findOne({ where: { tickerId, status: StrategyStatus.LIVE } });
       if (previousLive && previousLive.id !== strategy.id) {
+        // Close any position the outgoing strategy left open BEFORE switching, so the incoming
+        // strategy never inherits an orphan it won't manage (exits are scoped to its own
+        // strategyId). Done first so the just-closed trades are reflected in the lesson below.
+        await this.executionService
+          .flattenOpenPositionsForTicker(tickerId, `strategy switch: retiring v${previousLive.version} for v${strategy.version}`)
+          .catch((err) => this.logger.warn(`Flatten-on-switch failed (non-fatal): ${err.message}`));
+
         const previousBacktest = await this.backtestRepo.findOne({ where: { strategyId: previousLive.id } });
         const latestDivergence = await this.divergenceRepo.findOne({
           where: { strategyId: previousLive.id },
@@ -215,12 +280,28 @@ ${lessonsBlock}`;
       // Replay the strategy over full real history in the background (non-blocking).
       this.performanceService.computeForStrategyInBackground(strategy.id);
 
-      return { strategy, backtest, evaluation: evalResult, saved: true, attempts: attempt };
+      return { strategy, backtest, evaluation: evalResult, saved: true, attempts: attempt, gateBypassed };
     }
 
-    // No attempt cleared the gate — nothing is persisted.
+    // No attempt cleared the gate — nothing is persisted, but record WHY so the next
+    // generation cycle can learn from it (spec 4.11 continuous learning on the failure path).
     ticker.onboardingStage = OnboardingStage.FAILED;
     await this.tickerRepo.save(ticker);
+    const lastFailures = lastEval ? this.gateFailureReasons(lastEval, effectivePolicy) : [];
+    if (lastEval && lastParams) {
+      // Fire-and-forget: the lesson-summary LLM call is slow (reasoning models), and blocking the
+      // response on it can push the whole request past the HTTP timeout. Record it in the
+      // background — it only needs to be persisted before the NEXT generation, not this response.
+      void this.aiLessonsService
+        .recordFailureLesson({
+          ticker,
+          attemptedParams: lastParams,
+          evaluation: lastEval,
+          failingConditions: lastFailures,
+          reason: retirementReason,
+        })
+        .catch((err) => this.logger.warn(`Failure-lesson recording failed (non-fatal): ${err.message}`));
+    }
     return {
       strategy: null,
       backtest: null,
@@ -228,8 +309,145 @@ ${lessonsBlock}`;
       params: lastParams,
       saved: false,
       attempts: MAX_ATTEMPTS,
-      message: `No generated strategy passed the evaluation gate after ${MAX_ATTEMPTS} attempts.`,
+      failingConditions: lastFailures,
+      message:
+        llmFailures === MAX_ATTEMPTS
+          ? `The LLM was unavailable — all ${MAX_ATTEMPTS} generation attempts failed to get a response (check the provider/API key/credits in LLM_MODELS). No strategy was created.`
+          : `No generated strategy passed the evaluation gate after ${MAX_ATTEMPTS} attempts.` +
+            (lastFailures.length ? ` Last attempt failed on: ${lastFailures.join('; ')}.` : ''),
     };
+  }
+
+  /**
+   * Human-readable list of which policy conditions a backtest failed — purely for logging,
+   * so a discarded attempt reports *why* it was rejected instead of a bare "failed the gate".
+   * Mirrors the exact conditions in StrategyEvaluatorService.evaluateStrategy (out-of-sample
+   * metrics vs. the active policy).
+   */
+  private gateFailureReasons(ev: any, policy: any): string[] {
+    const reasons: string[] = [];
+    if (ev.sharpe < Number(policy.minSharpe)) {
+      reasons.push(`sharpe ${ev.sharpe} < minSharpe ${Number(policy.minSharpe)}`);
+    }
+    if (ev.maxDrawdown > Number(policy.maxDrawdownPct)) {
+      reasons.push(`maxDrawdown ${ev.maxDrawdown}% > maxDrawdownPct ${Number(policy.maxDrawdownPct)}%`);
+    }
+    if (ev.profitFactor < Number(policy.minProfitFactor)) {
+      reasons.push(`profitFactor ${ev.profitFactor} < minProfitFactor ${Number(policy.minProfitFactor)}`);
+    }
+    if (ev.tradeCount < Number(policy.minTradeCount)) {
+      reasons.push(`tradeCount ${ev.tradeCount} < minTradeCount ${Number(policy.minTradeCount)}`);
+    }
+    if (ev.parameterCount > Number(policy.maxParameterCount)) {
+      reasons.push(`parameterCount ${ev.parameterCount} > maxParameterCount ${Number(policy.maxParameterCount)}`);
+    }
+    return reasons;
+  }
+
+  /**
+   * Meta-planner (adaptive loop): before building a strategy, read ALL accumulated memory
+   * (failed-generation lessons + live-performance insights) and decide HOW to build the next
+   * one — timeframe, data window, gate strictness, and which signals to emphasize. Proposed gate
+   * thresholds are CLAMPED to hard safe floors so the generator can never weaken its own test
+   * into meaninglessness. Falls back to the static config defaults if planning is unavailable.
+   */
+  private async planGeneration(
+    ticker: Ticker,
+    activePolicy: StrategyEvaluationPolicy,
+  ): Promise<{ interval: string; candleLimit: number; policy: any; signalEmphasis: string; reasoning: string }> {
+    const defaultPlan = {
+      interval: config.strategy.evalInterval,
+      candleLimit: config.strategy.evalCandleLimit,
+      policy: activePolicy,
+      signalEmphasis: '',
+      reasoning: 'default plan (planner unavailable / no lessons yet)',
+    };
+
+    const lessons = await this.aiLessonsService.retrieveRelevantLessons(ticker.id, undefined, 12);
+    if (lessons.length === 0) return defaultPlan; // nothing to adapt from yet
+    const lessonsBlock = this.aiLessonsService.formatLessonsForPrompt(lessons);
+
+    const planPrompt = `You are planning HOW to generate the next automated trading strategy for ${ticker.symbol}, BEFORE it is built. The generator can compose ANY rule tree from these indicator families: moving averages (EMA/SMA/MACD), oscillators (RSI/Stochastic), volatility/channels (Bollinger/ATR/Donchian), and price levels (rolling highs/lows) — trend-following OR mean-reversion OR combinations, not just EMA crossovers. The lessons below include failed generation attempts AND reviews of how live strategies actually performed. Choose the setup most likely to produce a strategy that clears the gate and holds up. Base every choice on the lessons: too few trades -> shorter interval or more candles; a whole approach repeatedly failing (e.g. plain MA crossovers whipsawing) -> steer the generator toward a DIFFERENT family (a trend filter, a mean-reversion oscillator, a breakout channel). If lessons show setups consistently land just under Sharpe 1 but with a healthy profit factor (>1.3), you MAY lower minSharpe toward its 0.5 floor — the gate thresholds you pick are clamped to hard floors (minSharpe>=0.5, minProfitFactor>=1.2, maxDrawdownPct<=25, minTradeCount>=5), so propose within those. Current defaults: interval ${config.strategy.evalInterval}, candleLimit ${config.strategy.evalCandleLimit}, gate minSharpe ${activePolicy.minSharpe} / minProfitFactor ${activePolicy.minProfitFactor} / maxDrawdownPct ${activePolicy.maxDrawdownPct} / minTradeCount ${activePolicy.minTradeCount}.
+
+Respond in JSON with exactly these fields: interval (one of "1h","2h","4h","6h","12h","1d"), candleLimit (integer 1000-20000), minSharpe (number 0.5-3), minProfitFactor (number 1.2-3), maxDrawdownPct (number 5-25), minTradeCount (integer 5-300), signalEmphasis (string: concrete guidance for the generator — which indicator family/approach and structure to favor or avoid given the lessons), reasoning (string).
+
+Lessons:
+${lessonsBlock}`;
+
+    let plan: any;
+    try {
+      const res = await this.llmService.generateStructuredCompletion(planPrompt, GenerationPlanSchema, {
+        schemaName: 'plan_generation',
+      });
+      plan = res.data;
+      await this.llmService.logCost(ticker.id, null, LlmPurpose.STRATEGY_GENERATION, {
+        content: JSON.stringify(plan),
+        inputTokens: res.inputTokens,
+        outputTokens: res.outputTokens,
+        costUsd: res.costUsd,
+        model: res.model,
+        provider: res.provider,
+      });
+    } catch (err: any) {
+      this.logger.warn(`Generation planner failed, using defaults: ${err.message}`);
+      return defaultPlan;
+    }
+    if (!plan) return defaultPlan;
+
+    // Hard safety floors (user-chosen): the AI tunes the gate WITHIN these, never below them.
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    const effectivePolicy = {
+      minSharpe: clamp(Number(plan.minSharpe), 0.5, 3),
+      minProfitFactor: clamp(Number(plan.minProfitFactor), 1.2, 3),
+      maxDrawdownPct: clamp(Number(plan.maxDrawdownPct), 5, 25),
+      minTradeCount: Math.round(clamp(Number(plan.minTradeCount), 5, 300)),
+      maxParameterCount: activePolicy.maxParameterCount, // fixed — never AI-controlled
+    };
+
+    this.logger.log(
+      `Generation plan for ${ticker.symbol}: interval ${plan.interval}, candleLimit ${plan.candleLimit}, ` +
+        `gate proposed sharpe/PF/DD/trades ${plan.minSharpe}/${plan.minProfitFactor}/${plan.maxDrawdownPct}/${plan.minTradeCount} ` +
+        `-> clamped ${effectivePolicy.minSharpe}/${effectivePolicy.minProfitFactor}/${effectivePolicy.maxDrawdownPct}/${effectivePolicy.minTradeCount}. ` +
+        `Emphasis: ${plan.signalEmphasis}`,
+    );
+
+    return {
+      interval: plan.interval,
+      candleLimit: plan.candleLimit,
+      policy: effectivePolicy,
+      signalEmphasis: plan.signalEmphasis,
+      reasoning: plan.reasoning,
+    };
+  }
+
+  /**
+   * Adaptive loop, memory side: before a new generation, distill how the CURRENT live strategy is
+   * actually performing (real-data replay + live closed positions + backtest divergence) into a
+   * 'live_insight' lesson the planner reads. No-op when nothing is live yet.
+   */
+  private async recordLiveInsightForCurrentStrategy(ticker: Ticker): Promise<void> {
+    const liveStrategy = await this.strategyRepo.findOne({
+      where: { tickerId: ticker.id, status: StrategyStatus.LIVE },
+    });
+    if (!liveStrategy) return;
+
+    const performance = await this.performanceService.getPerformance(liveStrategy.id);
+    const closed = await this.positionRepo.find({
+      where: { tickerId: ticker.id, strategyId: liveStrategy.id, status: PositionStatus.CLOSED },
+    });
+    const netPnlUsd = closed.reduce((s, p) => s + Number(p.realizedPl || 0), 0);
+    const divergence = await this.divergenceRepo.findOne({
+      where: { strategyId: liveStrategy.id },
+      order: { measuredAt: 'DESC' },
+    });
+
+    await this.aiLessonsService.recordLiveInsightLesson({
+      strategy: liveStrategy,
+      ticker,
+      performance,
+      closedPositions: { count: closed.length, netPnlUsd },
+      divergence,
+    });
   }
 
   /**
@@ -256,57 +474,66 @@ ${lessonsBlock}`;
   }
 
   /**
-   * Mode A (spec 2.6) — deterministic, zero-LLM-call EMA fast/slow crossover with
-   * stop-loss/take-profit exits, mirroring exactly the logic strategy-evaluator.service.ts
-   * backtests (previously this used an unrelated naive momentum-threshold check, so what
-   * was promoted based on the backtest never matched what actually executed live).
+   * Mode A (spec 2.6) — deterministic, zero-LLM-call rule-tree execution via the SAME DSL
+   * interpreter the backtest uses, so what trades live is exactly what was promoted. A legacy
+   * indicatorConfig blob is auto-translated to a rule tree; any promoted rule tree runs directly.
+   * (Previously this was hardcoded to EMA crossover.)
    */
   private async evaluateRulesSignal(tickerId: string, liveStrategy: Strategy): Promise<'BUY' | 'SELL' | 'HOLD'> {
-    const params = liveStrategy.parametersJson;
-    const emaFastPeriod = params.indicatorConfig?.emaFastPeriod || 12;
-    const emaSlowPeriod = params.indicatorConfig?.emaSlowPeriod || 26;
-    const stopLossPct = (params.indicatorConfig?.stopLossPct || 1.5) / 100;
-    const takeProfitPct = (params.indicatorConfig?.takeProfitPct || 3.5) / 100;
+    const ir = resolveIR(liveStrategy.parametersJson);
+    if (!ir) {
+      this.logger.warn(`Live strategy ${liveStrategy.id} has invalid params (not a valid rule tree); holding.`);
+      return 'HOLD';
+    }
 
-    const candles = await this.ohlcvRepo.find({
-      where: { tickerId },
-      order: { timestamp: 'DESC' },
-      take: emaSlowPeriod + 5,
-    });
-    if (candles.length < emaSlowPeriod + 2) return 'HOLD';
+    // Evaluate on the SAME timeframe the strategy was backtested/promoted on
+    // (STRATEGY_EVAL_INTERVAL, aggregated from the 1m base) — not raw 1m, which would fire a
+    // higher-timeframe strategy on 1-minute noise. Pull enough lead-in bars for every indicator
+    // in the tree to converge, so the signal at the last bar matches the backtest's.
+    const warmup = warmupBars(ir);
+    const need = Math.max(warmup * 5 + 20, 300);
+    // Evaluate on the SAME timeframe this strategy was generated/backtested on (stored per
+    // strategy), not the global config — otherwise what trades live wouldn't match what was promoted.
+    const interval = liveStrategy.evalInterval || config.strategy.evalInterval;
+    const candles = await this.marketDataService.getCandlesForInterval(tickerId, interval, need);
+    if (candles.length < warmup + 2) return 'HOLD';
 
-    const closes = candles.map((c) => Number(c.close)).reverse();
-    const fastEma = this.calculateEma(closes, emaFastPeriod);
-    const slowEma = this.calculateEma(closes, emaSlowPeriod);
-    const i = closes.length - 1;
-    const price = closes[i];
+    const i = candles.length - 1; // getCandlesForInterval returns chronological (ASC) order
 
     const openPosition = await this.positionRepo.findOne({
       where: { tickerId, strategyId: liveStrategy.id, status: PositionStatus.OPEN },
     });
 
     if (!openPosition) {
-      const bullishCross = fastEma[i] > slowEma[i] && fastEma[i - 1] <= slowEma[i - 1];
-      return bullishCross ? 'BUY' : 'HOLD';
+      // Reconcile to the strategy's INTENDED exposure, not just a fresh entry edge on this bar:
+      // if the strategy's own stateful replay says it should currently be holding (it entered on
+      // an earlier bar and hasn't hit an exit), open the position to match it. This closes the
+      // gap where activating a strategy that's already signalling long — or a backend restart
+      // mid-trade — left the live system flat until the NEXT crossover, which reads as "I turned
+      // it on and it never traded". In steady state (flat, waiting for a cross) this is identical
+      // to the old edge check. `shouldEnter` is kept as the fast fresh-edge path.
+      const intendedLong = shouldEnter(ir, candles as any, i) || intendedPositionState(ir, candles as any) === 'LONG';
+      return intendedLong ? 'BUY' : 'HOLD';
     }
 
+    // In a position: build the exit context (entry price + bars held + peak-since-entry) so the
+    // risk block (SL/TP/trailing/max-hold) and the exit rule are evaluated correctly.
     const entryPrice = Number(openPosition.entryPrice);
-    const returnPct = (price - entryPrice) / entryPrice;
-    const isStopLoss = returnPct <= -stopLossPct;
-    const isTakeProfit = returnPct >= takeProfitPct;
-    const isCrossDown = fastEma[i] < slowEma[i];
-
-    return isStopLoss || isTakeProfit || isCrossDown ? 'SELL' : 'HOLD';
-  }
-
-  private calculateEma(prices: number[], period: number): number[] {
-    const ema: number[] = new Array(prices.length).fill(0);
-    const k = 2 / (period + 1);
-    ema[0] = prices[0];
-    for (let i = 1; i < prices.length; i++) {
-      ema[i] = prices[i] * k + ema[i - 1] * (1 - k);
+    const entryTime = new Date(openPosition.openedAt).getTime();
+    const candleTime = (c: any) => new Date(c.timestamp).getTime();
+    let entryIndex = i;
+    for (let k = candles.length - 1; k >= 0; k--) {
+      if (candleTime(candles[k]) <= entryTime) { entryIndex = k; break; }
     }
-    return ema;
+    const barsHeld = Math.max(0, i - entryIndex);
+    let peakPrice = entryPrice;
+    for (let k = entryIndex; k <= i; k++) {
+      const hi = Number((candles[k] as any).high ?? (candles[k] as any).close);
+      if (hi > peakPrice) peakPrice = hi;
+    }
+
+    const reason = exitReason(ir, candles as any, i, { entryPrice, barsHeld, peakPrice });
+    return reason ? 'SELL' : 'HOLD';
   }
 
   /**
@@ -462,6 +689,11 @@ Respond in JSON with your decision.`;
 
     const previousLive = await this.strategyRepo.findOne({ where: { tickerId, status: StrategyStatus.LIVE } });
     if (previousLive && previousLive.id !== strategy.id) {
+      // Same orphan-prevention as the auto-promotion path: flatten open positions before the switch.
+      await this.executionService
+        .flattenOpenPositionsForTicker(tickerId, `manual activation: retiring v${previousLive.version} for v${strategy.version}`)
+        .catch((err) => this.logger.warn(`Flatten-on-switch failed (non-fatal): ${err.message}`));
+
       const previousBacktest = await backtestFor(previousLive.id);
       const latestDivergence = await this.divergenceRepo.findOne({
         where: { strategyId: previousLive.id },
@@ -515,8 +747,38 @@ Respond in JSON with your decision.`;
   }
 
   private inferStrategyTypeTag(params: Record<string, any>): string {
-    if (params?.indicatorConfig?.rsiPeriod) return 'ema_rsi_trend';
-    if (params?.indicatorConfig?.emaFastPeriod) return 'ema_crossover';
-    return 'unclassified';
+    return strategyTypeTag(params);
+  }
+
+  /**
+   * Turn the LLM's generation output into a validated rule-tree IR: JSON.parse the `strategy`
+   * string, assemble {strategyName, reasoning, entry, exit, risk}, and structurally validate it.
+   * Returns null (a failed attempt) on parse error or any validation error.
+   */
+  private parseGeneratedStrategy(data: any): StrategyIR | null {
+    // Prefer the natural nested shape (entry/exit/risk as top-level fields — what models emit).
+    // Fall back to a `strategy` field (string or object) in case a model wraps it that way.
+    let body: any = data;
+    if (!data?.entry && !data?.exit && data?.strategy != null) {
+      try {
+        body = typeof data.strategy === 'string' ? JSON.parse(data.strategy) : data.strategy;
+      } catch (err: any) {
+        this.logger.warn(`Generated strategy "strategy" field did not parse: ${err.message}`);
+        return null;
+      }
+    }
+    const ir = {
+      strategyName: data?.strategyName || 'Generated Strategy',
+      reasoning: data?.reasoning || '',
+      entry: body?.entry,
+      exit: body?.exit,
+      risk: body?.risk,
+    } as StrategyIR;
+    const errs = validateIR(ir);
+    if (errs.length) {
+      this.logger.warn(`Generated strategy failed validation: ${errs.slice(0, 4).join('; ')}`);
+      return null;
+    }
+    return ir;
   }
 }

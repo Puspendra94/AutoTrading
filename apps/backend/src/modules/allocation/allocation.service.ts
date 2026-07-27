@@ -6,8 +6,9 @@ import { ProviderBalanceSnapshot } from '../../entities/provider-balance-snapsho
 import { Ticker, TickerStatus } from '../../entities/ticker.entity';
 import { Strategy, StrategyStatus } from '../../entities/strategy.entity';
 import { BacktestResult } from '../../entities/backtest-result.entity';
+import { config } from '../../config/configuration';
 
-const MAX_TICKER_ALLOCATION_PCT = parseFloat(process.env.ALLOCATION_DIVERSIFICATION_CAP_PCT || '40');
+const MAX_TICKER_ALLOCATION_PCT = config.risk.allocationDiversificationCapPct;
 const MIN_PERFORMANCE_MULTIPLIER = 0.5;
 const MAX_PERFORMANCE_MULTIPLIER = 1.5;
 

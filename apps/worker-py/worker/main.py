@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import signal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -28,14 +27,10 @@ from .config import config
 from .db import close_pool
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=config.log_level,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 log = logging.getLogger("worker.main")
-
-
-def _bool_env(name: str, default: bool = False) -> bool:
-    return os.getenv(name, str(default)).lower() in ("1", "true", "yes", "on")
 
 
 async def _daily_backfill() -> None:
@@ -48,7 +43,7 @@ async def main() -> None:
     log.info("Python Data+AI worker starting (sole background scheduler).")
 
     # Backfill missing data on every startup (cheap — resumes from the last stored month).
-    if _bool_env("BACKFILL_ON_START", default=True):
+    if config.backfill_on_start:
         log.info("Running startup archive gap-fill…")
         try:
             results = await backfill_all()

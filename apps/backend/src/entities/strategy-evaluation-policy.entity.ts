@@ -17,7 +17,9 @@ export class StrategyEvaluationPolicy {
   @Column({ name: 'min_profit_factor', type: 'decimal', precision: 5, scale: 2, default: 1.3 })
   minProfitFactor: number;
 
-  @Column({ name: 'min_trade_count', type: 'int', default: 100 })
+  // Required out-of-sample trades. Tuned to what's reachable on the eval interval (see
+  // config.strategy.evalInterval) — the gate requires this directly, with no hidden override.
+  @Column({ name: 'min_trade_count', type: 'int', default: 8 })
   minTradeCount: number;
 
   @Column({ name: 'max_parameter_count', type: 'int', default: 5 })

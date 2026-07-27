@@ -10,6 +10,8 @@
     "infra:up": "cd infra && docker compose up -d",
     "infra:down": "cd infra && docker compose down",
     "infra:logs": "cd infra && docker compose logs -f",
+    "infra:reset": "cd infra && docker compose down -v && docker compose up -d",
+    "reset": "npm run infra:reset",
     "dev:backend": "npm --prefix apps/backend run start:dev",
     "dev:worker": "npm --prefix apps/worker-py run start 2>/dev/null || echo 'Python worker: cd apps/worker-py && python -m worker.main'",
     "dev:frontend": "npm --prefix apps/frontend run dev",

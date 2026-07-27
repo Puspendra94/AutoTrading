@@ -1,9 +1,11 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Strategy } from '../../entities/strategy.entity';
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { StrategyPerformance, PerformanceStatus } from '../../entities/strategy-performance.entity';
+import { MarketDataService } from '../market-data/market-data.service';
+import { config } from '../../config/configuration';
 
 // Same execution frictions the backtest evaluator applies, so the "real data" replay is
 // consistent with the numbers a strategy was gated on.
@@ -11,8 +13,11 @@ const ENTRY_SLIP = 1.0005; // +0.05% on entry
 const EXIT_SLIP = 0.9995; // -0.05% on exit
 const ROUNDTRIP_FEE = 0.0015; // 0.15% fees per round trip
 const NOTIONAL = 10000; // starting equity in USD
-const READ_BATCH = 50000; // candles pulled per DB page during the streaming replay
 const MAX_STORED_TRADES = 300; // cap on the per-trade detail we persist (counts stay exact)
+// Upper bound on aggregated bars to replay. Even 8y of 4h bars is < 20k, so one fetch is fine
+// (vs streaming millions of 1m rows) — and replaying on the strategy's OWN timeframe is the
+// whole point: a 4h strategy replayed on 1m generates tens of thousands of whipsaw round-trips.
+const PERF_MAX_BARS = 200000;
 
 @Injectable()
 export class StrategyPerformanceService {
@@ -26,6 +31,7 @@ export class StrategyPerformanceService {
     private readonly strategyRepo: Repository<Strategy>,
     @InjectRepository(OhlcvData)
     private readonly ohlcvRepo: Repository<OhlcvData>,
+    private readonly marketDataService: MarketDataService,
   ) {}
 
   async getPerformance(strategyId: string) {
@@ -77,11 +83,13 @@ export class StrategyPerformanceService {
     const emaSlow = params?.indicatorConfig?.emaSlowPeriod || 26;
     const stopLossPct = (params?.indicatorConfig?.stopLossPct || 1.5) / 100;
     const takeProfitPct = (params?.indicatorConfig?.takeProfitPct || 3.5) / 100;
+    const trendPeriod = params?.indicatorConfig?.trendEmaPeriod; // optional trend-regime filter
     const kFast = 2 / (emaFast + 1);
     const kSlow = 2 / (emaSlow + 1);
+    const kTrend = trendPeriod ? 2 / (trendPeriod + 1) : 0;
 
     let seeded = false;
-    let fast = 0, slow = 0, prevFast = 0, prevSlow = 0;
+    let fast = 0, slow = 0, prevFast = 0, prevSlow = 0, trend = 0;
     let barIndex = 0;
 
     let position: 'NONE' | 'LONG' = 'NONE';
@@ -97,19 +105,18 @@ export class StrategyPerformanceService {
     let dataFrom: Date | null = null;
     let dataTo: Date | null = null;
 
-    let cursor = new Date(0);
-    // Keyset pagination over the raw 1m base series (ASC), carrying EMA/position state
-    // across pages so the replay is a single continuous pass.
-    for (;;) {
-      const rows = await this.ohlcvRepo.find({
-        where: { tickerId, timestamp: MoreThan(cursor) },
-        order: { timestamp: 'ASC' },
-        take: READ_BATCH,
-        select: ['timestamp', 'close'],
-      });
-      if (!rows.length) break;
-
-      for (const c of rows) {
+    // Replay on the strategy's evaluation timeframe (aggregated from the 1m base via
+    // time_bucket), matching how it was backtested/promoted. Replaying on the raw 1m series
+    // runs e.g. a 4h strategy on 1m noise — tens of thousands of whipsaw round-trips whose fees
+    // compound to -100%. Aggregated bars are few (<20k even for years), so one fetch replaces
+    // the streaming pagination.
+    const rows = await this.marketDataService.getCandlesForInterval(
+      tickerId,
+      config.strategy.evalInterval,
+      PERF_MAX_BARS,
+    );
+    {
+      for (const c of rows as Array<{ timestamp: Date; close: any }>) {
         const price = Number(c.close);
         candleCount++;
         if (!dataFrom) dataFrom = c.timestamp;
@@ -118,6 +125,7 @@ export class StrategyPerformanceService {
 
         if (!seeded) {
           fast = slow = prevFast = prevSlow = price;
+          trend = price;
           seeded = true;
           barIndex = 1;
           continue;
@@ -126,11 +134,13 @@ export class StrategyPerformanceService {
         prevSlow = slow;
         fast = price * kFast + fast * (1 - kFast);
         slow = price * kSlow + slow * (1 - kSlow);
+        if (trendPeriod) trend = price * kTrend + trend * (1 - kTrend);
         barIndex++;
         if (barIndex < emaSlow) continue; // EMA warm-up
 
         if (position === 'NONE') {
-          if (fast > slow && prevFast <= prevSlow) {
+          const inUptrend = !trendPeriod || price > trend; // trend-regime filter
+          if (fast > slow && prevFast <= prevSlow && inUptrend) {
             position = 'LONG';
             entryPrice = price * ENTRY_SLIP;
             entryTime = c.timestamp;
@@ -171,9 +181,6 @@ export class StrategyPerformanceService {
           }
         }
       }
-
-      cursor = rows[rows.length - 1].timestamp;
-      if (rows.length < READ_BATCH) break;
     }
 
     const mean = tradeCount > 0 ? sumRet / tradeCount : 0;

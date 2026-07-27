@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Ticker, TickerStatus } from '../../entities/ticker.entity';
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { BinanceAdapter } from '../provider/adapters/binance.adapter';
+import { config } from '../../config/configuration';
 
 // Self-paced background pipeline that walks each live ticker's 1m history backward toward
 // the symbol's listing date ("since the beginning"), then keeps recent gaps patched. Runs
@@ -20,7 +21,7 @@ const BOOT_DELAY_MS = 15000; // let the app finish booting before the first tick
 @Injectable()
 export class HistoricalBackfillService implements OnModuleInit {
   private readonly logger = new Logger(HistoricalBackfillService.name);
-  private readonly enabled = process.env.HISTORICAL_BACKFILL_ENABLED !== 'false';
+  private readonly enabled = config.historicalBackfillEnabled;
   private readonly backwardDone = new Set<string>(); // tickerIds fully backfilled to genesis
   private running = false;
   private tickCount = 0;

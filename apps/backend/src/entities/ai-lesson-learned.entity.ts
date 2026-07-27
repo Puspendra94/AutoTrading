@@ -16,10 +16,12 @@ export class AiLessonLearned {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ name: 'source_strategy_id' })
-  sourceStrategyId: string;
+  // Nullable: a lesson distilled from a FAILED generation cycle has no persisted strategy to
+  // point at (gate-before-save means failed attempts are never written to `strategies`).
+  @Column({ name: 'source_strategy_id', nullable: true })
+  sourceStrategyId: string | null;
 
-  @ManyToOne(() => Strategy, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Strategy, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'source_strategy_id' })
   sourceStrategy: Strategy;
 

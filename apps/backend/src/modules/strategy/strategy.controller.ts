@@ -18,9 +18,17 @@ export class StrategyController {
     return this.aiLessonsService.retrieveRelevantLessons(tickerId, undefined, 20);
   }
 
+  // Optional `interval` (e.g. 5m, 15m, 1h, 4h, 1d) chooses the generation/backtest/live timeframe
+  // for this run — handy for fast iteration. Omitted -> the adaptive planner picks it.
+  // `skipGate=true` promotes the first valid strategy even if it FAILS the evaluation gate —
+  // testing only, so the execution loop can be exercised on timeframes where nothing clears the bar.
   @Post('ticker/:tickerId/generate')
-  async generateStrategy(@Param('tickerId') tickerId: string) {
-    return this.strategyEngineService.generateStrategyForTicker(tickerId);
+  async generateStrategy(
+    @Param('tickerId') tickerId: string,
+    @Query('interval') interval?: string,
+    @Query('skipGate') skipGate?: string,
+  ) {
+    return this.strategyEngineService.generateStrategyForTicker(tickerId, 'manual generation', interval, skipGate === 'true');
   }
 
   @Get('ticker/:tickerId/active')

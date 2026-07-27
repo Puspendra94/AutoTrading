@@ -18,8 +18,7 @@ STEP_MS = 60_000
 PARAMS = {
     "strategyName": "Parity Test",
     "indicatorConfig": {
-        "emaFastPeriod": 12, "emaSlowPeriod": 26, "rsiPeriod": 14,
-        "rsiBuyThreshold": 45, "rsiSellThreshold": 65,
+        "emaFastPeriod": 12, "emaSlowPeriod": 26,
         "stopLossPct": 1.5, "takeProfitPct": 3.5,
     },
     "reasoning": "parity",
@@ -40,7 +39,7 @@ def _high_freq_candles(n: int = 900) -> list[dict]:
 GOLDEN = {
     "sharpe": 0.96, "sortino": 1.48, "calmar": 1.19, "maxDrawdown": 7.86,
     "drawdownDuration": 155, "profitFactor": 1.94, "tradeCount": 10,
-    "totalReturnPct": 9.28, "winRate": 50, "parameterCount": 7,
+    "totalReturnPct": 9.28, "winRate": 50, "parameterCount": 4,
     "passedEvaluationGate": False,
     "regimeBreakdown": {"trending": 1.69, "choppy": 0, "highVol": -1.31},
     "walkForward": {
@@ -68,6 +67,25 @@ def test_relaxed_policy_flips_gate_true():
                "minTradeCount": 1, "maxParameterCount": 20}
     result = evaluate_strategy(_high_freq_candles(), PARAMS, relaxed)
     assert result["passedEvaluationGate"] is True
+
+
+def test_trend_filter_only_removes_entries():
+    # The trend-regime filter can only SUPPRESS long entries (price must be above the trend EMA),
+    # never add them — so a filtered run has <= the trades of the unfiltered one, and adds the
+    # trendEmaPeriod knob to the parameter count.
+    candles = _high_freq_candles()
+    base = evaluate_strategy(candles, PARAMS, POLICY)
+    filtered_params = {
+        "strategyName": "Trend Filtered",
+        "indicatorConfig": {**PARAMS["indicatorConfig"], "trendEmaPeriod": 100},
+        "reasoning": "trend",
+    }
+    filtered = evaluate_strategy(candles, filtered_params, POLICY)
+    assert filtered["parameterCount"] == 5
+    assert base["parameterCount"] == 4
+    assert filtered["tradeCount"] <= base["tradeCount"]
+    # On this rising series the filter should still leave at least one trade (it's not a no-op ban).
+    assert filtered["tradeCount"] >= 1
 
 
 def test_too_few_candles_returns_empty():

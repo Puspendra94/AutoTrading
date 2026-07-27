@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, LessThan, Repository } from 'typeorm';
 import { Ticker, TickerStatus, OnboardingStage } from '../../entities/ticker.entity';
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { DataQualityFlag, FlagType } from '../../entities/data-quality-flag.entity';
@@ -219,10 +219,12 @@ export class MarketDataService {
     return count > 0;
   }
 
-  async getCandles(tickerId: string, limit = 200) {
+  async getCandles(tickerId: string, limit = 200, before?: number) {
     return this.ohlcvRepo
       .find({
-        where: { tickerId },
+        // `before` (epoch ms) pages older history for chart scroll-back: fetch the newest
+        // `limit` candles strictly older than the cursor. Omitted -> most recent window.
+        where: before ? { tickerId, timestamp: LessThan(new Date(before)) } : { tickerId },
         order: { timestamp: 'DESC' },
         take: limit,
       })
@@ -237,21 +239,23 @@ export class MarketDataService {
    * (the minimum interval), so every higher chart timeframe is derived in the DB — cheap,
    * and no duplicate ingestion. `1m` short-circuits to the raw rows.
    */
-  async getCandlesForInterval(tickerId: string, interval = '1m', limit = 500) {
-    if (interval === '1m') return this.getCandles(tickerId, limit);
+  async getCandlesForInterval(tickerId: string, interval = '1m', limit = 500, before?: number) {
+    if (interval === '1m') return this.getCandles(tickerId, limit, before);
     const match = interval.match(/^(\d+)([mhdw])$/i);
     if (!match) throw new BadRequestException(`Unsupported interval: ${interval}`);
     const bucket = `${parseInt(match[1], 10)} ${MarketDataService.PG_UNIT[match[2].toLowerCase()]}`;
+    // `before` (epoch ms) pages older buckets for chart scroll-back; omitted -> latest window.
     // bucket is regex-validated -> safe to inline as an interval literal.
     const rows = await this.ohlcvRepo.query(
       `SELECT "timestamp", open, high, low, close, volume FROM (
          SELECT time_bucket(INTERVAL '${bucket}', "timestamp") AS "timestamp",
            first(open, "timestamp") AS open, max(high) AS high, min(low) AS low,
            last(close, "timestamp") AS close, sum(volume) AS volume
-         FROM "Algo_Trading"."ohlcv_data" WHERE ticker_id = $1
+         FROM "Algo_Trading"."ohlcv_data"
+         WHERE ticker_id = $1 ${before ? 'AND "timestamp" < $3' : ''}
          GROUP BY 1 ORDER BY 1 DESC LIMIT $2
        ) t ORDER BY "timestamp" ASC`,
-      [tickerId, limit],
+      before ? [tickerId, limit, new Date(before)] : [tickerId, limit],
     );
     return rows;
   }

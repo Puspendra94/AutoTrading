@@ -1,7 +1,7 @@
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ExecutionService } from './execution.service';
-import { PositionSide } from '../../entities/position.entity';
+import { PositionSide, TradeMode, TradeNetwork } from '../../entities/position.entity';
 
 @Controller('execution')
 @UseGuards(AuthGuard('jwt'))
@@ -24,6 +24,29 @@ export class RiskExecutionController {
   @Get('positions/all')
   async getAllPositions() {
     return this.executionService.getAllPositions();
+  }
+
+  // The Live Trades feed: open + closed trades matching the active Mode + Network, newest
+  // first. `mode` defaults to paper; `network` is only applied for live (paper is
+  // network-agnostic). Drives the dashboard's Live Trades panel.
+  @Get('trades')
+  async getTrades(@Query('mode') mode?: string, @Query('network') network?: string) {
+    const tradeMode = mode === 'live' ? TradeMode.LIVE : TradeMode.PAPER;
+    const tradeNetwork = network === 'mainnet' ? TradeNetwork.MAINNET : network === 'testnet' ? TradeNetwork.TESTNET : undefined;
+    return this.executionService.getTradesForView(tradeMode, tradeNetwork);
+  }
+
+  // Simulated paper-trading performance (equity, ROI, realized/unrealized P/L, available balance,
+  // win rate) — drives the dashboard's paper-only performance panel.
+  @Get('paper-summary')
+  async getPaperSummary() {
+    return this.executionService.getPaperSummary();
+  }
+
+  // Paper-only: opens a long on the ticker's active strategy at `price`, or closes the open one.
+  @Post('test-trade')
+  async testTrade(@Body() body: { tickerId: string; price: number }) {
+    return this.executionService.placeTestPaperTrade(body.tickerId, body.price);
   }
 
   @Post('trade')

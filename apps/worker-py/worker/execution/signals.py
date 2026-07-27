@@ -14,7 +14,8 @@ from typing import Any, Optional, Protocol
 
 from ..llm.schemas import LiveDecision
 from ..llm.service import LlmPurpose, LlmService
-from ..strategy.evaluator import _calculate_ema
+from ..strategy.dsl.interpreter import exit_reason, should_enter
+from ..strategy.dsl.ir import resolve_ir, warmup_bars
 from ..strategy.generator import format_lessons_for_prompt, infer_strategy_type, _js_num
 
 log = logging.getLogger("worker.execution.signals")
@@ -25,39 +26,49 @@ MODE_B = "mode_b_ai_live"
 class SignalStore(Protocol):
     async def get_live_strategy(self, ticker_id: str) -> Optional[dict]: ...
     async def load_recent_closes(self, ticker_id: str, limit: int) -> list[float]: ...
+    async def load_recent_candles(self, ticker_id: str, limit: int) -> list[dict]: ...
     async def get_open_position_for_strategy(self, ticker_id: str, strategy_id: str) -> Optional[dict]: ...
     async def get_ticker(self, ticker_id: str) -> Optional[dict]: ...
     async def retrieve_lessons(self, ticker_id: str, strategy_type: Optional[str], limit: int = 5) -> list[dict]: ...
 
 
 async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strategy: dict) -> str:
-    """Mode A — deterministic EMA fast/slow crossover with SL/TP exits."""
-    cfg = (live_strategy["parametersJson"] or {}).get("indicatorConfig") or {}
-    ema_fast_period = cfg.get("emaFastPeriod") or 12
-    ema_slow_period = cfg.get("emaSlowPeriod") or 26
-    stop_loss_pct = (cfg.get("stopLossPct") or 1.5) / 100
-    take_profit_pct = (cfg.get("takeProfitPct") or 3.5) / 100
-
-    closes = await store.load_recent_closes(ticker_id, ema_slow_period + 5)
-    if len(closes) < ema_slow_period + 2:
+    """Mode A — deterministic rule-tree execution via the shared DSL interpreter (a legacy
+    indicatorConfig blob is auto-translated). Mirrors strategy-engine.service.ts::evaluateRulesSignal.
+    NOTE: dormant path — still loads the RAW 1m base; align to the aggregated eval interval before
+    enabling WORKER_OWNS_EXECUTION (see project memory)."""
+    ir = resolve_ir(live_strategy["parametersJson"])
+    if not ir:
         return "HOLD"
 
-    fast_ema = _calculate_ema(closes, ema_fast_period)
-    slow_ema = _calculate_ema(closes, ema_slow_period)
-    i = len(closes) - 1
-    price = closes[i]
+    warmup = warmup_bars(ir)
+    need = max(warmup * 5 + 20, 300)
+    candles = await store.load_recent_candles(ticker_id, need)
+    if len(candles) < warmup + 2:
+        return "HOLD"
+    i = len(candles) - 1
 
     open_position = await store.get_open_position_for_strategy(ticker_id, live_strategy["id"])
     if not open_position:
-        bullish_cross = fast_ema[i] > slow_ema[i] and fast_ema[i - 1] <= slow_ema[i - 1]
-        return "BUY" if bullish_cross else "HOLD"
+        return "BUY" if should_enter(ir, candles, i) else "HOLD"
 
     entry_price = float(open_position["entryPrice"])
-    return_pct = (price - entry_price) / entry_price
-    is_stop_loss = return_pct <= -stop_loss_pct
-    is_take_profit = return_pct >= take_profit_pct
-    is_cross_down = fast_ema[i] < slow_ema[i]
-    return "SELL" if (is_stop_loss or is_take_profit or is_cross_down) else "HOLD"
+    entry_time = open_position.get("openedAt")
+    entry_index = i
+    if entry_time is not None:
+        for k in range(len(candles) - 1, -1, -1):
+            if candles[k]["timestamp"] <= entry_time:
+                entry_index = k
+                break
+    bars_held = max(0, i - entry_index)
+    peak_price = entry_price
+    for k in range(entry_index, i + 1):
+        hi = candles[k].get("high", candles[k]["close"])
+        if hi > peak_price:
+            peak_price = hi
+
+    reason = exit_reason(ir, candles, i, {"entryPrice": entry_price, "barsHeld": bars_held, "peakPrice": peak_price})
+    return "SELL" if reason else "HOLD"
 
 
 async def evaluate_mode_b_live_decision(

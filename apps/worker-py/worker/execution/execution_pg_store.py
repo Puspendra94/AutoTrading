@@ -5,14 +5,15 @@ Not exercised until the live loop is wired and enabled (3c-3); unit tests use a 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 import asyncpg
 
+from ..config import config
+
 log = logging.getLogger("worker.execution.store")
 
-API_FAILURE_KILL_THRESHOLD = int(os.getenv("PROVIDER_API_FAILURE_THRESHOLD", "5"))
+API_FAILURE_KILL_THRESHOLD = config.provider_api_failure_threshold
 
 
 def _resolve_credential(credential_json: dict, use_testnet: bool) -> Optional[dict]:

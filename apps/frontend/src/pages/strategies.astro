@@ -9,7 +9,25 @@ import Layout from '../layouts/Layout.astro';
         <h2 class="text-xl font-bold tracking-tight">Alpha Strategies</h2>
         <p id="ahSub" class="mt-1 text-sm text-muted">Loading…</p>
       </div>
-      <button id="genBtn" class="btn btn-primary">⚡ Generate New Strategy</button>
+      <div class="flex items-center gap-2">
+        <label class="flex items-center gap-1.5 text-xs text-muted">
+          Timeframe
+          <select id="genInterval" class="rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs font-semibold text-fg" title="Timeframe to generate, backtest & trade this strategy on. Shorter = trades sooner (faster to test).">
+            <option value="">Auto (planner)</option>
+            <option value="5m">5m</option>
+            <option value="15m">15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+            <option value="2h">2h</option>
+            <option value="4h">4h</option>
+            <option value="1d">1d</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-1.5 text-xs text-muted" title="Testing only: promote the generated strategy even if it FAILS the evaluation gate, so you can exercise the auto-trading loop on any timeframe.">
+          <input type="checkbox" id="genSkipGate" class="accent-brand" /> Bypass gate <span class="text-warn">(test)</span>
+        </label>
+        <button id="genBtn" class="btn btn-primary">⚡ Generate New Strategy</button>
+      </div>
     </div>
 
     <p id="alphaError" class="text-sm text-bear" hidden></p>
@@ -194,7 +212,13 @@ import Layout from '../layouts/Layout.astro';
       let cur = 0; paintStages(cur);
       const timer = setInterval(() => { if (cur < STAGES.length - 1) { cur++; paintStages(cur); } }, 1200);
       try {
-        const res = await apiPost<{ saved: boolean; attempts?: number; message?: string; evaluation?: any }>(`/strategies/ticker/${tickerId}/generate`);
+        const interval = ($('genInterval') as HTMLSelectElement)?.value || '';
+        const skipGate = ($('genSkipGate') as HTMLInputElement)?.checked;
+        const params = new URLSearchParams();
+        if (interval) params.set('interval', interval);
+        if (skipGate) params.set('skipGate', 'true');
+        const qs = params.toString() ? `?${params.toString()}` : '';
+        const res = await apiPost<{ saved: boolean; attempts?: number; message?: string; evaluation?: any; gateBypassed?: boolean }>(`/strategies/ticker/${tickerId}/generate${qs}`);
         clearInterval(timer); paintStages(STAGES.length);
         await loadStrategies();
         (window as any).refreshLlmSpend?.(); (window as any).refreshActiveStrategy?.();
@@ -203,13 +227,21 @@ import Layout from '../layouts/Layout.astro';
           $('genModal').hidden = true; genBtn.disabled = false;
           const sh = res.evaluation ? ` (best Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)})` : '';
           $('alphaError').hidden = false;
+          $('alphaError').className = 'text-sm text-bear';
           $('alphaError').textContent = (res.message || 'No generated strategy passed the evaluation gate.') + sh;
           return;
+        }
+        if (res?.gateBypassed) {
+          const sh = res.evaluation ? ` (Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)}, ${res.evaluation.tradeCount} trades)` : '';
+          $('alphaError').hidden = false;
+          $('alphaError').className = 'text-sm text-warn';
+          $('alphaError').textContent = `⚠ Promoted with the evaluation gate BYPASSED (testing)${sh}. It's live for exercising auto-trading, not a validated strategy.`;
         }
         setTimeout(() => { $('genModal').hidden = true; genBtn.disabled = false; }, 700);
       } catch (err) {
         clearInterval(timer); $('genModal').hidden = true; genBtn.disabled = false;
-        $('alphaError').hidden = false; $('alphaError').textContent = err instanceof ApiError ? err.message : 'Strategy generation failed';
+        $('alphaError').hidden = false; $('alphaError').className = 'text-sm text-bear';
+        $('alphaError').textContent = err instanceof ApiError ? err.message : 'Strategy generation failed';
       }
     }
     $('genBtn').addEventListener('click', generate);
