@@ -24,13 +24,15 @@ async def _run_job(payload: dict) -> None:
     request_id = payload.get("requestId")
     ticker_id = payload.get("tickerId")
     reason = payload.get("reason") or "manual generation (async)"
+    interval = payload.get("interval") or None
+    skip_gate = bool(payload.get("skipGate"))
     out = {"requestId": request_id, "tickerId": ticker_id}
     try:
         if not ticker_id:
             raise ValueError("missing tickerId")
         pool = await get_pool()
         generator = StrategyGenerator(PgGeneratorStore(pool), LlmService())
-        result = await generator.generate(ticker_id, reason)
+        result = await generator.generate(ticker_id, reason, interval_override=interval, skip_gate=skip_gate)
         out.update(
             saved=bool(result.get("saved")),
             attempts=result.get("attempts"),

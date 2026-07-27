@@ -14,15 +14,39 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Optional, Protocol
 
-from ..llm.schemas import StrategyParams
+from ..llm.schemas import StrategyGen
 from ..llm.service import LlmPurpose, LlmService
+from .dsl.ir import validate_ir
 from .evaluator import evaluate_strategy
+from .grammar_prompt import build_generation_prompt
 
 log = logging.getLogger("worker.strategy.generator")
 
 MAX_ATTEMPTS = 3
+_INTERVAL_OVERRIDE_RE = re.compile(r"^\d+[mhdw]$", re.IGNORECASE)
+
+
+def parse_generated_strategy(data: Any) -> Optional[dict]:
+    """Build a validated IR dict from the LLM's StrategyGen output; None if the tree is invalid.
+    Mirrors strategy-engine.service.ts::parseGeneratedStrategy."""
+    d = data.model_dump(exclude_none=True) if hasattr(data, "model_dump") else dict(data)
+    ir = {
+        "strategyName": d.get("strategyName") or "Generated Strategy",
+        "reasoning": d.get("reasoning") or "",
+        "entry": d.get("entry"),
+        "exit": d.get("exit"),
+        "risk": d.get("risk"),
+    }
+    if d.get("direction"):
+        ir["direction"] = d["direction"]
+    errs = validate_ir(ir)
+    if errs:
+        log.warning("Generated strategy failed validation: %s", "; ".join(errs[:4]))
+        return None
+    return ir
 
 # Ticker onboarding stages (mirror OnboardingStage in ticker.entity.ts).
 STAGE_GENERATING = "generating_strategy"
@@ -55,31 +79,9 @@ def _js_num(x: float) -> str:
     return str(int(f)) if f.is_integer() else repr(f)
 
 
-def build_generation_prompt(symbol: str, interval: str, latest_price: float, lessons_block: str) -> str:
-    """Byte-for-byte the summaryPrompt built in generateStrategyForTicker."""
-    return (
-        f"Analyze ticker {symbol} (Interval: {interval}, Latest Price: {_js_num(latest_price)}).\n"
-        "Propose optimal quantitative indicator parameters for an automated trend-following trading strategy: EMA\n"
-        "fast/slow crossover periods and stop-loss/take-profit percentages.\n"
-        "\n"
-        "Respond in JSON with exactly these fields: strategyName (string), indicatorConfig.emaFastPeriod (integer, candles),\n"
-        "indicatorConfig.emaSlowPeriod (integer, candles), indicatorConfig.trendEmaPeriod (integer, optional long-term trend\n"
-        "EMA), indicatorConfig.stopLossPct (percent, e.g. 1.5), indicatorConfig.takeProfitPct (percent, e.g. 3.5), and\n"
-        "reasoning (string).\n"
-        "\n"
-        f"Guidance for a {interval} timeframe: size the EMA periods and stop-loss/take-profit to that bar duration.\n"
-        "Crossovers that are too fast whipsaw and bleed the ~0.15% round-trip fee, so keep a clear separation between the\n"
-        "fast and slow EMA (e.g. fast >= 20, slow >= 2x the fast) and set stops/targets wide enough for a real multi-bar\n"
-        "swing (e.g. stopLossPct 3-6, takeProfitPct 4-12). STRONGLY prefer setting trendEmaPeriod (e.g. 100-200, longer than\n"
-        "emaSlowPeriod): longs are only taken while price is above that long trend EMA, which cuts the whipsaw losses plain\n"
-        "crossovers suffer in ranging/down markets and materially lifts the profit factor. Prioritize a positive out-of-sample\n"
-        "Sharpe (>= 1) and profit factor (>= 1.3) over trade frequency. Move decisively away from any parameters the lessons\n"
-        "below show failing (low/negative Sharpe or profit factor under 1) — do NOT propose near-identical values to a\n"
-        "documented failure.\n"
-        "\n"
-        "Relevant lessons from past strategies on this ticker/strategy type (steer away from documented failures, keep\n"
-        f"successful approaches in mind):\n{lessons_block}"
-    )
+# The generation prompt now comes from grammar_prompt.build_generation_prompt (DSL rule tree +
+# planner emphasis + market-type direction clause); the legacy indicatorConfig prompt was removed
+# when the worker moved to DSL generation (consolidation Phase A).
 
 
 def _num(v: Any) -> float:
@@ -161,10 +163,12 @@ class GeneratorStore(Protocol):
     async def has_unresolved_blocking_flags(self, ticker_id: str) -> bool: ...
     async def set_onboarding_stage(self, ticker_id: str, stage: str) -> None: ...
     async def load_recent_candles(self, ticker_id: str, limit: int = 2000) -> list[dict]: ...
+    async def load_candles_for_interval(self, ticker_id: str, interval: str, limit: int) -> list[dict]: ...
     async def get_latest_strategy_params(self, ticker_id: str) -> Optional[dict]: ...
     async def get_active_policy(self) -> dict: ...
     async def count_strategies(self, ticker_id: str) -> int: ...
-    async def insert_strategy(self, *, ticker_id: str, version: int, parameters_json: dict, generated_by: str) -> str: ...
+    async def insert_strategy(self, *, ticker_id: str, version: int, parameters_json: dict, generated_by: str,
+                              eval_interval: Optional[str] = None) -> str: ...
     async def insert_backtest(self, *, strategy_id: str, ev: dict) -> None: ...
     async def get_live_strategy(self, ticker_id: str) -> Optional[dict]: ...
     async def get_backtest_metrics(self, strategy_id: str) -> Optional[dict]: ...
@@ -182,7 +186,8 @@ class StrategyGenerator:
         self.store = store
         self.llm = llm
 
-    async def generate(self, ticker_id: str, retirement_reason: str = "new strategy generation cycle") -> dict:
+    async def generate(self, ticker_id: str, retirement_reason: str = "new strategy generation cycle",
+                       interval_override: Optional[str] = None, skip_gate: bool = False) -> dict:
         ticker = await self.store.get_ticker(ticker_id)
         if not ticker:
             raise ValueError(f"Ticker {ticker_id} not found")
@@ -196,7 +201,21 @@ class StrategyGenerator:
 
         await self.store.set_onboarding_stage(ticker_id, STAGE_GENERATING)
 
-        candles = await self.store.load_recent_candles(ticker_id, 2000)
+        active_policy = await self.store.get_active_policy()
+
+        # Meta-planner (lazy import: planner imports helpers from this module) picks interval /
+        # candleLimit / effective (clamped) gate / signal emphasis from accumulated lessons.
+        from .planner import plan_generation
+        plan = await plan_generation(self.store, self.llm, getattr(self.store, "pool", None), ticker, active_policy)
+        eval_interval = (
+            interval_override
+            if (interval_override and _INTERVAL_OVERRIDE_RE.match(interval_override))
+            else plan["interval"]
+        )
+        policy = plan["policy"]
+
+        # DSL backtest needs full OHLCV aggregated to the planned interval (not raw close-only 1m).
+        candles = await self.store.load_candles_for_interval(ticker_id, eval_interval, plan["candleLimit"])
 
         prior = await self.store.get_latest_strategy_params(ticker_id)
         strategy_type = infer_strategy_type(prior) if prior else None
@@ -204,23 +223,19 @@ class StrategyGenerator:
         lessons_block = format_lessons_for_prompt(lessons)
 
         latest_price = float(candles[-1]["close"]) if candles else 0
-        prompt = build_generation_prompt(ticker["symbol"], ticker["interval"], latest_price, lessons_block)
-
-        policy = await self.store.get_active_policy()
+        allow_short = (ticker.get("market_type_name") or "").lower() == "futures"
+        param_budget = int(policy.get("maxParameterCount") or 5)
+        prompt = build_generation_prompt(
+            ticker["symbol"], eval_interval, latest_price, param_budget,
+            allow_short, plan["signalEmphasis"], lessons_block,
+        )
 
         await self.store.set_onboarding_stage(ticker_id, STAGE_BACKTESTING)
 
         last_eval = None
         last_params = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            llm_res = await self.llm.generate_structured_completion(prompt, StrategyParams, schema_name="propose_strategy_params")
-            parsed: StrategyParams = llm_res["data"]
-            # exclude_none so unset optional indicator fields are absent (matches zod's
-            # omission in the backend), keeping stored params + parameter count identical.
-            params_dict = parsed.model_dump(exclude_none=True)
-            eval_result = evaluate_strategy(candles, params_dict, policy)
-            last_eval, last_params = eval_result, params_dict
-
+            llm_res = await self.llm.generate_structured_completion(prompt, StrategyGen, schema_name="propose_strategy")
             await self.llm.log_cost(
                 getattr(self.store, "pool", None),
                 ticker_id, None, LlmPurpose.STRATEGY_GENERATION,
@@ -228,8 +243,20 @@ class StrategyGenerator:
                  "inputTokens": llm_res["inputTokens"], "outputTokens": llm_res["outputTokens"],
                  "costUsd": llm_res["costUsd"]},
             )
+            ir = parse_generated_strategy(llm_res["data"])
+            if ir is None:
+                log.warning("Strategy attempt %d/%d for ticker %s produced an invalid rule tree. Discarding.",
+                            attempt, MAX_ATTEMPTS, ticker_id)
+                continue
+            if ir.get("direction") == "short" and not allow_short:
+                log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT on a non-futures market. Discarding.",
+                            attempt, MAX_ATTEMPTS, ticker_id)
+                continue
 
-            if not eval_result["passedEvaluationGate"]:
+            eval_result = evaluate_strategy(candles, ir, policy)
+            last_eval, last_params = eval_result, ir
+
+            if not (eval_result["passedEvaluationGate"] or skip_gate):
                 failures = gate_failure_reasons(eval_result, policy)
                 log.warning(
                     "Strategy attempt %d/%d for ticker %s failed the gate. Failing conditions: %s. "
@@ -240,11 +267,11 @@ class StrategyGenerator:
                 )
                 continue
 
-            # --- Passed the gate: persist strategy + backtest, then promote it live. ---
+            # --- Passed the gate (or gate bypassed): persist strategy + backtest, then promote. ---
             existing_count = await self.store.count_strategies(ticker_id)
             strategy_id = await self.store.insert_strategy(
                 ticker_id=ticker_id, version=existing_count + 1,
-                parameters_json=params_dict, generated_by=llm_res["model"],
+                parameters_json=ir, generated_by=llm_res["model"], eval_interval=eval_interval,
             )
             await self.store.insert_backtest(strategy_id=strategy_id, ev=eval_result)
             await self.store.set_onboarding_stage(ticker_id, STAGE_EVALUATING)
@@ -261,8 +288,12 @@ class StrategyGenerator:
             await self.store.promote_strategy(strategy_id)
             await self.store.set_ticker_active_ready(ticker_id)
 
-            log.info("Strategy v%d promoted LIVE for ticker %s (attempt %d).", existing_count + 1, ticker_id, attempt)
-            return {"strategyId": strategy_id, "evaluation": eval_result, "saved": True, "attempts": attempt}
+            gate_bypassed = skip_gate and not eval_result["passedEvaluationGate"]
+            log.info("Strategy v%d promoted LIVE for ticker %s (attempt %d, interval %s%s).",
+                     existing_count + 1, ticker_id, attempt, eval_interval,
+                     ", GATE BYPASSED" if gate_bypassed else "")
+            return {"strategyId": strategy_id, "evaluation": eval_result, "saved": True,
+                    "attempts": attempt, "gateBypassed": gate_bypassed}
 
         # No attempt cleared the gate — nothing is persisted, but record WHY so the next
         # generation cycle can learn from it (spec 4.11 continuous learning, failure path).

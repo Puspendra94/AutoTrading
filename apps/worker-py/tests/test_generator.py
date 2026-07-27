@@ -6,22 +6,27 @@ generateStrategyForTicker's behavior without a DB or network.
 """
 import math
 
-from worker.llm.schemas import StrategyParams
+from worker.llm.schemas import StrategyGen
 from worker.strategy import generator as gen
 from worker.strategy.generator import (
     StrategyGenerator,
-    build_generation_prompt,
     format_lessons_for_prompt,
     infer_strategy_type,
 )
+from worker.strategy.grammar_prompt import build_generation_prompt
 
-STRICT = {"minSharpe": 1.0, "maxDrawdownPct": 20.0, "minProfitFactor": 1.3, "minTradeCount": 100, "maxParameterCount": 5}
+STRICT = {"minSharpe": 1.0, "maxDrawdownPct": 20.0, "minProfitFactor": 1.3, "minTradeCount": 100, "maxParameterCount": 6}
 RELAXED = {"minSharpe": -100.0, "maxDrawdownPct": 100.0, "minProfitFactor": 0.0, "minTradeCount": 1, "maxParameterCount": 20}
 
-FALLBACK_PARAMS = {
-    "strategyName": "Adaptive Trend Breakout",
-    "indicatorConfig": {"emaFastPeriod": 12, "emaSlowPeriod": 26, "stopLossPct": 1.5, "takeProfitPct": 3.5},
+# A valid DSL rule tree (EMA crossover) the fake LLM returns. Knobs: ema12 + ema26 + SL + TP = 4.
+GEN_TREE = {
+    "strategyName": "EMA cross test",
     "reasoning": "test",
+    "entry": {"op": "crossAbove", "left": {"op": "indicator", "kind": "ema", "period": 12},
+              "right": {"op": "indicator", "kind": "ema", "period": 26}},
+    "exit": {"op": "crossBelow", "left": {"op": "indicator", "kind": "ema", "period": 12},
+             "right": {"op": "indicator", "kind": "ema", "period": 26}},
+    "risk": {"stopLossPct": 1.5, "takeProfitPct": 3.5},
 }
 
 
@@ -56,21 +61,31 @@ def test_format_lessons_for_prompt():
     assert out == "1. [FAILURE] avoid tight stops\n2. [SUCCESS] wide TP helped"
 
 
-def test_build_generation_prompt_shape_and_number_rendering():
-    p = build_generation_prompt("BTCUSDT", "1m", 120.0, "No prior lessons recorded for this ticker/strategy type yet.")
-    # Integer-valued price renders without a trailing '.0' (like JS).
-    assert p.startswith("Analyze ticker BTCUSDT (Interval: 1m, Latest Price: 120).")
-    assert "indicatorConfig.emaFastPeriod (integer, candles)" in p
-    assert p.rstrip().endswith("No prior lessons recorded for this ticker/strategy type yet.")
+def test_build_generation_prompt_dsl_shape():
+    p = build_generation_prompt("BTCUSDT", "1h", 120.0, param_budget=6, allow_short=False,
+                                signal_emphasis="prefer RSI mean-reversion", lessons_block="No prior lessons yet.")
+    assert p.startswith("Design an automated trading strategy for BTCUSDT (Interval: 1h, Latest Price: 120).")
+    assert "LONG-ONLY" in p  # spot -> long only
+    assert "MARKET TYPE: SPOT" in p
+    assert "Parameter budget for THIS strategy: at most 6" in p
+    assert "prefer RSI mean-reversion" in p  # planner emphasis threaded through
+
+
+def test_build_generation_prompt_futures_allows_short():
+    p = build_generation_prompt("BTCUSDT", "1h", 120.0, param_budget=6, allow_short=True,
+                                signal_emphasis="", lessons_block="none")
+    assert "MARKET TYPE: FUTURES" in p and '"direction":"short"' in p
 
 
 # ------------------------------------------------------------------ fakes
 class FakeLlm:
-    def __init__(self, params: dict):
-        self.params = params
+    def __init__(self, tree: dict):
+        self.tree = tree
 
     async def generate_structured_completion(self, prompt, schema, schema_name="x", max_tokens=1024):
-        return {"data": StrategyParams.model_validate(self.params), "model": "test-model",
+        # The planner only calls the LLM when there are lessons; the fake store returns none, so
+        # every call here is a generation call -> return the DSL rule tree.
+        return {"data": StrategyGen.model_validate(self.tree), "model": "test-model",
                 "provider": "direct_api", "inputTokens": 0, "outputTokens": 0, "costUsd": 0.0}
 
     async def generate_completion(self, prompt, max_tokens=1024):
@@ -104,6 +119,9 @@ class FakeStore:
     async def load_recent_candles(self, tid, limit=2000):
         return _high_freq_candles()
 
+    async def load_candles_for_interval(self, tid, interval, limit):
+        return _high_freq_candles()
+
     async def get_latest_strategy_params(self, tid):
         return None
 
@@ -113,9 +131,10 @@ class FakeStore:
     async def count_strategies(self, tid):
         return 0
 
-    async def insert_strategy(self, *, ticker_id, version, parameters_json, generated_by):
+    async def insert_strategy(self, *, ticker_id, version, parameters_json, generated_by, eval_interval=None):
         self.calls.append("insert_strategy")
-        self.inserted_strategy = {"version": version, "params": parameters_json, "generated_by": generated_by}
+        self.inserted_strategy = {"version": version, "params": parameters_json,
+                                  "generated_by": generated_by, "eval_interval": eval_interval}
         return "new-sid"
 
     async def insert_backtest(self, *, strategy_id, ev):
@@ -151,12 +170,13 @@ class FakeStore:
 # ------------------------------------------------------------------ flow
 async def test_generate_persists_and_promotes_when_gate_passes():
     store = FakeStore(RELAXED)
-    result = await StrategyGenerator(store, FakeLlm(FALLBACK_PARAMS)).generate("tick-1", "cycle")
+    result = await StrategyGenerator(store, FakeLlm(GEN_TREE)).generate("tick-1", "cycle")
     assert result["saved"] is True
     assert result["attempts"] == 1
     assert store.inserted_strategy["version"] == 1
-    # The four knobs the engine actually trades on (emaFast/emaSlow/stopLoss/takeProfit).
+    # ema12 + ema26 + stopLoss + takeProfit = 4 distinct knobs.
     assert store.inserted_backtest["parameterCount"] == 4
+    assert store.inserted_strategy["eval_interval"]  # the planned interval is persisted
     assert "insert_strategy" in store.calls and "insert_backtest" in store.calls
     assert store.calls.index("promote_strategy") > store.calls.index("insert_strategy")
     assert "set_ticker_active_ready" in store.calls
@@ -164,28 +184,41 @@ async def test_generate_persists_and_promotes_when_gate_passes():
 
 
 async def test_generate_fails_gate_persists_nothing():
-    store = FakeStore(STRICT)  # high_freq sharpe 0.96 < 1.0 -> fails all 3 attempts
-    result = await StrategyGenerator(store, FakeLlm(FALLBACK_PARAMS)).generate("tick-1", "cycle")
+    store = FakeStore(STRICT)  # minTradeCount 100 is unreachable on the fixture -> fails all 3 attempts
+    result = await StrategyGenerator(store, FakeLlm(GEN_TREE)).generate("tick-1", "cycle")
     assert result["saved"] is False
     assert result["attempts"] == gen.MAX_ATTEMPTS
     assert "insert_strategy" not in store.calls
     assert store.stages[-1] == gen.STAGE_FAILED
-    # The report names the exact failing condition (sharpe below the 1.0 floor here).
-    assert result["failingConditions"]
-    assert any("sharpe" in c for c in result["failingConditions"])
+    assert result["failingConditions"]  # names the exact failing condition(s)
     # A failed cycle still teaches the next one: a FAILURE lesson is recorded, with no source
     # strategy (nothing was persisted under the gate-before-save contract).
     assert "insert_lesson" in store.calls
     lesson = store.lessons_inserted[0]
     assert lesson["outcome"] == "failure"
     assert lesson["source_strategy_id"] is None
-    assert lesson["strategy_type"] == "ema"  # legacy EMA blob auto-translates to an EMA-only tree
+    assert lesson["strategy_type"] == "ema"  # the EMA rule tree tags as 'ema'
+
+
+async def test_generate_skip_gate_promotes_failing_strategy():
+    store = FakeStore(STRICT)  # would fail the gate...
+    result = await StrategyGenerator(store, FakeLlm(GEN_TREE)).generate("tick-1", "cycle", skip_gate=True)
+    assert result["saved"] is True and result["gateBypassed"] is True  # ...but skip_gate promotes it
+    assert "promote_strategy" in store.calls
+
+
+async def test_generate_rejects_short_on_spot():
+    short_tree = {**GEN_TREE, "direction": "short"}
+    store = FakeStore(RELAXED)  # fake get_ticker returns market_type_name='spot'
+    result = await StrategyGenerator(store, FakeLlm(short_tree)).generate("tick-1", "cycle")
+    assert result["saved"] is False  # short rejected on spot across all attempts
+    assert "insert_strategy" not in store.calls
 
 
 async def test_generate_retires_previous_live_and_records_lesson():
     live = {"id": "old-sid", "version": 1, "parametersJson": {"indicatorConfig": {"emaFastPeriod": 10}}}
     store = FakeStore(RELAXED, live=live)
-    await StrategyGenerator(store, FakeLlm(FALLBACK_PARAMS)).generate("tick-1", "divergence 40%")
+    await StrategyGenerator(store, FakeLlm(GEN_TREE)).generate("tick-1", "divergence 40%")
     # Lesson recorded, previous retired, both BEFORE promotion of the new strategy.
     assert "insert_lesson" in store.calls
     assert store.calls.index("retire_live") < store.calls.index("promote_strategy")
@@ -195,7 +228,7 @@ async def test_generate_retires_previous_live_and_records_lesson():
 async def test_generate_refuses_on_blocking_flags():
     store = FakeStore(RELAXED, blocking=True)
     try:
-        await StrategyGenerator(store, FakeLlm(FALLBACK_PARAMS)).generate("tick-1", "cycle")
+        await StrategyGenerator(store, FakeLlm(GEN_TREE)).generate("tick-1", "cycle")
         assert False, "expected refusal"
     except ValueError as e:
         assert "data quality" in str(e)

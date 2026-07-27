@@ -105,6 +105,8 @@ class Config:
     # mirrors the backend's STRATEGY_EVAL_INTERVAL (default 1h). The live-signal path aggregates
     # the 1m base to this interval so what trades live matches what was backtested/promoted.
     strategy_eval_interval: str = os.getenv("STRATEGY_EVAL_INTERVAL", "1h")
+    # Default number of aggregated bars the planner backtests over (mirrors backend evalCandleLimit).
+    strategy_eval_candle_limit: int = int(os.getenv("STRATEGY_EVAL_CANDLE_LIMIT", "10000"))
 
     # Phase 2 hybrid AI exit overlay: on a rules-mode (Mode A) strategy, when the deterministic
     # ladder says HOLD on a WINNING open position, consult the LLM on whether the move looks

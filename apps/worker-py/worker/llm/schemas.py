@@ -38,6 +38,34 @@ class StrategyParams(BaseModel):
     reasoning: str = Field(..., description="Brief rationale for these parameter choices")
 
 
+class StrategyGen(BaseModel):
+    """DSL rule-tree generation output (mirrors StrategyGenSchema). entry/exit/risk are permissive
+    dicts on purpose — the REAL structural check is validate_ir() in the caller, and a loose schema
+    lets every provider's JSON coerce cleanly (matches the backend's z.any() fields)."""
+
+    strategyName: str = Field(..., description="Short human-readable name for this strategy")
+    reasoning: str = Field("", description="Brief rationale tied to the lessons and the market")
+    direction: Optional[Literal["long", "short"]] = Field(
+        None, description="'long' (default) or 'short' (futures markets only)")
+    entry: dict = Field(..., description="Condition tree that, when true and flat, opens the position")
+    exit: dict = Field(..., description="Condition tree that closes the open position (risk block also applies)")
+    risk: dict = Field(..., description="{stopLossPct, takeProfitPct, and optionally trailingStopPct, maxHoldBars}")
+
+
+class GenerationPlan(BaseModel):
+    """Meta-planner output (mirrors GenerationPlanSchema). Proposed gate thresholds are a REQUEST —
+    the caller clamps every one to a hard floor before use."""
+
+    interval: Literal["1h", "2h", "4h", "6h", "12h", "1d"] = Field(..., description="Timeframe to generate & backtest on")
+    candleLimit: int = Field(..., ge=1000, le=20000, description="How many bars of `interval` to backtest over")
+    minSharpe: float = Field(..., ge=0, le=3, description="Proposed OOS Sharpe bar (clamped to >=0.5)")
+    minProfitFactor: float = Field(..., ge=1, le=3, description="Proposed profit-factor bar (clamped to >=1.2)")
+    maxDrawdownPct: float = Field(..., ge=5, le=50, description="Proposed max-drawdown ceiling % (clamped to <=25)")
+    minTradeCount: int = Field(..., ge=5, le=300, description="Proposed minimum OOS trades (clamped to >=5)")
+    signalEmphasis: str = Field(..., description="Concrete guidance for the generator given the lessons")
+    reasoning: str = Field(..., description="Brief rationale tying the plan to the lessons")
+
+
 class LiveDecision(BaseModel):
     """Mode B live-decision output (mirrors LiveDecisionSchema)."""
 

@@ -9,6 +9,8 @@ from typing import Any, Optional
 
 import asyncpg
 
+from ..execution.signals_pg_store import _INTERVAL_RE, _PG_UNIT, _rows_to_candles
+
 
 def _ts_ms(dt) -> int:
     return int(dt.timestamp() * 1000)
@@ -54,6 +56,35 @@ class PgGeneratorStore:
             )
         return [{"close": float(r["close"]), "timestamp": _ts_ms(r["timestamp"])} for r in reversed(rows)]
 
+    async def load_candles_for_interval(self, ticker_id: str, interval: str, limit: int) -> list[dict]:
+        """Full OHLCV candles aggregated to `interval` (ASC, ms ts) for the DSL backtest — mirrors
+        the backend's getCandlesForInterval time_bucket roll-up. The DSL evaluator needs high/low/
+        volume (not just close), unlike the legacy close-only path."""
+        if interval == "1m":
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT timestamp, open, high, low, close, volume FROM ohlcv_data "
+                    "WHERE ticker_id = $1 ORDER BY timestamp DESC LIMIT $2",
+                    ticker_id, limit,
+                )
+            return _rows_to_candles(list(reversed(rows)))
+        m = _INTERVAL_RE.match(interval or "")
+        if not m:
+            raise ValueError(f"Unsupported interval: {interval}")
+        bucket = f"{int(m.group(1))} {_PG_UNIT[m.group(2).lower()]}"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT "timestamp", open, high, low, close, volume FROM (
+                       SELECT time_bucket(INTERVAL '{bucket}', "timestamp") AS "timestamp",
+                         first(open, "timestamp") AS open, max(high) AS high, min(low) AS low,
+                         last(close, "timestamp") AS close, sum(volume) AS volume
+                       FROM ohlcv_data WHERE ticker_id = $1
+                       GROUP BY 1 ORDER BY 1 DESC LIMIT $2
+                     ) t ORDER BY "timestamp" ASC""",
+                ticker_id, limit,
+            )
+        return _rows_to_candles(rows)
+
     async def get_latest_strategy_params(self, ticker_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -83,15 +114,17 @@ class PgGeneratorStore:
             n = await conn.fetchval("SELECT COUNT(*) FROM strategies WHERE ticker_id = $1", ticker_id)
         return int(n)
 
-    async def insert_strategy(self, *, ticker_id: str, version: int, parameters_json: dict, generated_by: str) -> str:
+    async def insert_strategy(self, *, ticker_id: str, version: int, parameters_json: dict, generated_by: str,
+                              eval_interval: Optional[str] = None) -> str:
         async with self.pool.acquire() as conn:
             sid = await conn.fetchval(
                 """
-                INSERT INTO strategies (ticker_id, version, status, execution_mode, parameters_json, generated_by)
-                VALUES ($1, $2, 'draft', 'mode_a_rules', $3, $4)
+                INSERT INTO strategies (ticker_id, version, status, execution_mode, parameters_json,
+                                        generated_by, eval_interval)
+                VALUES ($1, $2, 'draft', 'mode_a_rules', $3, $4, $5)
                 RETURNING id
                 """,
-                ticker_id, version, parameters_json, generated_by,
+                ticker_id, version, parameters_json, generated_by, eval_interval,
             )
         return str(sid)
 
