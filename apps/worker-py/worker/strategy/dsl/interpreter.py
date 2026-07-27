@@ -109,23 +109,59 @@ def eval_condition(c: dict, s: dict, cache: dict, i: int) -> bool:
 
 
 def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict) -> Optional[str]:
+    """Adaptive exit ladder (Phase 1). Deterministic and fully backtestable; a live AI overlay
+    (Phase 2) may only TIGHTEN this, never loosen it. Mirrors exitDecision in interpreter.ts."""
     price = s["close"][i]
     entry_price = ctx["entryPrice"]
+    bars_held = ctx["barsHeld"]
+    peak_price = ctx["peakPrice"]
     return_pct = (price - entry_price) / entry_price
+    peak_return = (peak_price - entry_price) / entry_price if peak_price > 0 else return_pct
     risk = ir["risk"]
+
+    # 1. Hard stop-loss — absolute safety backstop, never gated.
     if return_pct <= -risk["stopLossPct"] / 100:
         return "Stop loss"
-    if return_pct >= risk["takeProfitPct"] / 100:
+
+    # 2. Profit-protection floor — active whenever a trigger is configured (resolve_ir injects the
+    #    system default so every real strategy has it). Once peak gain reaches the trigger, the trade
+    #    may never round-trip below the floor. This is what stops an 8% gain becoming a 2% loss.
+    #    Absent trigger => off (preserves pre-DSL parity for raw IRs that never went through resolve).
+    be_trigger = risk.get("breakevenTriggerPct")
+    if be_trigger is not None:
+        be_floor = risk.get("breakevenFloorPct")
+        be_floor = 0.0 if be_floor is None else be_floor
+        if peak_return >= be_trigger / 100 and return_pct <= be_floor / 100:
+            return "Profit floor"
+
+    # 3. Take-profit target. hard = book immediately; soft = ride past it under a tight trail (#4).
+    #    Absent mode => 'hard' (legacy behavior for raw IRs).
+    tp_mode = risk.get("takeProfitMode") or "hard"
+    if return_pct >= risk["takeProfitPct"] / 100 and tp_mode == "hard":
         return "Take profit"
-    trailing = risk.get("trailingStopPct")
-    if trailing is not None and ctx["peakPrice"] > 0:
-        drop = (ctx["peakPrice"] - price) / ctx["peakPrice"]
-        if drop >= trailing / 100:
+
+    # 4. Trailing stop off the peak. The strategy's own trail (if any) is always active; in soft-TP
+    #    mode a tighter post-target trail kicks in once the peak has reached the target.
+    eff_trail = risk.get("trailingStopPct")
+    if tp_mode == "soft" and peak_return >= risk["takeProfitPct"] / 100:
+        post_trail = risk.get("postTargetTrailPct")
+        post_trail = 2.0 if post_trail is None else post_trail
+        eff_trail = post_trail if eff_trail is None else min(eff_trail, post_trail)
+    if eff_trail is not None and peak_price > 0:
+        drop = (peak_price - price) / peak_price
+        if drop >= eff_trail / 100:
             return "Trailing stop"
+
+    # 5. Time-based max hold.
     max_hold = risk.get("maxHoldBars")
-    if max_hold is not None and ctx["barsHeld"] >= max_hold:
+    if max_hold is not None and bars_held >= max_hold:
         return "Max hold"
-    if eval_condition(ir["exit"], s, cache, i):
+
+    # 6. Rule-based exit — gated by a minimum hold so a noisy signal can't open and slam shut on the
+    #    same/adjacent bar (the whipsaw that produced 0.00% round-trips live). Absent => 0 (no gate).
+    min_hold = risk.get("minHoldBars")
+    min_hold = 0 if min_hold is None else min_hold
+    if bars_held >= min_hold and eval_condition(ir["exit"], s, cache, i):
         return "Exit rule"
     return None
 
@@ -141,6 +177,7 @@ def exit_reason(ir: dict, candles: list[dict], i: int, ctx: dict) -> Optional[st
 
 def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
     trades: list[float] = []
+    hold_bars: list[int] = []  # bars held per closed trade (parallel to `trades`), for the avg-hold gate
     s = build_series(candles)
     cache: dict = {}
     warmup = warmup_bars(ir)
@@ -156,7 +193,7 @@ def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
     max_dd_duration = 0
 
     if len(candles) <= warmup:
-        return {"trades": trades, "maxDrawdown": 0.0, "drawdownDuration": 0}
+        return {"trades": trades, "holdBars": hold_bars, "maxDrawdown": 0.0, "drawdownDuration": 0}
 
     for i in range(warmup, len(candles)):
         price = s["close"][i]
@@ -189,9 +226,46 @@ def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
                 net_return_pct = (exit_price - entry_price) / entry_price - 0.0015
                 equity += equity * net_return_pct
                 trades.append(net_return_pct)
+                hold_bars.append(bars_held)
                 position = "NONE"
 
-    return {"trades": trades, "maxDrawdown": max_drawdown, "drawdownDuration": max_dd_duration}
+    return {"trades": trades, "holdBars": hold_bars, "maxDrawdown": max_drawdown, "drawdownDuration": max_dd_duration}
+
+
+def intended_position_state(ir: dict, candles: list[dict]) -> str:
+    """The strategy's CURRENT intended position at the latest bar, from the same stateful replay the
+    backtest uses (entry edge in, rule/risk exit out). The live loop reconciles real exposure to this
+    rather than only reacting to a fresh entry edge, so activating (or restarting mid-trade) a
+    strategy that is already signalling long opens the position to MATCH it instead of sitting flat
+    until the next crossover. Mirrors interpreter.ts::intendedPositionState. Returns 'LONG' or 'NONE'."""
+    s = build_series(candles)
+    cache: dict = {}
+    warmup = warmup_bars(ir)
+    if len(candles) <= warmup:
+        return "NONE"
+
+    position = "NONE"
+    entry_price = 0.0
+    bars_held = 0
+    peak_price = 0.0
+    for i in range(warmup, len(candles)):
+        price = s["close"][i]
+        if not math.isfinite(price):
+            continue
+        if position == "NONE":
+            if eval_condition(ir["entry"], s, cache, i):
+                position = "LONG"
+                entry_price = price
+                bars_held = 0
+                peak_price = price
+        else:
+            bars_held += 1
+            if price > peak_price:
+                peak_price = price
+            if _exit_decision(ir, s, cache, i,
+                              {"entryPrice": entry_price, "barsHeld": bars_held, "peakPrice": peak_price}):
+                position = "NONE"
+    return position
 
 
 def generate_signals_from_ir(candles: list[dict], ir: dict) -> list[dict]:

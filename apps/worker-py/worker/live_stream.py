@@ -38,10 +38,14 @@ async def _load_streamable_tickers() -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, symbol, interval FROM tickers WHERE status = ANY($1::text[])",
+            # status is a Postgres enum (ticker_status_enum); cast to text so it compares to the
+            # text[] param without needing the enum type name here.
+            "SELECT id, symbol, interval FROM tickers WHERE status::text = ANY($1::text[])",
             list(_STREAMABLE_STATUSES),
         )
-    return [dict(r) for r in rows]
+    # id -> str: it flows into the JSON tick payload (must be serializable) and every downstream
+    # store query, which expect a string ticker id (asyncpg returns a UUID object here).
+    return [{"id": str(r["id"]), "symbol": r["symbol"], "interval": r["interval"]} for r in rows]
 
 
 async def _upsert_final_candle(ticker_id: str, k: dict) -> None:

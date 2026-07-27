@@ -1,9 +1,24 @@
 """asyncpg-backed SignalStore — DB adapter for live-signal evaluation (Phase 3c-3)."""
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import asyncpg
+
+# Mirror of MarketDataService.PG_UNIT — maps an interval suffix to the TimescaleDB time_bucket unit.
+_PG_UNIT = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+_INTERVAL_RE = re.compile(r"^(\d+)([mhdw])$", re.IGNORECASE)
+
+
+def _rows_to_candles(rows) -> list[dict]:
+    """Map DB rows (ASC order already) to the interpreter's candle dicts with ms timestamps."""
+    return [
+        {"open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]),
+         "close": float(r["close"]), "volume": float(r["volume"]),
+         "timestamp": int(r["timestamp"].timestamp() * 1000)}
+        for r in rows
+    ]
 
 
 class PgSignalStore:
@@ -13,12 +28,14 @@ class PgSignalStore:
     async def get_live_strategy(self, ticker_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, execution_mode, parameters_json FROM strategies WHERE ticker_id = $1 AND status = 'live' LIMIT 1",
+                "SELECT id, execution_mode, parameters_json, eval_interval FROM strategies "
+                "WHERE ticker_id = $1 AND status = 'live' LIMIT 1",
                 ticker_id,
             )
         if not row:
             return None
-        return {"id": str(row["id"]), "executionMode": row["execution_mode"], "parametersJson": row["parameters_json"]}
+        return {"id": str(row["id"]), "executionMode": row["execution_mode"],
+                "parametersJson": row["parameters_json"], "evalInterval": row["eval_interval"]}
 
     async def load_recent_closes(self, ticker_id: str, limit: int) -> list[float]:
         async with self.pool.acquire() as conn:
@@ -28,20 +45,40 @@ class PgSignalStore:
         return [float(r["close"]) for r in reversed(rows)]
 
     async def load_recent_candles(self, ticker_id: str, limit: int) -> list[dict]:
-        """OHLC candles (ASC, ms timestamps) for the DSL interpreter. NOTE: raw 1m base — align
-        to the aggregated eval interval before enabling WORKER_OWNS_EXECUTION (see project memory)."""
+        """OHLC candles (ASC, ms timestamps) for the DSL interpreter — RAW 1m base. Use
+        load_recent_candles_for_interval for the live-signal path so a higher-timeframe strategy
+        isn't evaluated on 1m noise."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT timestamp, open, high, low, close, volume FROM ohlcv_data "
                 "WHERE ticker_id = $1 ORDER BY timestamp DESC LIMIT $2",
                 ticker_id, limit,
             )
-        return [
-            {"open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]),
-             "close": float(r["close"]), "volume": float(r["volume"]),
-             "timestamp": int(r["timestamp"].timestamp() * 1000)}
-            for r in reversed(rows)
-        ]
+        return _rows_to_candles(list(reversed(rows)))
+
+    async def load_recent_candles_for_interval(self, ticker_id: str, interval: str, limit: int) -> list[dict]:
+        """OHLC candles aggregated to `interval` (ASC, ms timestamps), mirroring the backend's
+        MarketDataService.getCandlesForInterval time_bucket roll-up (first open / max high / min low
+        / last close / sum volume) so the worker evaluates a strategy on the SAME bars it was
+        backtested/promoted on. `1m` short-circuits to the raw rows."""
+        if interval == "1m":
+            return await self.load_recent_candles(ticker_id, limit)
+        m = _INTERVAL_RE.match(interval or "")
+        if not m:
+            raise ValueError(f"Unsupported interval: {interval}")
+        bucket = f"{int(m.group(1))} {_PG_UNIT[m.group(2).lower()]}"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT "timestamp", open, high, low, close, volume FROM (
+                       SELECT time_bucket(INTERVAL '{bucket}', "timestamp") AS "timestamp",
+                         first(open, "timestamp") AS open, max(high) AS high, min(low) AS low,
+                         last(close, "timestamp") AS close, sum(volume) AS volume
+                       FROM ohlcv_data WHERE ticker_id = $1
+                       GROUP BY 1 ORDER BY 1 DESC LIMIT $2
+                     ) t ORDER BY "timestamp" ASC""",
+                ticker_id, limit,
+            )
+        return _rows_to_candles(rows)
 
     async def get_open_position_for_strategy(self, ticker_id: str, strategy_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:

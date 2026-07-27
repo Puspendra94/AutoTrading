@@ -101,6 +101,11 @@ class Config:
     # Requires LIVE_STREAM_ENABLED (the worker must own the stream to drive execution).
     worker_owns_execution: bool = os.getenv("WORKER_OWNS_EXECUTION", "false").lower() in ("1", "true", "yes", "on")
 
+    # Default timeframe a live strategy is evaluated on when its own eval_interval is unset —
+    # mirrors the backend's STRATEGY_EVAL_INTERVAL (default 1h). The live-signal path aggregates
+    # the 1m base to this interval so what trades live matches what was backtested/promoted.
+    strategy_eval_interval: str = os.getenv("STRATEGY_EVAL_INTERVAL", "1h")
+
     @property
     def dsn(self) -> str:
         return (

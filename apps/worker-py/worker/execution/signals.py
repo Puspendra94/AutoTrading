@@ -12,9 +12,10 @@ import json
 import logging
 from typing import Any, Optional, Protocol
 
+from ..config import config
 from ..llm.schemas import LiveDecision
 from ..llm.service import LlmPurpose, LlmService
-from ..strategy.dsl.interpreter import exit_reason, should_enter
+from ..strategy.dsl.interpreter import exit_reason, intended_position_state, should_enter
 from ..strategy.dsl.ir import resolve_ir, warmup_bars
 from ..strategy.generator import format_lessons_for_prompt, infer_strategy_type, _js_num
 
@@ -27,6 +28,7 @@ class SignalStore(Protocol):
     async def get_live_strategy(self, ticker_id: str) -> Optional[dict]: ...
     async def load_recent_closes(self, ticker_id: str, limit: int) -> list[float]: ...
     async def load_recent_candles(self, ticker_id: str, limit: int) -> list[dict]: ...
+    async def load_recent_candles_for_interval(self, ticker_id: str, interval: str, limit: int) -> list[dict]: ...
     async def get_open_position_for_strategy(self, ticker_id: str, strategy_id: str) -> Optional[dict]: ...
     async def get_ticker(self, ticker_id: str) -> Optional[dict]: ...
     async def retrieve_lessons(self, ticker_id: str, strategy_type: Optional[str], limit: int = 5) -> list[dict]: ...
@@ -34,23 +36,31 @@ class SignalStore(Protocol):
 
 async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strategy: dict) -> str:
     """Mode A — deterministic rule-tree execution via the shared DSL interpreter (a legacy
-    indicatorConfig blob is auto-translated). Mirrors strategy-engine.service.ts::evaluateRulesSignal.
-    NOTE: dormant path — still loads the RAW 1m base; align to the aggregated eval interval before
-    enabling WORKER_OWNS_EXECUTION (see project memory)."""
+    indicatorConfig blob is auto-translated). Faithful port of
+    strategy-engine.service.ts::evaluateRulesSignal: candles are aggregated to the strategy's OWN
+    eval interval (not raw 1m), so a higher-timeframe strategy isn't fired on 1-minute noise, and a
+    flat position is reconciled to the strategy's INTENDED exposure (not just a fresh entry edge)."""
     ir = resolve_ir(live_strategy["parametersJson"])
     if not ir:
         return "HOLD"
 
     warmup = warmup_bars(ir)
     need = max(warmup * 5 + 20, 300)
-    candles = await store.load_recent_candles(ticker_id, need)
+    # Evaluate on the SAME timeframe this strategy was generated/backtested on (stored per strategy),
+    # falling back to the global default — otherwise what trades live wouldn't match what was promoted.
+    interval = live_strategy.get("evalInterval") or config.strategy_eval_interval
+    candles = await store.load_recent_candles_for_interval(ticker_id, interval, need)
     if len(candles) < warmup + 2:
         return "HOLD"
     i = len(candles) - 1
 
     open_position = await store.get_open_position_for_strategy(ticker_id, live_strategy["id"])
     if not open_position:
-        return "BUY" if should_enter(ir, candles, i) else "HOLD"
+        # Reconcile to the strategy's INTENDED exposure: if its stateful replay says it should
+        # currently be holding (entered earlier and hasn't hit an exit), open to match it — not only
+        # on a fresh entry edge this bar. Mirrors the backend's shouldEnter || intendedPositionState.
+        intended_long = should_enter(ir, candles, i) or intended_position_state(ir, candles) == "LONG"
+        return "BUY" if intended_long else "HOLD"
 
     entry_price = float(open_position["entryPrice"])
     entry_time = open_position.get("openedAt")

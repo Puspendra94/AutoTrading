@@ -88,11 +88,34 @@ def count_ir_parameters(ir: dict) -> int:
     return total + risk_count
 
 
+# System-level profit-protection policy (Phase 1 adaptive-exit redesign). resolve_ir injects these
+# into every strategy's risk block when the field is absent, so a generated strategy can never ship
+# without downside/whipsaw protection. Risk hygiene, not alpha knobs -> NOT counted by
+# count_ir_parameters. MUST stay identical to EXIT_DEFAULTS in
+# apps/backend/src/modules/strategy/dsl/strategy-ir.ts.
+EXIT_DEFAULTS = {
+    "takeProfitMode": "soft",     # ride past the target under a tight trail (no hard profit cap)
+    "breakevenTriggerPct": 2.0,   # once peak gain >= 2%, arm the profit floor...
+    "breakevenFloorPct": 0.0,     # ...so the trade can't fall back below breakeven (winner can't become loser)
+    "minHoldBars": 2,             # rule-based exit can't fire before 2 bars (kills same-bar whipsaws)
+    "postTargetTrailPct": 2.0,    # soft mode: trail 2% off the peak once the target is reached
+}
+
+
+def apply_exit_defaults(ir: dict) -> dict:
+    """Fill in any unset profit-protection fields with the system defaults (non-destructive)."""
+    risk = dict(ir.get("risk") or {})
+    for key, default in EXIT_DEFAULTS.items():
+        if risk.get(key) is None:
+            risk[key] = default
+    return {**ir, "risk": risk}
+
+
 def resolve_ir(params: dict):
-    """Resolve any params blob to a validated IR (legacy auto-translated, rule-tree validated);
-    returns None when the result isn't executable."""
+    """Resolve any params blob to a validated IR (legacy auto-translated, rule-tree validated, then
+    system profit-protection defaults injected); returns None when the result isn't executable."""
     ir = legacy_to_ir(params) if is_legacy_params(params) else params
-    return ir if not validate_ir(ir) else None
+    return apply_exit_defaults(ir) if not validate_ir(ir) else None
 
 
 def _collect_indicator_kinds(c: dict, into: set) -> None:
@@ -198,6 +221,34 @@ def validate_condition(c: Any, path: str) -> list[str]:
     return errs
 
 
+def _num_in(v: Any, lo: float, hi: float) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def _int_in(v: Any, lo: int, hi: int) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def _validate_risk_extras(risk: dict) -> list[str]:
+    """Validate the Phase 1 adaptive-exit fields (all optional). Ranges mirror the TS zod schema."""
+    errs: list[str] = []
+    if "trailingStopPct" in risk and risk["trailingStopPct"] is not None and not _num_in(risk["trailingStopPct"], 0.1, 50):
+        errs.append("risk.trailingStopPct must be in [0.1,50]")
+    if "maxHoldBars" in risk and risk["maxHoldBars"] is not None and not _int_in(risk["maxHoldBars"], 1, 5000):
+        errs.append("risk.maxHoldBars must be an int in [1,5000]")
+    if "takeProfitMode" in risk and risk["takeProfitMode"] is not None and risk["takeProfitMode"] not in ("hard", "soft"):
+        errs.append("risk.takeProfitMode must be hard|soft")
+    if "breakevenTriggerPct" in risk and risk["breakevenTriggerPct"] is not None and not _num_in(risk["breakevenTriggerPct"], 0.1, 50):
+        errs.append("risk.breakevenTriggerPct must be in [0.1,50]")
+    if "breakevenFloorPct" in risk and risk["breakevenFloorPct"] is not None and not _num_in(risk["breakevenFloorPct"], -20, 20):
+        errs.append("risk.breakevenFloorPct must be in [-20,20]")
+    if "minHoldBars" in risk and risk["minHoldBars"] is not None and not _int_in(risk["minHoldBars"], 0, 500):
+        errs.append("risk.minHoldBars must be an int in [0,500]")
+    if "postTargetTrailPct" in risk and risk["postTargetTrailPct"] is not None and not _num_in(risk["postTargetTrailPct"], 0.1, 50):
+        errs.append("risk.postTargetTrailPct must be in [0.1,50]")
+    return errs
+
+
 def validate_ir(ir: Any) -> list[str]:
     if not isinstance(ir, dict):
         return ["ir must be an object"]
@@ -216,6 +267,7 @@ def validate_ir(ir: Any) -> list[str]:
             errs.append("risk.stopLossPct must be in [0.1,20]")
         if not isinstance(tp, (int, float)) or not (0.1 <= tp <= 50):
             errs.append("risk.takeProfitPct must be in [0.1,50]")
+        errs += _validate_risk_extras(risk)
     if errs:
         return errs
     return validate_condition(ir["entry"], "entry") + validate_condition(ir["exit"], "exit")

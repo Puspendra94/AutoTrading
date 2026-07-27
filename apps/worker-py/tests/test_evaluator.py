@@ -36,15 +36,20 @@ def _high_freq_candles(n: int = 900) -> list[dict]:
 
 
 # Captured from the backend TS evaluator on _high_freq_candles() + PARAMS + POLICY.
+# Regenerated after the Phase 1 adaptive-exit redesign: resolveIR now injects the system
+# profit-protection defaults (soft take-profit + profit floor + 2-bar min-hold), so this legacy
+# strategy is backtested through the SAME exit ladder that runs live. On this choppy oscillating
+# series "let profits run" underperforms the old hard 3.5% take-profit (Sharpe 0.96 -> -1.07) — the
+# gate correctly still rejects it. Both engines produce these numbers (proven by parity_evaluator.py).
 GOLDEN = {
-    "sharpe": 0.96, "sortino": 1.48, "calmar": 1.19, "maxDrawdown": 7.86,
-    "drawdownDuration": 155, "profitFactor": 1.94, "tradeCount": 10,
-    "totalReturnPct": 9.28, "winRate": 50, "parameterCount": 4,
+    "sharpe": -1.07, "sortino": -0.85, "calmar": -0.68, "maxDrawdown": 7.86,
+    "drawdownDuration": 244, "profitFactor": 0.46, "tradeCount": 10,
+    "totalReturnPct": -5.33, "winRate": 50, "parameterCount": 4,
     "passedEvaluationGate": False,
-    "regimeBreakdown": {"trending": 1.69, "choppy": 0, "highVol": -1.31},
+    "regimeBreakdown": {"trending": -0.18, "choppy": 0, "highVol": -1.98},
     "walkForward": {
         "inSampleTradeCount": 24, "outOfSampleTradeCount": 10,
-        "inSampleSharpe": -1.32, "outOfSampleSharpe": 0.96,
+        "inSampleSharpe": -2.47, "outOfSampleSharpe": -1.07,
     },
 }
 

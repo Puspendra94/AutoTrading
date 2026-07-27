@@ -107,6 +107,9 @@ def gate_failure_reasons(ev: dict, policy: dict) -> list[str]:
         reasons.append(f"tradeCount {ev['tradeCount']} < minTradeCount {_num(policy.get('minTradeCount'))}")
     if ev["parameterCount"] > _num(policy.get("maxParameterCount")):
         reasons.append(f"parameterCount {ev['parameterCount']} > maxParameterCount {_num(policy.get('maxParameterCount'))}")
+    min_avg_hold = policy.get("minAvgHoldBars")
+    if min_avg_hold is not None and ev.get("avgHoldBars", 0) < _num(min_avg_hold):
+        reasons.append(f"avgHoldBars {ev.get('avgHoldBars', 0)} < minAvgHoldBars {_num(min_avg_hold)}")
     return reasons
 
 

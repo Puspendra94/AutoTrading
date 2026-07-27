@@ -216,7 +216,7 @@ def evaluate_strategy(candles: list[dict], params: dict, policy: dict) -> dict:
     BacktestPerformanceMetrics (camelCase keys)."""
     empty_result = {
         "sharpe": 0, "sortino": 0, "calmar": 0, "maxDrawdown": 100, "drawdownDuration": 0,
-        "profitFactor": 0, "tradeCount": 0, "totalReturnPct": 0, "winRate": 0,
+        "profitFactor": 0, "tradeCount": 0, "avgHoldBars": 0, "totalReturnPct": 0, "winRate": 0,
         "monteCarloSummary": {
             "passRate": 0, "minSharpe": 0, "maxDrawdown": 100,
             "walkForward": {"inSampleTradeCount": 0, "outOfSampleTradeCount": 0, "inSampleSharpe": 0, "outOfSampleSharpe": 0},
@@ -258,8 +258,15 @@ def evaluate_strategy(candles: list[dict], params: dict, policy: dict) -> dict:
     parameter_count = _count_tunable_parameters(params)
     passed_parameter_count = parameter_count <= _num(policy.get("maxParameterCount"))
 
+    # Optional whipsaw guard: average out-of-sample hold in bars. NULL policy value => not enforced.
+    oos_hold = out_of_sample_sim.get("holdBars") or []
+    avg_hold_bars = to_fixed(sum(oos_hold) / len(oos_hold), 2) if oos_hold else 0
+    min_avg_hold = policy.get("minAvgHoldBars")
+    passed_avg_hold = min_avg_hold is None or avg_hold_bars >= _num(min_avg_hold)
+
     passed_evaluation_gate = (
-        passed_sharpe and passed_drawdown and passed_profit_factor and passed_trade_count and passed_parameter_count
+        passed_sharpe and passed_drawdown and passed_profit_factor and passed_trade_count
+        and passed_parameter_count and passed_avg_hold
     )
 
     return {
@@ -270,6 +277,7 @@ def evaluate_strategy(candles: list[dict], params: dict, policy: dict) -> dict:
         "drawdownDuration": out_of_sample_sim["drawdownDuration"],
         "profitFactor": oos_metrics["profitFactor"],
         "tradeCount": trade_count,
+        "avgHoldBars": avg_hold_bars,
         "totalReturnPct": oos_metrics["totalReturnPct"],
         "winRate": oos_metrics["winRate"],
         "monteCarloSummary": {

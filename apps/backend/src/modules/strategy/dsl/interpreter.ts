@@ -20,6 +20,7 @@ export interface Candle {
 
 export interface TradeSimResult {
   trades: number[];
+  holdBars: number[]; // bars held per closed trade (parallel to `trades`), for the avg-hold gate
   maxDrawdown: number;
   drawdownDuration: number;
 }
@@ -144,6 +145,7 @@ export function exitReason(
  */
 export function simulateFromIR(candles: Candle[], ir: StrategyIR): TradeSimResult {
   const trades: number[] = [];
+  const holdBars: number[] = []; // bars held per closed trade (parallel to `trades`), for the avg-hold gate
   const s = buildSeries(candles);
   const cache: Cache = new Map();
   const warmup = warmupBars(ir);
@@ -158,7 +160,7 @@ export function simulateFromIR(candles: Candle[], ir: StrategyIR): TradeSimResul
   let currentDrawdownDuration = 0;
   let maxDrawdownDuration = 0;
 
-  if (candles.length <= warmup) return { trades, maxDrawdown: 0, drawdownDuration: 0 };
+  if (candles.length <= warmup) return { trades, holdBars, maxDrawdown: 0, drawdownDuration: 0 };
 
   for (let i = warmup; i < candles.length; i++) {
     const price = s.close[i];
@@ -189,12 +191,13 @@ export function simulateFromIR(candles: Candle[], ir: StrategyIR): TradeSimResul
         const netReturnPct = (exitPrice - entryPrice) / entryPrice - 0.0015; // 0.15% round-trip fee
         equity += equity * netReturnPct;
         trades.push(netReturnPct);
+        holdBars.push(barsHeld);
         position = 'NONE';
       }
     }
   }
 
-  return { trades, maxDrawdown, drawdownDuration: maxDrawdownDuration };
+  return { trades, holdBars, maxDrawdown, drawdownDuration: maxDrawdownDuration };
 }
 
 /** Exit decision against a prepared Series/cache (internal fast path used by the sim loop). */
@@ -205,16 +208,50 @@ function exitDecision(
   i: number,
   ctx: { entryPrice: number; barsHeld: number; peakPrice: number },
 ): string | null {
+  // Adaptive exit ladder (Phase 1). Deterministic and fully backtestable; a live AI overlay
+  // (Phase 2) may only TIGHTEN this, never loosen it. Mirrors _exit_decision in interpreter.py.
   const price = s.close[i];
-  const returnPct = (price - ctx.entryPrice) / ctx.entryPrice;
-  if (returnPct <= -ir.risk.stopLossPct / 100) return 'Stop loss';
-  if (returnPct >= ir.risk.takeProfitPct / 100) return 'Take profit';
-  if (ir.risk.trailingStopPct != null && ctx.peakPrice > 0) {
-    const drop = (ctx.peakPrice - price) / ctx.peakPrice;
-    if (drop >= ir.risk.trailingStopPct / 100) return 'Trailing stop';
+  const { entryPrice, barsHeld, peakPrice } = ctx;
+  const returnPct = (price - entryPrice) / entryPrice;
+  const peakReturn = peakPrice > 0 ? (peakPrice - entryPrice) / entryPrice : returnPct;
+  const risk = ir.risk;
+
+  // 1. Hard stop-loss — absolute safety backstop, never gated.
+  if (returnPct <= -risk.stopLossPct / 100) return 'Stop loss';
+
+  // 2. Profit-protection floor — active whenever a trigger is configured (resolveIR injects the
+  //    system default so every real strategy has it). Once peak gain reaches the trigger, the trade
+  //    may never round-trip below the floor. This is what stops an 8% gain becoming a 2% loss.
+  //    Absent trigger => off (preserves pre-DSL parity for raw IRs that never went through resolve).
+  if (risk.breakevenTriggerPct != null) {
+    const beFloor = risk.breakevenFloorPct ?? 0;
+    if (peakReturn >= risk.breakevenTriggerPct / 100 && returnPct <= beFloor / 100) return 'Profit floor';
   }
-  if (ir.risk.maxHoldBars != null && ctx.barsHeld >= ir.risk.maxHoldBars) return 'Max hold';
-  if (evalCondition(ir.exit, s, cache, i)) return 'Exit rule';
+
+  // 3. Take-profit target. hard = book immediately; soft = ride past it under a tight trail (#4).
+  //    Absent mode => 'hard' (legacy behavior for raw IRs).
+  const tpMode = risk.takeProfitMode ?? 'hard';
+  if (returnPct >= risk.takeProfitPct / 100 && tpMode === 'hard') return 'Take profit';
+
+  // 4. Trailing stop off the peak. The strategy's own trail (if any) is always active; in soft-TP
+  //    mode a tighter post-target trail kicks in once the peak has reached the target.
+  let effTrail = risk.trailingStopPct ?? null;
+  if (tpMode === 'soft' && peakReturn >= risk.takeProfitPct / 100) {
+    const postTrail = risk.postTargetTrailPct ?? 2.0;
+    effTrail = effTrail == null ? postTrail : Math.min(effTrail, postTrail);
+  }
+  if (effTrail != null && peakPrice > 0) {
+    const drop = (peakPrice - price) / peakPrice;
+    if (drop >= effTrail / 100) return 'Trailing stop';
+  }
+
+  // 5. Time-based max hold.
+  if (risk.maxHoldBars != null && barsHeld >= risk.maxHoldBars) return 'Max hold';
+
+  // 6. Rule-based exit — gated by a minimum hold so a noisy signal can't open and slam shut on the
+  //    same/adjacent bar (the whipsaw that produced 0.00% round-trips live). Absent => 0 (no gate).
+  const minHold = risk.minHoldBars ?? 0;
+  if (barsHeld >= minHold && evalCondition(ir.exit, s, cache, i)) return 'Exit rule';
   return null;
 }
 

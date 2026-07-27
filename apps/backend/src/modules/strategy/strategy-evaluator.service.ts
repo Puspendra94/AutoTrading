@@ -12,6 +12,7 @@ export interface BacktestPerformanceMetrics {
   drawdownDuration: number;
   profitFactor: number;
   tradeCount: number;
+  avgHoldBars: number; // average bars held per out-of-sample trade (whipsaw indicator)
   totalReturnPct: number; // compounded net return over the out-of-sample fold
   winRate: number; // share of profitable trades, 0–100
   monteCarloSummary: {
@@ -32,6 +33,7 @@ export interface BacktestPerformanceMetrics {
 
 interface TradeSimResult {
   trades: number[]; // per-trade net return fractions
+  holdBars: number[]; // bars held per closed trade (parallel to trades)
   maxDrawdown: number; // pct
   drawdownDuration: number; // bars
 }
@@ -69,6 +71,7 @@ export class StrategyEvaluatorService {
       drawdownDuration: 0,
       profitFactor: 0,
       tradeCount: 0,
+      avgHoldBars: 0,
       totalReturnPct: 0,
       winRate: 0,
       monteCarloSummary: {
@@ -120,8 +123,13 @@ export class StrategyEvaluatorService {
     const parameterCount = this.countTunableParameters(params);
     const passedParameterCount = parameterCount <= Number(policy.maxParameterCount);
 
+    // Optional whipsaw guard: average out-of-sample hold in bars. NULL policy value => not enforced.
+    const oosHold = outOfSampleSim.holdBars;
+    const avgHoldBars = oosHold.length ? Number((oosHold.reduce((a, b) => a + b, 0) / oosHold.length).toFixed(2)) : 0;
+    const passedAvgHold = policy.minAvgHoldBars == null || avgHoldBars >= Number(policy.minAvgHoldBars);
+
     const passedEvaluationGate =
-      passedSharpe && passedDrawdown && passedProfitFactor && passedTradeCount && passedParameterCount;
+      passedSharpe && passedDrawdown && passedProfitFactor && passedTradeCount && passedParameterCount && passedAvgHold;
 
     return {
       sharpe: oosMetrics.sharpe,
@@ -131,6 +139,7 @@ export class StrategyEvaluatorService {
       drawdownDuration: outOfSampleSim.drawdownDuration,
       profitFactor: oosMetrics.profitFactor,
       tradeCount,
+      avgHoldBars,
       totalReturnPct: oosMetrics.totalReturnPct,
       winRate: oosMetrics.winRate,
       monteCarloSummary: {
@@ -183,7 +192,7 @@ export class StrategyEvaluatorService {
     // and run the shared interpreter, which uses the identical slippage/fee/equity accounting the
     // pre-DSL engine used. Invalid params -> no trades.
     const ir = resolveIR(params);
-    if (!ir) return { trades: [], maxDrawdown: 0, drawdownDuration: 0 };
+    if (!ir) return { trades: [], holdBars: [], maxDrawdown: 0, drawdownDuration: 0 };
     return simulateFromIR(candles as any, ir);
   }
 

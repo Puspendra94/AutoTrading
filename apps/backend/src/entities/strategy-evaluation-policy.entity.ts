@@ -25,6 +25,12 @@ export class StrategyEvaluationPolicy {
   @Column({ name: 'max_parameter_count', type: 'int', default: 5 })
   maxParameterCount: number;
 
+  // Optional whipsaw guard: minimum average out-of-sample hold (in eval-interval bars). NULL =
+  // no constraint (default). Set it to reject over-trading strategies that churn in and out on
+  // noise — the exact failure mode seen live (hundreds of tiny round-trips bleeding fees).
+  @Column({ name: 'min_avg_hold_bars', type: 'decimal', precision: 6, scale: 2, nullable: true })
+  minAvgHoldBars: number | null;
+
   @Column({ name: 'is_active', default: true })
   isActive: boolean;
 }

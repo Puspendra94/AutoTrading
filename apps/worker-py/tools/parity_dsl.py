@@ -153,6 +153,29 @@ IRS = {
         ]},
         "risk": {"stopLossPct": 5, "takeProfitPct": 10},
     },
+    "soft_tp_profit_floor": {
+        # Phase 1 adaptive exit: soft take-profit (ride past 8% under a 2% post-target trail),
+        # profit floor (peak >=2.5% then back below breakeven -> exit), and a 3-bar min-hold gate on
+        # the rule exit. Exercises every new branch of the exit ladder in BOTH engines.
+        "strategyName": "soft TP + profit floor", "reasoning": "",
+        "entry": {"op": "crossAbove", "left": ema(None, 9), "right": ema(None, 21)},
+        "exit": {"op": "crossBelow", "left": ema(None, 9), "right": ema(None, 21)},
+        "risk": {
+            "stopLossPct": 4, "takeProfitPct": 8, "takeProfitMode": "soft",
+            "breakevenTriggerPct": 2.5, "breakevenFloorPct": 0, "minHoldBars": 3,
+            "postTargetTrailPct": 2,
+        },
+    },
+    "hard_tp_minhold": {
+        # Hard take-profit + explicit min-hold + breakeven floor with a small negative buffer.
+        "strategyName": "hard TP + minhold", "reasoning": "",
+        "entry": {"op": "lt", "left": _rsi(14), "right": const(35)},
+        "exit": {"op": "gt", "left": _rsi(14), "right": const(65)},
+        "risk": {
+            "stopLossPct": 3, "takeProfitPct": 5, "takeProfitMode": "hard",
+            "breakevenTriggerPct": 3, "breakevenFloorPct": -0.5, "minHoldBars": 4,
+        },
+    },
 }
 
 
@@ -178,6 +201,8 @@ def compare(name, ts, py) -> list[str]:
     for i, (a, b) in enumerate(zip(ts["trades"], py["trades"])):
         if abs(a - b) > TOL:
             diffs.append(f"[{name}] trade[{i}]: TS={a} PY={b}")
+    if ts.get("holdBars") != py.get("holdBars"):
+        diffs.append(f"[{name}] holdBars: TS={ts.get('holdBars')} PY={py.get('holdBars')}")
     if abs(ts["maxDrawdown"] - py["maxDrawdown"]) > TOL:
         diffs.append(f"[{name}] maxDrawdown: TS={ts['maxDrawdown']} PY={py['maxDrawdown']}")
     if ts["drawdownDuration"] != py["drawdownDuration"]:

@@ -36,6 +36,12 @@ export interface RiskBlock {
   takeProfitPct: number;
   trailingStopPct?: number; // optional trailing stop from peak-since-entry
   maxHoldBars?: number; // optional time-based exit
+  // ---- Phase 1 adaptive-exit fields (system-default when omitted; see EXIT_DEFAULTS) ----
+  takeProfitMode?: 'hard' | 'soft'; // 'hard' books at target; 'soft' rides past it under a tight trail
+  breakevenTriggerPct?: number; // once peak gain >= this, the profit floor arms
+  breakevenFloorPct?: number; // ...and the trade may not fall back below this return (0 = breakeven)
+  minHoldBars?: number; // rule-based exit can't fire before this many bars (whipsaw guard)
+  postTargetTrailPct?: number; // in soft mode, trail distance off the peak once the target is reached
 }
 
 export interface StrategyIR {
@@ -76,6 +82,11 @@ export const StrategyIRSchema = z.object({
     takeProfitPct: z.number().min(0.1).max(50),
     trailingStopPct: z.number().min(0.1).max(50).optional(),
     maxHoldBars: z.number().int().min(1).max(5000).optional(),
+    takeProfitMode: z.enum(['hard', 'soft']).optional(),
+    breakevenTriggerPct: z.number().min(0.1).max(50).optional(),
+    breakevenFloorPct: z.number().min(-20).max(20).optional(),
+    minHoldBars: z.number().int().min(0).max(500).optional(),
+    postTargetTrailPct: z.number().min(0.1).max(50).optional(),
   }),
 });
 
@@ -233,13 +244,45 @@ export function countIRParameters(ir: StrategyIR): number {
 }
 
 /**
+ * System-level profit-protection policy (Phase 1 adaptive-exit redesign). resolveIR injects these
+ * into every strategy's risk block when the field is absent, so a generated strategy can never ship
+ * without downside/whipsaw protection — and the AI is not asked to (and cannot forget to) set them.
+ * They are risk hygiene, not alpha knobs, so they are NOT counted by countIRParameters. MUST stay
+ * identical to EXIT_DEFAULTS in apps/worker-py/worker/strategy/dsl/ir.py.
+ */
+export const EXIT_DEFAULTS = {
+  takeProfitMode: 'soft' as 'hard' | 'soft', // ride past the target under a tight trail (no hard profit cap)
+  breakevenTriggerPct: 2.0, // once peak gain >= 2%, arm the profit floor...
+  breakevenFloorPct: 0.0, // ...so the trade can't fall back below breakeven (winner can't become loser)
+  minHoldBars: 2, // rule-based exit can't fire before 2 bars (kills same-bar whipsaws)
+  postTargetTrailPct: 2.0, // soft mode: trail 2% off the peak once the target is reached
+};
+
+/** Fill in any unset profit-protection fields with the system defaults (non-destructive). */
+export function applyExitDefaults(ir: StrategyIR): StrategyIR {
+  const r = ir.risk;
+  return {
+    ...ir,
+    risk: {
+      ...r,
+      takeProfitMode: r.takeProfitMode ?? EXIT_DEFAULTS.takeProfitMode,
+      breakevenTriggerPct: r.breakevenTriggerPct ?? EXIT_DEFAULTS.breakevenTriggerPct,
+      breakevenFloorPct: r.breakevenFloorPct ?? EXIT_DEFAULTS.breakevenFloorPct,
+      minHoldBars: r.minHoldBars ?? EXIT_DEFAULTS.minHoldBars,
+      postTargetTrailPct: r.postTargetTrailPct ?? EXIT_DEFAULTS.postTargetTrailPct,
+    },
+  };
+}
+
+/**
  * Resolve any strategy params blob to a validated IR: a legacy indicatorConfig blob is
- * auto-translated; a rule-tree blob is validated as-is. Returns null when the result isn't a
- * valid, executable tree (caller should then treat the strategy as producing no trades).
+ * auto-translated; a rule-tree blob is validated as-is; then system profit-protection defaults are
+ * injected. Returns null when the result isn't a valid, executable tree (caller should then treat
+ * the strategy as producing no trades).
  */
 export function resolveIR(params: any): StrategyIR | null {
   const ir = isLegacyParams(params) ? legacyToIR(params) : (params as StrategyIR);
-  return validateIR(ir).length === 0 ? ir : null;
+  return validateIR(ir).length === 0 ? applyExitDefaults(ir) : null;
 }
 
 /**
