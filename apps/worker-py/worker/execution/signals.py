@@ -43,6 +43,13 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
     ir = resolve_ir(live_strategy["parametersJson"])
     if not ir:
         return "HOLD"
+    if ir.get("direction") == "short":
+        # Short strategies are fully backtestable/promotable, but live short EXECUTION needs the
+        # futures order path (Phase 4b). Until then the live loop stays flat on them rather than
+        # placing a wrong-direction long order.
+        log.warning("Live strategy %s is a SHORT strategy; live short execution is not yet wired "
+                    "(Phase 4b). Holding.", live_strategy.get("id"))
+        return "HOLD"
 
     warmup = warmup_bars(ir)
     need = max(warmup * 5 + 20, 300)
@@ -71,13 +78,20 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
                 entry_index = k
                 break
     bars_held = max(0, i - entry_index)
-    peak_price = entry_price
+    # Favorable extreme since entry: highest HIGH for a long, lowest LOW for a short.
+    is_short = ir.get("direction") == "short"
+    extreme_price = entry_price
     for k in range(entry_index, i + 1):
-        hi = candles[k].get("high", candles[k]["close"])
-        if hi > peak_price:
-            peak_price = hi
+        if is_short:
+            lo = candles[k].get("low", candles[k]["close"])
+            if lo < extreme_price:
+                extreme_price = lo
+        else:
+            hi = candles[k].get("high", candles[k]["close"])
+            if hi > extreme_price:
+                extreme_price = hi
 
-    reason = exit_reason(ir, candles, i, {"entryPrice": entry_price, "barsHeld": bars_held, "peakPrice": peak_price})
+    reason = exit_reason(ir, candles, i, {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price})
     return "SELL" if reason else "HOLD"
 
 

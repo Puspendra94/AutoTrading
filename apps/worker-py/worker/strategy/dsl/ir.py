@@ -255,6 +255,8 @@ def validate_ir(ir: Any) -> list[str]:
     errs: list[str] = []
     if not ir.get("strategyName"):
         errs.append("strategyName is required")
+    if "direction" in ir and ir["direction"] is not None and ir["direction"] not in ("long", "short"):
+        errs.append("direction must be long|short")
     for key in ("entry", "exit"):
         if key not in ir:
             errs.append(f"{key} is required")

@@ -88,6 +88,15 @@ function seriesForOperand(o: Operand, s: ind.Series, cache: Cache): number[] {
 
 const fin = (x: number) => Number.isFinite(x);
 
+// ---- Direction-aware fills / P&L / extreme (Phase 4). SHORT sells to open, buys to close. ----
+const entryFill = (dir: string, price: number) => price * (dir === 'short' ? 0.9995 : 1.0005);
+const exitFill = (dir: string, price: number) => price * (dir === 'short' ? 1.0005 : 0.9995);
+const netReturn = (dir: string, entry: number, exit: number) =>
+  (dir === 'short' ? (entry - exit) / entry : (exit - entry) / entry) - 0.0015; // 0.15% round-trip fee
+/** Track the favorable extreme: trough (min) for a short, peak (max) for a long. */
+const betterExtreme = (dir: string, extreme: number, price: number) =>
+  dir === 'short' ? (price < extreme ? price : extreme) : price > extreme ? price : extreme;
+
 function evalCondition(c: Condition, s: ind.Series, cache: Cache, i: number): boolean {
   switch (c.op) {
     case 'and': return c.conditions.every((sub) => evalCondition(sub, s, cache, i));
@@ -132,7 +141,7 @@ export function exitReason(
   ir: StrategyIR,
   candles: Candle[],
   i: number,
-  ctx: { entryPrice: number; barsHeld: number; peakPrice: number },
+  ctx: { entryPrice: number; barsHeld: number; extremePrice: number },
 ): string | null {
   return exitDecision(ir, buildSeries(candles), new Map(), i, ctx);
 }
@@ -150,10 +159,11 @@ export function simulateFromIR(candles: Candle[], ir: StrategyIR): TradeSimResul
   const cache: Cache = new Map();
   const warmup = warmupBars(ir);
 
-  let position: 'NONE' | 'LONG' = 'NONE';
+  const direction = ir.direction ?? 'long';
+  let position: 'NONE' | 'OPEN' = 'NONE';
   let entryPrice = 0;
   let barsHeld = 0;
-  let peakPrice = 0;
+  let extremePrice = 0;
   let equity = 10000;
   let peakEquity = equity;
   let maxDrawdown = 0;
@@ -177,18 +187,18 @@ export function simulateFromIR(candles: Candle[], ir: StrategyIR): TradeSimResul
 
     if (position === 'NONE') {
       if (evalCondition(ir.entry, s, cache, i)) {
-        position = 'LONG';
-        entryPrice = price * 1.0005; // 0.05% entry slippage
+        position = 'OPEN';
+        entryPrice = entryFill(direction, price); // 0.05% entry slippage (buy for long, sell for short)
         barsHeld = 0;
-        peakPrice = price;
+        extremePrice = price;
       }
     } else {
       barsHeld++;
-      if (price > peakPrice) peakPrice = price;
-      const reason = exitDecision(ir, s, cache, i, { entryPrice, barsHeld, peakPrice });
+      extremePrice = betterExtreme(direction, extremePrice, price);
+      const reason = exitDecision(ir, s, cache, i, { entryPrice, barsHeld, extremePrice });
       if (reason) {
-        const exitPrice = price * 0.9995; // 0.05% exit slippage
-        const netReturnPct = (exitPrice - entryPrice) / entryPrice - 0.0015; // 0.15% round-trip fee
+        const exitP = exitFill(direction, price); // 0.05% exit slippage
+        const netReturnPct = netReturn(direction, entryPrice, exitP); // incl. 0.15% round-trip fee
         equity += equity * netReturnPct;
         trades.push(netReturnPct);
         holdBars.push(barsHeld);
@@ -206,14 +216,26 @@ function exitDecision(
   s: ind.Series,
   cache: Cache,
   i: number,
-  ctx: { entryPrice: number; barsHeld: number; peakPrice: number },
+  ctx: { entryPrice: number; barsHeld: number; extremePrice: number },
 ): string | null {
-  // Adaptive exit ladder (Phase 1). Deterministic and fully backtestable; a live AI overlay
-  // (Phase 2) may only TIGHTEN this, never loosen it. Mirrors _exit_decision in interpreter.py.
+  // Adaptive exit ladder (Phase 1) — direction-aware (Phase 4). Deterministic and fully
+  // backtestable; a live AI overlay (Phase 2) may only TIGHTEN this. `extremePrice` is the
+  // peak-since-entry for a long, the trough-since-entry for a short. Mirrors _exit_decision in
+  // interpreter.py.
   const price = s.close[i];
-  const { entryPrice, barsHeld, peakPrice } = ctx;
-  const returnPct = (price - entryPrice) / entryPrice;
-  const peakReturn = peakPrice > 0 ? (peakPrice - entryPrice) / entryPrice : returnPct;
+  const { entryPrice, barsHeld, extremePrice } = ctx;
+  const isShort = ir.direction === 'short';
+  // Short profits when price FALLS; the favorable extreme is the trough and the trailing stop is
+  // triggered by an adverse RISE off it.
+  const returnPct = isShort ? (entryPrice - price) / entryPrice : (price - entryPrice) / entryPrice;
+  const extremeReturn =
+    extremePrice > 0
+      ? isShort
+        ? (entryPrice - extremePrice) / entryPrice
+        : (extremePrice - entryPrice) / entryPrice
+      : returnPct;
+  const adverseFromExtreme =
+    extremePrice > 0 ? (isShort ? (price - extremePrice) / extremePrice : (extremePrice - price) / extremePrice) : 0;
   const risk = ir.risk;
 
   // 1. Hard stop-loss — absolute safety backstop, never gated.
@@ -225,7 +247,7 @@ function exitDecision(
   //    Absent trigger => off (preserves pre-DSL parity for raw IRs that never went through resolve).
   if (risk.breakevenTriggerPct != null) {
     const beFloor = risk.breakevenFloorPct ?? 0;
-    if (peakReturn >= risk.breakevenTriggerPct / 100 && returnPct <= beFloor / 100) return 'Profit floor';
+    if (extremeReturn >= risk.breakevenTriggerPct / 100 && returnPct <= beFloor / 100) return 'Profit floor';
   }
 
   // 3. Take-profit target. hard = book immediately; soft = ride past it under a tight trail (#4).
@@ -233,16 +255,15 @@ function exitDecision(
   const tpMode = risk.takeProfitMode ?? 'hard';
   if (returnPct >= risk.takeProfitPct / 100 && tpMode === 'hard') return 'Take profit';
 
-  // 4. Trailing stop off the peak. The strategy's own trail (if any) is always active; in soft-TP
-  //    mode a tighter post-target trail kicks in once the peak has reached the target.
+  // 4. Trailing stop off the favorable extreme. The strategy's own trail (if any) is always active;
+  //    in soft-TP mode a tighter post-target trail kicks in once the extreme has reached the target.
   let effTrail = risk.trailingStopPct ?? null;
-  if (tpMode === 'soft' && peakReturn >= risk.takeProfitPct / 100) {
+  if (tpMode === 'soft' && extremeReturn >= risk.takeProfitPct / 100) {
     const postTrail = risk.postTargetTrailPct ?? 2.0;
     effTrail = effTrail == null ? postTrail : Math.min(effTrail, postTrail);
   }
-  if (effTrail != null && peakPrice > 0) {
-    const drop = (peakPrice - price) / peakPrice;
-    if (drop >= effTrail / 100) return 'Trailing stop';
+  if (effTrail != null && extremePrice > 0) {
+    if (adverseFromExtreme >= effTrail / 100) return 'Trailing stop';
   }
 
   // 5. Time-based max hold.
@@ -264,28 +285,31 @@ export function generateSignalsFromIR(candles: Candle[], ir: StrategyIR): IRSign
   const warmup = warmupBars(ir);
   const times = candles.map((c) => Math.floor(new Date(c.timestamp).getTime() / 1000));
 
-  let position: 'NONE' | 'LONG' = 'NONE';
+  const direction = ir.direction ?? 'long';
+  const openSide = direction === 'short' ? 'sell' : 'buy'; // short opens by selling
+  const closeSide = direction === 'short' ? 'buy' : 'sell'; // ...and closes by buying back
+  let position: 'NONE' | 'OPEN' = 'NONE';
   let entryPrice = 0;
   let barsHeld = 0;
-  let peakPrice = 0;
+  let extremePrice = 0;
   for (let i = warmup; i < candles.length; i++) {
     const price = s.close[i];
     if (!Number.isFinite(price) || !Number.isFinite(times[i])) continue;
     if (position === 'NONE') {
       if (evalCondition(ir.entry, s, cache, i)) {
-        position = 'LONG';
+        position = 'OPEN';
         entryPrice = price;
         barsHeld = 0;
-        peakPrice = price;
-        signals.push({ time: times[i], side: 'buy', price, reason: 'Entry rule' });
+        extremePrice = price;
+        signals.push({ time: times[i], side: openSide, price, reason: 'Entry rule' });
       }
     } else {
       barsHeld++;
-      if (price > peakPrice) peakPrice = price;
-      const reason = exitDecision(ir, s, cache, i, { entryPrice, barsHeld, peakPrice });
+      extremePrice = betterExtreme(direction, extremePrice, price);
+      const reason = exitDecision(ir, s, cache, i, { entryPrice, barsHeld, extremePrice });
       if (reason) {
         position = 'NONE';
-        signals.push({ time: times[i], side: 'sell', price, reason });
+        signals.push({ time: times[i], side: closeSide, price, reason });
       }
     }
   }
@@ -304,30 +328,32 @@ export function generateSignalsFromIR(candles: Candle[], ir: StrategyIR): IRSign
  * of sync with the strategy's own signals. Returns 'LONG' when the strategy would currently be
  * holding, else 'NONE'.
  */
-export function intendedPositionState(ir: StrategyIR, candles: Candle[]): 'NONE' | 'LONG' {
+export function intendedPositionState(ir: StrategyIR, candles: Candle[]): 'NONE' | 'LONG' | 'SHORT' {
   const s = buildSeries(candles);
   const cache: Cache = new Map();
   const warmup = warmupBars(ir);
   if (candles.length <= warmup) return 'NONE';
 
-  let position: 'NONE' | 'LONG' = 'NONE';
+  const direction = ir.direction ?? 'long';
+  const holdingState: 'LONG' | 'SHORT' = direction === 'short' ? 'SHORT' : 'LONG';
+  let position: 'NONE' | 'LONG' | 'SHORT' = 'NONE';
   let entryPrice = 0;
   let barsHeld = 0;
-  let peakPrice = 0;
+  let extremePrice = 0;
   for (let i = warmup; i < candles.length; i++) {
     const price = s.close[i];
     if (!Number.isFinite(price)) continue;
     if (position === 'NONE') {
       if (evalCondition(ir.entry, s, cache, i)) {
-        position = 'LONG';
+        position = holdingState;
         entryPrice = price;
         barsHeld = 0;
-        peakPrice = price;
+        extremePrice = price;
       }
     } else {
       barsHeld++;
-      if (price > peakPrice) peakPrice = price;
-      if (exitDecision(ir, s, cache, i, { entryPrice, barsHeld, peakPrice })) {
+      extremePrice = betterExtreme(direction, extremePrice, price);
+      if (exitDecision(ir, s, cache, i, { entryPrice, barsHeld, extremePrice })) {
         position = 'NONE';
       }
     }

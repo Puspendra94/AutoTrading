@@ -14,8 +14,11 @@ import { z } from 'zod';
 export const StrategyGenSchema = z.object({
   strategyName: z.string().describe('Short human-readable name for this strategy'),
   reasoning: z.string().optional().describe('Brief rationale, tied to the lessons and the market'),
-  entry: z.any().describe('Condition tree that, when true and flat, opens a long position'),
-  exit: z.any().describe('Condition tree that closes the open long (the risk block also applies)'),
+  // Optional; futures markets only. 'short' sells to open / buys to close (profits when price falls).
+  // Omit or 'long' on spot markets (long-only). Rejected by validateIR on spot in the caller.
+  direction: z.enum(['long', 'short']).optional().describe("'long' (default) or 'short' (futures markets only)"),
+  entry: z.any().describe('Condition tree that, when true and flat, opens the position'),
+  exit: z.any().describe('Condition tree that closes the open position (the risk block also applies)'),
   risk: z.any().describe('{stopLossPct, takeProfitPct, and optionally trailingStopPct, maxHoldBars}'),
 });
 

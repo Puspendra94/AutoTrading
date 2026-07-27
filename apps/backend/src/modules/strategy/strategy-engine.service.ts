@@ -123,9 +123,17 @@ export class StrategyEngineService {
 
     const latestPrice = candles.length > 0 ? Number(candles[candles.length - 1].close) : 0;
     const paramBudget = Number((effectivePolicy as any).maxParameterCount ?? activePolicy.maxParameterCount ?? 8);
+    // Short strategies are only valid on futures markets; spot stays long-only (validateIR would
+    // reject a short on spot in the caller regardless, but steer the LLM correctly up front).
+    const allowShort = ticker.marketType?.name?.toLowerCase() === 'futures';
+    const directionClause = allowShort
+      ? `MARKET TYPE: FUTURES — you MAY compose a SHORT strategy instead of a long. To go short, set "direction":"short": "entry" then SELLS to open (the trade profits when price FALLS) and "exit" BUYS to close; stop-loss / take-profit / trailing / profit-floor all mirror automatically. In a clear downtrend a short is usually better than sitting flat. For a long, set "direction":"long" or omit it — pick whichever the market and lessons favor.`
+      : `MARKET TYPE: SPOT — LONG ONLY. Do NOT set "direction":"short" (you can only buy then sell).`;
     const summaryPrompt = `Design an automated trading strategy for ${ticker.symbol} (Interval: ${evalInterval}, Latest Price: ${latestPrice}).
 
 ${STRATEGY_GRAMMAR_PROMPT}
+
+${directionClause}
 
 Parameter budget for THIS strategy: at most ${paramBudget} distinct tunable knobs.
 Timeframe: size indicator periods and stop/target to a ${evalInterval} bar — give trades room for a real multi-bar swing rather than reacting to single-bar noise. Prioritize a positive out-of-sample Sharpe (>= 1) and profit factor (>= 1.3) over trade frequency.
@@ -179,6 +187,15 @@ Respond with strategyName, reasoning, and the entry, exit, and risk fields (JSON
       if (!ir) {
         this.logger.warn(
           `Strategy attempt ${attempt}/${MAX_ATTEMPTS} for ticker ${tickerId} produced an invalid rule tree. Discarding.`,
+        );
+        lastParams = llmRes.data;
+        continue;
+      }
+      if (ir.direction === 'short' && !allowShort) {
+        // A short on a spot market is invalid — discard and retry rather than promote something
+        // that could never be executed on this venue.
+        this.logger.warn(
+          `Strategy attempt ${attempt}/${MAX_ATTEMPTS} for ticker ${tickerId} proposed a SHORT on a non-futures market. Discarding.`,
         );
         lastParams = llmRes.data;
         continue;
@@ -546,6 +563,13 @@ Respond in JSON with EXIT or HOLD.`;
       this.logger.warn(`Live strategy ${liveStrategy.id} has invalid params (not a valid rule tree); holding.`);
       return 'HOLD';
     }
+    if (ir.direction === 'short') {
+      // Short strategies are fully backtestable/promotable, but live short EXECUTION needs the
+      // futures order path (Phase 4b). Until then the live loop stays flat rather than placing a
+      // wrong-direction long order.
+      this.logger.warn(`Live strategy ${liveStrategy.id} is a SHORT strategy; live short execution is not yet wired (Phase 4b). Holding.`);
+      return 'HOLD';
+    }
 
     // Evaluate on the SAME timeframe the strategy was backtested/promoted on
     // (STRATEGY_EVAL_INTERVAL, aggregated from the 1m base) — not raw 1m, which would fire a
@@ -587,13 +611,14 @@ Respond in JSON with EXIT or HOLD.`;
       if (candleTime(candles[k]) <= entryTime) { entryIndex = k; break; }
     }
     const barsHeld = Math.max(0, i - entryIndex);
-    let peakPrice = entryPrice;
+    // Favorable extreme since entry (long path only here — shorts return above): highest HIGH.
+    let extremePrice = entryPrice;
     for (let k = entryIndex; k <= i; k++) {
       const hi = Number((candles[k] as any).high ?? (candles[k] as any).close);
-      if (hi > peakPrice) peakPrice = hi;
+      if (hi > extremePrice) extremePrice = hi;
     }
 
-    const reason = exitReason(ir, candles as any, i, { entryPrice, barsHeld, peakPrice });
+    const reason = exitReason(ir, candles as any, i, { entryPrice, barsHeld, extremePrice });
     return reason ? 'SELL' : 'HOLD';
   }
 
@@ -828,9 +853,11 @@ Respond in JSON with your decision.`;
         return null;
       }
     }
+    const direction = data?.direction ?? body?.direction;
     const ir = {
       strategyName: data?.strategyName || 'Generated Strategy',
       reasoning: data?.reasoning || '',
+      ...(direction ? { direction } : {}),
       entry: body?.entry,
       exit: body?.exit,
       risk: body?.risk,

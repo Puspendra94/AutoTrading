@@ -47,8 +47,11 @@ export interface RiskBlock {
 export interface StrategyIR {
   strategyName: string;
   reasoning: string;
-  entry: Condition; // go long when true and flat
-  exit: Condition; // close long when true and in a position (in addition to the risk block)
+  // long (default): entry opens a long, exit closes it. short (futures only): entry SELLS to open a
+  // short, exit BUYS to close; P&L, stop/target/trailing/floor all mirror. Spot stays long-only.
+  direction?: 'long' | 'short';
+  entry: Condition; // open the position when true and flat
+  exit: Condition; // close the position when true and in one (in addition to the risk block)
   risk: RiskBlock;
 }
 
@@ -75,6 +78,7 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
 export const StrategyIRSchema = z.object({
   strategyName: z.string().min(1),
   reasoning: z.string().default(''),
+  direction: z.enum(['long', 'short']).optional(),
   entry: ConditionSchema,
   exit: ConditionSchema,
   risk: z.object({

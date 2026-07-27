@@ -176,6 +176,25 @@ IRS = {
             "breakevenTriggerPct": 3, "breakevenFloorPct": -0.5, "minHoldBars": 4,
         },
     },
+    "short_ema_cross": {
+        # Phase 4 SHORT: sell to open when the fast EMA crosses BELOW the slow (downtrend), buy back
+        # when it crosses back above. Mirrored P&L / stop / target must match TS bar-for-bar.
+        "strategyName": "short EMA cross", "reasoning": "", "direction": "short",
+        "entry": {"op": "crossBelow", "left": ema(None, 10), "right": ema(None, 30)},
+        "exit": {"op": "crossAbove", "left": ema(None, 10), "right": ema(None, 30)},
+        "risk": {"stopLossPct": 3, "takeProfitPct": 6, "takeProfitMode": "hard"},
+    },
+    "short_soft_tp_floor": {
+        # SHORT with the full adaptive ladder: soft TP (ride the drop under a tight trail off the
+        # trough), profit floor, and min-hold. Exercises trough tracking + short trailing in both engines.
+        "strategyName": "short soft TP + floor", "reasoning": "", "direction": "short",
+        "entry": {"op": "lt", "left": close(), "right": ema(None, 50)},
+        "exit": {"op": "gt", "left": close(), "right": ema(None, 50)},
+        "risk": {
+            "stopLossPct": 4, "takeProfitPct": 8, "takeProfitMode": "soft",
+            "breakevenTriggerPct": 2.5, "breakevenFloorPct": 0, "minHoldBars": 3, "postTargetTrailPct": 2,
+        },
+    },
 }
 
 

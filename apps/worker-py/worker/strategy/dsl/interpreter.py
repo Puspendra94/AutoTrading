@@ -80,6 +80,27 @@ def _fin(x: float) -> bool:
     return math.isfinite(x)
 
 
+# ---- Direction-aware fills / P&L / extreme (Phase 4). SHORT sells to open, buys to close. ----
+def _entry_fill(direction: str, price: float) -> float:
+    return price * (0.9995 if direction == "short" else 1.0005)
+
+
+def _exit_fill(direction: str, price: float) -> float:
+    return price * (1.0005 if direction == "short" else 0.9995)
+
+
+def _net_return(direction: str, entry_price: float, exit_price: float) -> float:
+    gross = (entry_price - exit_price) / entry_price if direction == "short" else (exit_price - entry_price) / entry_price
+    return gross - 0.0015  # 0.15% round-trip fee
+
+
+def _better_extreme(direction: str, extreme: float, price: float) -> float:
+    """Track the favorable extreme: trough (min) for a short, peak (max) for a long."""
+    if direction == "short":
+        return price if price < extreme else extreme
+    return price if price > extreme else extreme
+
+
 def eval_condition(c: dict, s: dict, cache: dict, i: int) -> bool:
     op = c["op"]
     if op == "and":
@@ -109,14 +130,25 @@ def eval_condition(c: dict, s: dict, cache: dict, i: int) -> bool:
 
 
 def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict) -> Optional[str]:
-    """Adaptive exit ladder (Phase 1). Deterministic and fully backtestable; a live AI overlay
-    (Phase 2) may only TIGHTEN this, never loosen it. Mirrors exitDecision in interpreter.ts."""
+    """Adaptive exit ladder (Phase 1) — direction-aware (Phase 4). Deterministic and fully
+    backtestable; a live AI overlay (Phase 2) may only TIGHTEN this, never loosen it. `extremePrice`
+    is the peak-since-entry for a long, the trough-since-entry for a short. Mirrors exitDecision in
+    interpreter.ts."""
     price = s["close"][i]
     entry_price = ctx["entryPrice"]
     bars_held = ctx["barsHeld"]
-    peak_price = ctx["peakPrice"]
-    return_pct = (price - entry_price) / entry_price
-    peak_return = (peak_price - entry_price) / entry_price if peak_price > 0 else return_pct
+    extreme_price = ctx["extremePrice"]
+    is_short = ir.get("direction") == "short"
+    if is_short:
+        # Short profits when price FALLS; the favorable extreme is the trough, and the trailing
+        # stop is triggered by an adverse RISE off that trough.
+        return_pct = (entry_price - price) / entry_price
+        extreme_return = (entry_price - extreme_price) / entry_price if extreme_price > 0 else return_pct
+        adverse_from_extreme = (price - extreme_price) / extreme_price if extreme_price > 0 else 0.0
+    else:
+        return_pct = (price - entry_price) / entry_price
+        extreme_return = (extreme_price - entry_price) / entry_price if extreme_price > 0 else return_pct
+        adverse_from_extreme = (extreme_price - price) / extreme_price if extreme_price > 0 else 0.0
     risk = ir["risk"]
 
     # 1. Hard stop-loss — absolute safety backstop, never gated.
@@ -131,7 +163,7 @@ def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict) -> Optiona
     if be_trigger is not None:
         be_floor = risk.get("breakevenFloorPct")
         be_floor = 0.0 if be_floor is None else be_floor
-        if peak_return >= be_trigger / 100 and return_pct <= be_floor / 100:
+        if extreme_return >= be_trigger / 100 and return_pct <= be_floor / 100:
             return "Profit floor"
 
     # 3. Take-profit target. hard = book immediately; soft = ride past it under a tight trail (#4).
@@ -140,16 +172,15 @@ def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict) -> Optiona
     if return_pct >= risk["takeProfitPct"] / 100 and tp_mode == "hard":
         return "Take profit"
 
-    # 4. Trailing stop off the peak. The strategy's own trail (if any) is always active; in soft-TP
-    #    mode a tighter post-target trail kicks in once the peak has reached the target.
+    # 4. Trailing stop off the favorable extreme. The strategy's own trail (if any) is always active;
+    #    in soft-TP mode a tighter post-target trail kicks in once the extreme has reached the target.
     eff_trail = risk.get("trailingStopPct")
-    if tp_mode == "soft" and peak_return >= risk["takeProfitPct"] / 100:
+    if tp_mode == "soft" and extreme_return >= risk["takeProfitPct"] / 100:
         post_trail = risk.get("postTargetTrailPct")
         post_trail = 2.0 if post_trail is None else post_trail
         eff_trail = post_trail if eff_trail is None else min(eff_trail, post_trail)
-    if eff_trail is not None and peak_price > 0:
-        drop = (peak_price - price) / peak_price
-        if drop >= eff_trail / 100:
+    if eff_trail is not None and extreme_price > 0:
+        if adverse_from_extreme >= eff_trail / 100:
             return "Trailing stop"
 
     # 5. Time-based max hold.
@@ -182,10 +213,11 @@ def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
     cache: dict = {}
     warmup = warmup_bars(ir)
 
+    direction = ir.get("direction") or "long"
     position = "NONE"
     entry_price = 0.0
     bars_held = 0
-    peak_price = 0.0
+    extreme_price = 0.0
     equity = 10000.0
     peak_equity = equity
     max_drawdown = 0.0
@@ -211,19 +243,18 @@ def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
 
         if position == "NONE":
             if eval_condition(ir["entry"], s, cache, i):
-                position = "LONG"
-                entry_price = price * 1.0005
+                position = "OPEN"
+                entry_price = _entry_fill(direction, price)
                 bars_held = 0
-                peak_price = price
+                extreme_price = price
         else:
             bars_held += 1
-            if price > peak_price:
-                peak_price = price
+            extreme_price = _better_extreme(direction, extreme_price, price)
             reason = _exit_decision(ir, s, cache, i,
-                                    {"entryPrice": entry_price, "barsHeld": bars_held, "peakPrice": peak_price})
+                                    {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price})
             if reason:
-                exit_price = price * 0.9995
-                net_return_pct = (exit_price - entry_price) / entry_price - 0.0015
+                exit_price = _exit_fill(direction, price)
+                net_return_pct = _net_return(direction, entry_price, exit_price)
                 equity += equity * net_return_pct
                 trades.append(net_return_pct)
                 hold_bars.append(bars_held)
@@ -237,33 +268,35 @@ def intended_position_state(ir: dict, candles: list[dict]) -> str:
     backtest uses (entry edge in, rule/risk exit out). The live loop reconciles real exposure to this
     rather than only reacting to a fresh entry edge, so activating (or restarting mid-trade) a
     strategy that is already signalling long opens the position to MATCH it instead of sitting flat
-    until the next crossover. Mirrors interpreter.ts::intendedPositionState. Returns 'LONG' or 'NONE'."""
+    until the next crossover. Mirrors interpreter.ts::intendedPositionState. Returns the direction it
+    should currently be holding ('LONG'/'SHORT') or 'NONE'."""
     s = build_series(candles)
     cache: dict = {}
     warmup = warmup_bars(ir)
     if len(candles) <= warmup:
         return "NONE"
 
+    direction = ir.get("direction") or "long"
+    holding_state = "SHORT" if direction == "short" else "LONG"
     position = "NONE"
     entry_price = 0.0
     bars_held = 0
-    peak_price = 0.0
+    extreme_price = 0.0
     for i in range(warmup, len(candles)):
         price = s["close"][i]
         if not math.isfinite(price):
             continue
         if position == "NONE":
             if eval_condition(ir["entry"], s, cache, i):
-                position = "LONG"
+                position = holding_state
                 entry_price = price
                 bars_held = 0
-                peak_price = price
+                extreme_price = price
         else:
             bars_held += 1
-            if price > peak_price:
-                peak_price = price
+            extreme_price = _better_extreme(direction, extreme_price, price)
             if _exit_decision(ir, s, cache, i,
-                              {"entryPrice": entry_price, "barsHeld": bars_held, "peakPrice": peak_price}):
+                              {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price}):
                 position = "NONE"
     return position
 
@@ -275,28 +308,30 @@ def generate_signals_from_ir(candles: list[dict], ir: dict) -> list[dict]:
     warmup = warmup_bars(ir)
     times = [math.floor(int(c["timestamp"]) / 1000) for c in candles]
 
+    direction = ir.get("direction") or "long"
+    open_side = "sell" if direction == "short" else "buy"   # short opens by selling
+    close_side = "buy" if direction == "short" else "sell"  # ...and closes by buying back
     position = "NONE"
     entry_price = 0.0
     bars_held = 0
-    peak_price = 0.0
+    extreme_price = 0.0
     for i in range(warmup, len(candles)):
         price = s["close"][i]
         if not math.isfinite(price):
             continue
         if position == "NONE":
             if eval_condition(ir["entry"], s, cache, i):
-                position = "LONG"
+                position = "OPEN"
                 entry_price = price
                 bars_held = 0
-                peak_price = price
-                signals.append({"time": times[i], "side": "buy", "price": price, "reason": "Entry rule"})
+                extreme_price = price
+                signals.append({"time": times[i], "side": open_side, "price": price, "reason": "Entry rule"})
         else:
             bars_held += 1
-            if price > peak_price:
-                peak_price = price
+            extreme_price = _better_extreme(direction, extreme_price, price)
             reason = _exit_decision(ir, s, cache, i,
-                                    {"entryPrice": entry_price, "barsHeld": bars_held, "peakPrice": peak_price})
+                                    {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price})
             if reason:
                 position = "NONE"
-                signals.append({"time": times[i], "side": "sell", "price": price, "reason": reason})
+                signals.append({"time": times[i], "side": close_side, "price": price, "reason": reason})
     return signals
