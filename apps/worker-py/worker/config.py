@@ -113,6 +113,11 @@ class Config:
     # in-profit candle. Mirrors the backend's HYBRID_EXIT_AI.
     hybrid_exit_ai: bool = os.getenv("HYBRID_EXIT_AI", "false").lower() in ("1", "true", "yes", "on")
 
+    # Consolidation Phase A: when 'worker', the worker consumes strategy:generate jobs from the API
+    # and runs strategy generation in-process (result pushed back over the websocket). 'backend'
+    # (default) leaves generation in the NestJS backend. Mirrors the backend's GENERATION_SOURCE.
+    generation_source: str = os.getenv("GENERATION_SOURCE", "backend")
+
     @property
     def dsn(self) -> str:
         return (

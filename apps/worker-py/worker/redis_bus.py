@@ -20,6 +20,8 @@ MARKET_TICK_CHANNEL = "market:tick"          # market-stream.service.ts
 JOBS_TRIGGER_CHANNEL = "jobs:trigger"        # internal-jobs-redis.consumer.ts
 STRATEGY_REGENERATE_CHANNEL = "strategy:regenerate"  # strategy-regenerate.consumer.ts
 POSITIONS_UPDATE_CHANNEL = "positions:update"  # market-stream.service.ts (worker owns execution)
+STRATEGY_GENERATE_CHANNEL = "strategy:generate"      # API -> worker: run a generation job
+STRATEGY_GENERATED_CHANNEL = "strategy:generated"    # worker -> API: generation result (bridged to WS)
 
 _client: redis.Redis | None = None
 

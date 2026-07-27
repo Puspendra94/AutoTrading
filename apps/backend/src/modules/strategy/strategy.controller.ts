@@ -1,8 +1,15 @@
-import { Controller, Get, Post, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, UseGuards, Inject } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { randomUUID } from 'crypto';
+import Redis from 'ioredis';
 import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
 import { AiLessonsService } from './ai-lessons.service';
+import { REDIS_PUBLISHER } from '../../common/redis/redis.module';
+import { publishJson } from '../../common/redis/redis-publish.util';
+import { config } from '../../config/configuration';
+
+const STRATEGY_GENERATE_CHANNEL = 'strategy:generate';
 
 @Controller('strategies')
 @UseGuards(AuthGuard('jwt'))
@@ -11,6 +18,7 @@ export class StrategyController {
     private readonly strategyEngineService: StrategyEngineService,
     private readonly performanceService: StrategyPerformanceService,
     private readonly aiLessonsService: AiLessonsService,
+    @Inject(REDIS_PUBLISHER) private readonly redis: Redis,
   ) {}
 
   @Get('ticker/:tickerId/lessons')
@@ -28,6 +36,20 @@ export class StrategyController {
     @Query('interval') interval?: string,
     @Query('skipGate') skipGate?: string,
   ) {
+    // GENERATION_SOURCE=worker: hand the job to the worker over Redis and return immediately; the
+    // result arrives on the websocket ('strategy_generation_complete'). Otherwise run it in-process
+    // (the original synchronous path).
+    if (config.generationSource === 'worker') {
+      const requestId = randomUUID();
+      publishJson(this.redis, STRATEGY_GENERATE_CHANNEL, {
+        requestId,
+        tickerId,
+        interval,
+        skipGate: skipGate === 'true',
+        reason: 'manual generation',
+      });
+      return { status: 'generating', requestId };
+    }
     return this.strategyEngineService.generateStrategyForTicker(tickerId, 'manual generation', interval, skipGate === 'true');
   }
 

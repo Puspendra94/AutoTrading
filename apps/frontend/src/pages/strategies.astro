@@ -62,6 +62,7 @@ import Layout from '../layouts/Layout.astro';
 
   <script>
     import { apiGet, apiPost, requireAuth, ApiError } from '../lib/api';
+    import { onGenerationComplete } from '../lib/ws';
     import { resolveBtcTicker } from '../lib/ticker';
 
     requireAuth();
@@ -211,6 +212,32 @@ import Layout from '../layouts/Layout.astro';
       const genBtn = $('genBtn') as HTMLButtonElement; genBtn.disabled = true;
       let cur = 0; paintStages(cur);
       const timer = setInterval(() => { if (cur < STAGES.length - 1) { cur++; paintStages(cur); } }, 1200);
+
+      // Render the final outcome — used by BOTH the synchronous (backend) result and the
+      // async (worker, over websocket) result, so the UX is identical either way.
+      const finishGen = async (res: any) => {
+        clearInterval(timer); paintStages(STAGES.length);
+        await loadStrategies();
+        (window as any).refreshLlmSpend?.(); (window as any).refreshActiveStrategy?.();
+        if (res && res.saved === false) {
+          $('genModal').hidden = true; genBtn.disabled = false;
+          const sh = res.evaluation ? ` (best Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)})` : '';
+          $('alphaError').hidden = false; $('alphaError').className = 'text-sm text-bear';
+          $('alphaError').textContent = (res.message || 'No generated strategy passed the evaluation gate.') + sh;
+          return;
+        }
+        if (res?.gateBypassed) {
+          const sh = res.evaluation ? ` (Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)}, ${res.evaluation.tradeCount} trades)` : '';
+          $('alphaError').hidden = false; $('alphaError').className = 'text-sm text-warn';
+          $('alphaError').textContent = `⚠ Promoted with the evaluation gate BYPASSED (testing)${sh}. It's live for exercising auto-trading, not a validated strategy.`;
+        }
+        setTimeout(() => { $('genModal').hidden = true; genBtn.disabled = false; }, 700);
+      };
+      const failGen = (msg: string) => {
+        clearInterval(timer); $('genModal').hidden = true; genBtn.disabled = false;
+        $('alphaError').hidden = false; $('alphaError').className = 'text-sm text-bear'; $('alphaError').textContent = msg;
+      };
+
       try {
         const interval = ($('genInterval') as HTMLSelectElement)?.value || '';
         const skipGate = ($('genSkipGate') as HTMLInputElement)?.checked;
@@ -218,30 +245,26 @@ import Layout from '../layouts/Layout.astro';
         if (interval) params.set('interval', interval);
         if (skipGate) params.set('skipGate', 'true');
         const qs = params.toString() ? `?${params.toString()}` : '';
-        const res = await apiPost<{ saved: boolean; attempts?: number; message?: string; evaluation?: any; gateBypassed?: boolean }>(`/strategies/ticker/${tickerId}/generate${qs}`);
-        clearInterval(timer); paintStages(STAGES.length);
-        await loadStrategies();
-        (window as any).refreshLlmSpend?.(); (window as any).refreshActiveStrategy?.();
-        // Gate-before-save: nothing is persisted unless a generated candidate clears the gate.
-        if (res && res.saved === false) {
-          $('genModal').hidden = true; genBtn.disabled = false;
-          const sh = res.evaluation ? ` (best Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)})` : '';
-          $('alphaError').hidden = false;
-          $('alphaError').className = 'text-sm text-bear';
-          $('alphaError').textContent = (res.message || 'No generated strategy passed the evaluation gate.') + sh;
+        const res = await apiPost<any>(`/strategies/ticker/${tickerId}/generate${qs}`);
+
+        // Async path (GENERATION_SOURCE=worker): the API returns {status:'generating', requestId}
+        // and the real result arrives over the websocket. Otherwise res IS the result (backend mode).
+        if (res && res.status === 'generating' && res.requestId) {
+          let done = false;
+          const off = onGenerationComplete((result) => {
+            if (result.requestId !== res.requestId || done) return;
+            done = true; clearTimeout(to); off(); finishGen(result);
+          });
+          const to = setTimeout(() => {
+            if (done) return; done = true; off();
+            failGen('Generation timed out (no result after 3 minutes). It may still be running — check the list shortly.');
+          }, 180000);
           return;
         }
-        if (res?.gateBypassed) {
-          const sh = res.evaluation ? ` (Sharpe ${Number(res.evaluation.sharpe).toFixed(2)}, PF ${Number(res.evaluation.profitFactor).toFixed(2)}, ${res.evaluation.tradeCount} trades)` : '';
-          $('alphaError').hidden = false;
-          $('alphaError').className = 'text-sm text-warn';
-          $('alphaError').textContent = `⚠ Promoted with the evaluation gate BYPASSED (testing)${sh}. It's live for exercising auto-trading, not a validated strategy.`;
-        }
-        setTimeout(() => { $('genModal').hidden = true; genBtn.disabled = false; }, 700);
+
+        await finishGen(res);
       } catch (err) {
-        clearInterval(timer); $('genModal').hidden = true; genBtn.disabled = false;
-        $('alphaError').hidden = false; $('alphaError').className = 'text-sm text-bear';
-        $('alphaError').textContent = err instanceof ApiError ? err.message : 'Strategy generation failed';
+        failGen(err instanceof ApiError ? err.message : 'Strategy generation failed');
       }
     }
     $('genBtn').addEventListener('click', generate);

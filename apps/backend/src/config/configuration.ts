@@ -54,6 +54,10 @@ export interface AppConfig {
 
   readonly liveStreamSource: LiveStreamSource;
   readonly liveExecutionSource: LiveExecutionSource;
+  // Where strategy GENERATION runs. 'backend' (default) = the in-process synchronous path.
+  // 'worker' = the API publishes a strategy:generate job to Redis, the worker generates, and the
+  // result is pushed back to the browser over the websocket. Consolidation Phase A (async UX).
+  readonly generationSource: 'backend' | 'worker';
   readonly historicalBackfillEnabled: boolean;
   // Phase 2 hybrid AI exit overlay: on a rules-mode strategy, when the deterministic ladder says
   // HOLD on a winning open position, consult the LLM on whether to book the profit early. Off by
@@ -176,6 +180,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
     liveStreamSource: str(env, 'LIVE_STREAM_SOURCE') === 'redis' ? 'redis' : 'internal',
     liveExecutionSource: str(env, 'LIVE_EXECUTION_SOURCE') === 'worker' ? 'worker' : 'backend',
+    generationSource: str(env, 'GENERATION_SOURCE') === 'worker' ? 'worker' : 'backend',
     // Enabled unless explicitly turned off.
     historicalBackfillEnabled: str(env, 'HISTORICAL_BACKFILL_ENABLED') !== 'false',
     hybridExitAi: str(env, 'HYBRID_EXIT_AI') === 'true',

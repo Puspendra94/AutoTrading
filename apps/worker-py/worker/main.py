@@ -103,12 +103,22 @@ async def main() -> None:
     else:
         log.info("Live ingestion disabled (LIVE_STREAM_ENABLED=false); backend still streams.")
 
+    # Consolidation Phase A: when the worker owns generation, consume strategy:generate jobs.
+    generate_task: asyncio.Task | None = None
+    if config.generation_source == "worker":
+        from .strategy.generate_consumer import run_generate_consumer
+
+        generate_task = asyncio.create_task(run_generate_consumer(stop))
+        log.info("Strategy generation owned by worker (consuming strategy:generate).")
+
     await stop.wait()
 
     log.info("Shutting down…")
     scheduler.shutdown(wait=False)
     if live_task is not None:
         await live_task
+    if generate_task is not None:
+        await generate_task
     from .redis_bus import close_redis
 
     await close_redis()

@@ -49,3 +49,20 @@ export function onAlertCreated(cb: (alert: any) => void) {
   getSocket().on('alert_created', cb);
   return () => getSocket().off('alert_created', cb);
 }
+
+export type GenerationResult = {
+  requestId: string;
+  tickerId?: string;
+  saved: boolean;
+  attempts?: number;
+  message?: string;
+  evaluation?: any;
+  strategyId?: string | null;
+  gateBypassed?: boolean;
+};
+
+// Async strategy generation (GENERATION_SOURCE=worker): the worker pushes the result here.
+export function onGenerationComplete(cb: (result: GenerationResult) => void) {
+  getSocket().on('strategy_generation_complete', cb);
+  return () => getSocket().off('strategy_generation_complete', cb);
+}

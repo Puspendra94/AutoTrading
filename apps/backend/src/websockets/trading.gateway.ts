@@ -60,6 +60,13 @@ export class TradingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     this.server.emit('alert_created', alert);
   }
 
+  /** Async strategy-generation result (consolidation Phase A) — the worker generated a strategy
+   * in the background; push the outcome to browsers so the Generate modal can resolve. */
+  broadcastGenerationComplete(result: any) {
+    if (!this.server) return;
+    this.server.emit('strategy_generation_complete', result);
+  }
+
   private async sendOpenPositionsStream(client: Socket) {
     const positions = await this.executionService.getOpenPositions();
     client.emit('live_positions_update', positions);
