@@ -38,21 +38,17 @@ export class StrategyController {
     @Query('interval') interval?: string,
     @Query('skipGate') skipGate?: string,
   ) {
-    // GENERATION_SOURCE=worker: hand the job to the worker over Redis and return immediately; the
-    // result arrives on the websocket ('strategy_generation_complete'). Otherwise run it in-process
-    // (the original synchronous path).
-    if (config.generationSource === 'worker') {
-      const requestId = randomUUID();
-      publishJson(this.redis, STRATEGY_GENERATE_CHANNEL, {
-        requestId,
-        tickerId,
-        interval,
-        skipGate: skipGate === 'true',
-        reason: 'manual generation',
-      });
-      return { status: 'generating', requestId };
-    }
-    return this.strategyEngineService.generateStrategyForTicker(tickerId, 'manual generation', interval, skipGate === 'true');
+    // The worker owns the strategy engine: hand the job to it over Redis and return immediately;
+    // the result arrives on the websocket ('strategy_generation_complete').
+    const requestId = randomUUID();
+    publishJson(this.redis, STRATEGY_GENERATE_CHANNEL, {
+      requestId,
+      tickerId,
+      interval,
+      skipGate: skipGate === 'true',
+      reason: 'manual generation',
+    });
+    return { status: 'generating', requestId };
   }
 
   @Get('ticker/:tickerId/active')
@@ -68,11 +64,8 @@ export class StrategyController {
   ) {
     const iv = interval || '15m';
     const lim = limit ? parseInt(limit, 10) : 500;
-    // Phase B: the worker owns the DSL engine — request the chart markers from it over Redis.
-    if (config.generationSource === 'worker') {
-      return this.signalsBridge.requestSignals(tickerId, iv, lim);
-    }
-    return this.strategyEngineService.getSignalsForTicker(tickerId, iv, lim);
+    // The worker owns the DSL engine — request the chart markers from it over Redis.
+    return this.signalsBridge.requestSignals(tickerId, iv, lim);
   }
 
   @Get('ticker/:tickerId/all')

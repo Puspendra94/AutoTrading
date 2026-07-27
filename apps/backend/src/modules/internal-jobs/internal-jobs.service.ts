@@ -103,9 +103,10 @@ export class InternalJobsService {
     return { warnings: warnings.length, summary };
   }
 
-  // Was StrategyReevaluationJob (@Cron EVERY_DAY_AT_1AM).
+  // Live-vs-backtest divergence check + regeneration now runs IN THE WORKER (consolidation Phase B,
+  // worker/strategy/divergence.py), driven by the worker's own scheduler — no backend work here.
   async strategyReevaluation() {
-    return this.strategyEngineService.runDivergenceCheckForAllLiveStrategies();
+    return { skipped: 'strategy reevaluation runs in the worker' };
   }
 
   // Was DataQualityMonitorJob (@Cron EVERY_6_HOURS).

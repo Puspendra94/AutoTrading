@@ -12,12 +12,10 @@ import { StrategyPerformance } from '../../entities/strategy-performance.entity'
 import { LlmModule } from '../llm/llm.module';
 import { MarketDataModule } from '../market-data/market-data.module';
 import { RiskExecutionModule } from '../risk-execution/risk-execution.module';
-import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
 import { StrategyController } from './strategy.controller';
 import { AiLessonsService } from './ai-lessons.service';
-import { StrategyRegenerateConsumer } from './strategy-regenerate.consumer';
 import { SignalsBridgeService } from './signals-bridge.service';
 
 @Module({
@@ -37,8 +35,8 @@ import { SignalsBridgeService } from './signals-bridge.service';
     MarketDataModule,
     RiskExecutionModule,
   ],
-  providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService, StrategyRegenerateConsumer, SignalsBridgeService],
+  providers: [StrategyEngineService, StrategyPerformanceService, AiLessonsService, SignalsBridgeService],
   controllers: [StrategyController],
-  exports: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService],
+  exports: [StrategyEngineService, StrategyPerformanceService, AiLessonsService],
 })
 export class StrategyModule {}

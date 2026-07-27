@@ -185,49 +185,9 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
       await this.marketDataService.upsertLiveCandle(tickerId, candle);
     }
 
-    // When the worker owns execution (Phase 3c-3), it runs mark-price / hard exits /
-    // evaluate+execute itself; this process must not, or orders would be placed twice.
-    if (this.liveExecutionSource === 'worker') return;
-
-    await this.updateOpenPositionsMarkPrice(tickerId, tick.close);
-
-    // Hard stop-loss / take-profit guardrail (Profile-configurable) — checked on every
-    // tick so a runaway loss is cut immediately, not only on candle close.
-    await this.executionService.enforceHardExits(tickerId, tick.close);
-
-    // Live trading loop (spec 2.6/4.4/10) — only evaluated on candle close, never on
-    // every intra-candle tick, so Mode A stays cheap and Mode B's per-decision LLM call
-    // isn't fired multiple times per candle. This is the actual autonomous-trading path;
-    // without it, a promoted LIVE strategy never places a trade on its own.
-    if (tick.isFinal) {
-      await this.evaluateAndExecute(tickerId, candle.close);
-    }
-  }
-
-  private async evaluateAndExecute(tickerId: string, closePrice: number) {
-    try {
-      const { signal, strategyId } = await this.strategyEngineService.evaluateLiveSignal(tickerId, { close: closePrice });
-      if (signal === 'HOLD') return;
-
-      if (signal === 'BUY') {
-        const result = await this.executionService.executeTradeSignal(tickerId, PositionSide.LONG, closePrice, strategyId);
-        if (result.status === 'REJECTED') {
-          this.logger.warn(`Live BUY signal rejected for ticker ${tickerId}: ${result.reason}`);
-        } else {
-          this.logger.log(`AUTO-TRADE: opened LONG on ticker ${tickerId} @ ${closePrice} (strategy ${strategyId}).`);
-        }
-      } else if (signal === 'SELL') {
-        const openPosition = await this.positionRepo.findOne({
-          where: { tickerId, strategyId, status: PositionStatus.OPEN },
-        });
-        if (openPosition) {
-          await this.executionService.closePosition(openPosition.id, closePrice);
-          this.logger.log(`AUTO-TRADE: closed LONG on ticker ${tickerId} @ ${closePrice} (strategy ${strategyId}).`);
-        }
-      }
-    } catch (err) {
-      this.logger.error(`Live signal evaluation/execution failed for ticker ${tickerId}: ${err.message}`);
-    }
+    // Execution (mark price / hard exits / evaluate+execute) is owned entirely by the Python worker
+    // (consolidation Phase B). The backend only ingests candles and fans ticks out to the frontend;
+    // it never evaluates strategies or places orders.
   }
 
   private async updateOpenPositionsMarkPrice(tickerId: string, lastPrice: number) {
