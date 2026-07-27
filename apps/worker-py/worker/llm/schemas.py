@@ -43,3 +43,12 @@ class LiveDecision(BaseModel):
 
     action: Literal["BUY", "SELL", "HOLD"] = Field(..., description="The trading action to take right now")
     reasoning: str = Field(..., description="Brief rationale for this decision")
+
+
+class ExitTightenDecision(BaseModel):
+    """Phase 2 hybrid AI exit overlay output (mirrors ExitTightenDecisionSchema). The AI may only
+    EXIT early to protect profit or HOLD to keep riding — it can never re-open or block a rules exit."""
+
+    action: Literal["EXIT", "HOLD"] = Field(
+        ..., description="EXIT to book the open position now (the move looks exhausted), or HOLD to keep riding the trend")
+    reasoning: str = Field(..., description="Brief rationale for this decision")

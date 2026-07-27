@@ -106,6 +106,13 @@ class Config:
     # the 1m base to this interval so what trades live matches what was backtested/promoted.
     strategy_eval_interval: str = os.getenv("STRATEGY_EVAL_INTERVAL", "1h")
 
+    # Phase 2 hybrid AI exit overlay: on a rules-mode (Mode A) strategy, when the deterministic
+    # ladder says HOLD on a WINNING open position, consult the LLM on whether the move looks
+    # exhausted and the profit should be booked early. The AI can only TIGHTEN (force an early
+    # exit), never veto a rules exit or open a position. Off by default — it costs one LLM call per
+    # in-profit candle. Mirrors the backend's HYBRID_EXIT_AI.
+    hybrid_exit_ai: bool = os.getenv("HYBRID_EXIT_AI", "false").lower() in ("1", "true", "yes", "on")
+
     @property
     def dsn(self) -> str:
         return (

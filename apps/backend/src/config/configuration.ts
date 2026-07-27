@@ -55,6 +55,10 @@ export interface AppConfig {
   readonly liveStreamSource: LiveStreamSource;
   readonly liveExecutionSource: LiveExecutionSource;
   readonly historicalBackfillEnabled: boolean;
+  // Phase 2 hybrid AI exit overlay: on a rules-mode strategy, when the deterministic ladder says
+  // HOLD on a winning open position, consult the LLM on whether to book the profit early. Off by
+  // default (one LLM call per in-profit candle). Mirrors the worker's HYBRID_EXIT_AI.
+  readonly hybridExitAi: boolean;
 
   readonly paper: {
     // Simulated starting equity for paper (simulated-fill) trading, used to compute paper
@@ -174,6 +178,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     liveExecutionSource: str(env, 'LIVE_EXECUTION_SOURCE') === 'worker' ? 'worker' : 'backend',
     // Enabled unless explicitly turned off.
     historicalBackfillEnabled: str(env, 'HISTORICAL_BACKFILL_ENABLED') !== 'false',
+    hybridExitAi: str(env, 'HYBRID_EXIT_AI') === 'true',
 
     paper: Object.freeze({
       startingBalanceUsd: float(env, 'PAPER_STARTING_BALANCE_USD', 10000),

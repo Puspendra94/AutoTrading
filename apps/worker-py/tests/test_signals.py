@@ -3,7 +3,12 @@
 Mode B (AI) is not exercised here (needs an LLM); the dispatcher's Mode A path and the
 no-live-strategy short-circuit are covered.
 """
-from worker.execution.signals import evaluate_live_signal, evaluate_rules_signal
+import dataclasses
+
+import worker.execution.signals as signals_mod
+from worker.config import config
+from worker.execution.signals import apply_hybrid_exit_overlay, evaluate_live_signal, evaluate_rules_signal
+from worker.llm.schemas import ExitTightenDecision
 
 PARAMS = {"indicatorConfig": {"emaFastPeriod": 3, "emaSlowPeriod": 5, "stopLossPct": 1.5, "takeProfitPct": 3.5}}
 LIVE_A = {"id": "s1", "executionMode": "mode_a_rules", "parametersJson": PARAMS}
@@ -72,3 +77,62 @@ async def test_dispatcher_no_live_strategy():
 async def test_dispatcher_routes_mode_a():
     store = FakeSignalStore(live=LIVE_A, closes=CROSS_UP, open_pos=None)
     assert await evaluate_live_signal(store, None, None, "t1", 40) == ("BUY", "s1")
+
+
+# --- Phase 2 hybrid AI exit overlay ---
+class FakeLlm:
+    def __init__(self, action):
+        self._action = action
+        self.calls = 0
+
+    async def generate_structured_completion(self, prompt, schema, **kw):
+        self.calls += 1
+        return {"data": ExitTightenDecision(action=self._action, reasoning="test"),
+                "model": "m", "provider": "p", "inputTokens": 1, "outputTokens": 1, "costUsd": 0.0}
+
+    async def log_cost(self, *a, **k):
+        pass
+
+
+async def test_overlay_ai_exit_upgrades_hold_to_sell():
+    # Winning open position, rules say HOLD, AI says EXIT -> SELL.
+    store = FakeSignalStore(live=LIVE_A, closes=UPTREND, open_pos={"id": "p1", "entryPrice": 99, "unrealizedPl": 5})
+    llm = FakeLlm("EXIT")
+    assert await apply_hybrid_exit_overlay(store, llm, None, "t1", LIVE_A, 102) == "SELL"
+    assert llm.calls == 1
+
+
+async def test_overlay_ai_hold_keeps_hold():
+    store = FakeSignalStore(live=LIVE_A, closes=UPTREND, open_pos={"id": "p1", "entryPrice": 99, "unrealizedPl": 5})
+    llm = FakeLlm("HOLD")
+    assert await apply_hybrid_exit_overlay(store, llm, None, "t1", LIVE_A, 102) == "HOLD"
+
+
+async def test_overlay_skips_losers_without_llm_call():
+    # Losing position -> deterministic stop/floor owns it; no LLM spend.
+    store = FakeSignalStore(live=LIVE_A, closes=UPTREND, open_pos={"id": "p1", "entryPrice": 110, "unrealizedPl": -3})
+    llm = FakeLlm("EXIT")
+    assert await apply_hybrid_exit_overlay(store, llm, None, "t1", LIVE_A, 102) == "HOLD"
+    assert llm.calls == 0
+
+
+def _config_with(monkeypatch, **overrides):
+    # Config is a frozen dataclass; swap the module-level reference for a modified copy.
+    monkeypatch.setattr(signals_mod, "config", dataclasses.replace(config, **overrides))
+
+
+async def test_overlay_never_fires_when_flag_off(monkeypatch):
+    # Flag off: dispatcher must not consult the AI even on a winning HOLD.
+    _config_with(monkeypatch, hybrid_exit_ai=False)
+    store = FakeSignalStore(live=LIVE_A, closes=UPTREND, open_pos={"id": "p1", "entryPrice": 99, "unrealizedPl": 5})
+    llm = FakeLlm("EXIT")
+    sig, _ = await evaluate_live_signal(store, llm, None, "t1", 102)
+    assert sig == "HOLD" and llm.calls == 0
+
+
+async def test_overlay_wired_into_dispatcher_when_flag_on(monkeypatch):
+    _config_with(monkeypatch, hybrid_exit_ai=True)
+    store = FakeSignalStore(live=LIVE_A, closes=UPTREND, open_pos={"id": "p1", "entryPrice": 99, "unrealizedPl": 5})
+    llm = FakeLlm("EXIT")
+    sig, sid = await evaluate_live_signal(store, llm, None, "t1", 102)
+    assert (sig, sid) == ("SELL", "s1") and llm.calls == 1

@@ -14,7 +14,7 @@ import { StrategyEvaluatorService } from './strategy-evaluator.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
 import { AiLessonsService } from './ai-lessons.service';
 import { StrategyGenSchema } from '../llm/schemas/strategy-gen.schema';
-import { LiveDecisionSchema } from '../llm/schemas/live-decision.schema';
+import { LiveDecisionSchema, ExitTightenDecisionSchema } from '../llm/schemas/live-decision.schema';
 import { GenerationPlanSchema } from '../llm/schemas/generation-plan.schema';
 import { MarketDataService } from '../market-data/market-data.service';
 import { ExecutionService } from '../risk-execution/execution.service';
@@ -470,7 +470,68 @@ ${lessonsBlock}`;
     }
 
     const signal = await this.evaluateRulesSignal(tickerId, liveStrategy);
-    return { signal, strategyId: liveStrategy.id };
+    // Phase 2 hybrid AI overlay (opt-in): only upgrades a rules HOLD to an early SELL on a winning
+    // position; it can never turn a rules SELL into HOLD or open a position.
+    const finalSignal =
+      config.hybridExitAi && signal === 'HOLD'
+        ? await this.applyHybridExitOverlay(tickerId, liveStrategy, currentCandle)
+        : signal;
+    return { signal: finalSignal, strategyId: liveStrategy.id };
+  }
+
+  /**
+   * Phase 2 hybrid overlay: on a rules HOLD, let the AI book a WINNING open position early if the
+   * up-move looks exhausted. Tightens only — returns 'SELL' or 'HOLD', never 'BUY'. Losers are left
+   * to the deterministic stop/floor, so the AI budget is spent only protecting real gains. Mirrors
+   * the worker's apply_hybrid_exit_overlay.
+   */
+  private async applyHybridExitOverlay(
+    tickerId: string,
+    liveStrategy: Strategy,
+    currentCandle: { close: number },
+  ): Promise<'SELL' | 'HOLD'> {
+    const openPosition = await this.positionRepo.findOne({
+      where: { tickerId, strategyId: liveStrategy.id, status: PositionStatus.OPEN },
+    });
+    if (!openPosition) return 'HOLD'; // nothing to protect
+    if (Number(openPosition.unrealizedPl) <= 0) return 'HOLD'; // stop/floor owns losers; save the LLM call
+
+    const ticker = await this.tickerRepo.findOne({ where: { id: tickerId } });
+    if (!ticker) return 'HOLD';
+    const recentCandles = await this.ohlcvRepo.find({ where: { tickerId }, order: { timestamp: 'DESC' }, take: 20 });
+    const closes = recentCandles.map((c) => Number(c.close)).reverse();
+    const priceChangePct = closes.length >= 2 ? ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100 : 0;
+    const lessons = await this.aiLessonsService.retrieveRelevantLessons(
+      tickerId,
+      this.inferStrategyTypeTag(liveStrategy.parametersJson),
+    );
+    const lessonsBlock = this.aiLessonsService.formatLessonsForPrompt(lessons);
+    const entry = Number(openPosition.entryPrice);
+    const retPct = entry ? ((currentCandle.close - entry) / entry) * 100 : 0;
+
+    const prompt = `Open-position exit check for ${ticker.symbol} (Interval: ${ticker.interval}).
+You are LONG from ${entry}; latest price ${Number(currentCandle.close)}, unrealized ${retPct.toFixed(2)}% (${Number(openPosition.unrealizedPl)}).
+Price change over the last ${closes.length} candles: ${priceChangePct.toFixed(2)}%.
+The deterministic rules currently say HOLD (no stop / target / structure-break exit has fired). Your ONLY job: judge whether the up-move looks EXHAUSTED or about to reverse, so we should EXIT now and bank the profit, or HOLD to keep riding the trend for more.
+
+Relevant lessons from past strategies on this ticker/strategy type:
+${lessonsBlock}
+
+Respond in JSON with EXIT or HOLD.`;
+
+    const llmRes = await this.llmService.generateStructuredCompletion(prompt, ExitTightenDecisionSchema, {
+      schemaName: 'propose_exit_tighten',
+      maxTokens: 512,
+    });
+    await this.llmService.logCost(tickerId, liveStrategy.id, LlmPurpose.LIVE_DECISION, {
+      content: JSON.stringify(llmRes.data),
+      inputTokens: llmRes.inputTokens,
+      outputTokens: llmRes.outputTokens,
+      costUsd: llmRes.costUsd,
+      model: llmRes.model,
+      provider: llmRes.provider,
+    });
+    return llmRes.data.action === 'EXIT' ? 'SELL' : 'HOLD';
   }
 
   /**

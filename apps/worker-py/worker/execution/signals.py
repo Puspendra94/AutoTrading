@@ -13,7 +13,7 @@ import logging
 from typing import Any, Optional, Protocol
 
 from ..config import config
-from ..llm.schemas import LiveDecision
+from ..llm.schemas import ExitTightenDecision, LiveDecision
 from ..llm.service import LlmPurpose, LlmService
 from ..strategy.dsl.interpreter import exit_reason, intended_position_state, should_enter
 from ..strategy.dsl.ir import resolve_ir, warmup_bars
@@ -128,6 +128,47 @@ async def evaluate_mode_b_live_decision(
     return action
 
 
+async def apply_hybrid_exit_overlay(
+    store: SignalStore, llm: LlmService, pool: Any, ticker_id: str, live_strategy: dict, close: float
+) -> str:
+    """Phase 2 hybrid overlay: on a rules HOLD, let the AI book a WINNING open position early if the
+    up-move looks exhausted. Tightens only — returns 'SELL' or 'HOLD', never 'BUY'. Losers are left
+    to the deterministic stop/floor, so the AI budget is spent only protecting real gains."""
+    open_position = await store.get_open_position_for_strategy(ticker_id, live_strategy["id"])
+    if not open_position:
+        return "HOLD"  # nothing to protect
+    if float(open_position.get("unrealizedPl") or 0) <= 0:
+        return "HOLD"  # deterministic stop/floor handles losers; save the LLM call
+
+    ticker = await store.get_ticker(ticker_id)
+    if not ticker:
+        return "HOLD"
+    closes = await store.load_recent_closes(ticker_id, 20)
+    price_change_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if len(closes) >= 2 else 0
+    lessons = await store.retrieve_lessons(ticker_id, infer_strategy_type(live_strategy["parametersJson"]))
+    lessons_block = format_lessons_for_prompt(lessons)
+    entry = float(open_position["entryPrice"])
+    unrealized = float(open_position.get("unrealizedPl") or 0)
+    ret_pct = ((close - entry) / entry) * 100 if entry else 0
+
+    prompt = (
+        f"Open-position exit check for {ticker['symbol']} (Interval: {ticker['interval']}).\n"
+        f"You are LONG from {entry}; latest price {_js_num(close)}, unrealized {ret_pct:.2f}% ({unrealized:+.4f}).\n"
+        f"Price change over the last {len(closes)} candles: {price_change_pct:.2f}%.\n"
+        f"The deterministic rules currently say HOLD (no stop / target / structure-break exit has "
+        f"fired). Your ONLY job: judge whether the up-move looks EXHAUSTED or about to reverse, so we "
+        f"should EXIT now and bank the profit, or HOLD to keep riding the trend for more.\n\n"
+        f"Relevant lessons from past strategies on this ticker/strategy type:\n{lessons_block}\n\n"
+        f"Respond in JSON with EXIT or HOLD."
+    )
+    res = await llm.generate_structured_completion(prompt, ExitTightenDecision,
+                                                   schema_name="propose_exit_tighten", max_tokens=512)
+    await llm.log_cost(pool, ticker_id, live_strategy["id"], LlmPurpose.LIVE_DECISION,
+                       {"model": res["model"], "provider": res.get("provider"),
+                        "inputTokens": res["inputTokens"], "outputTokens": res["outputTokens"], "costUsd": res["costUsd"]})
+    return "SELL" if res["data"].action == "EXIT" else "HOLD"
+
+
 async def evaluate_live_signal(
     store: SignalStore, llm: LlmService, pool: Any, ticker_id: str, close: float
 ) -> tuple[str, Optional[str]]:
@@ -139,4 +180,8 @@ async def evaluate_live_signal(
         signal = await evaluate_mode_b_live_decision(store, llm, pool, ticker_id, live, close)
     else:
         signal = await evaluate_rules_signal(store, ticker_id, live)
+        # Phase 2 hybrid AI overlay (opt-in): only upgrades a rules HOLD to an early SELL on a
+        # winning position; it can never turn a rules SELL into HOLD or open a position.
+        if config.hybrid_exit_ai and signal == "HOLD":
+            signal = await apply_hybrid_exit_overlay(store, llm, pool, ticker_id, live, close)
     return (signal, live["id"])
