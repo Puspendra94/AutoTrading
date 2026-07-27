@@ -22,6 +22,8 @@ STRATEGY_REGENERATE_CHANNEL = "strategy:regenerate"  # strategy-regenerate.consu
 POSITIONS_UPDATE_CHANNEL = "positions:update"  # market-stream.service.ts (worker owns execution)
 STRATEGY_GENERATE_CHANNEL = "strategy:generate"      # API -> worker: run a generation job
 STRATEGY_GENERATED_CHANNEL = "strategy:generated"    # worker -> API: generation result (bridged to WS)
+SIGNALS_REQUEST_CHANNEL = "signals:request"          # API -> worker: compute chart markers
+SIGNALS_RESPONSE_CHANNEL = "signals:response"        # worker -> API: chart markers (req/resp by requestId)
 
 _client: redis.Redis | None = None
 

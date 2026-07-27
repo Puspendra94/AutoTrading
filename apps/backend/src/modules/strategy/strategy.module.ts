@@ -18,6 +18,7 @@ import { StrategyPerformanceService } from './strategy-performance.service';
 import { StrategyController } from './strategy.controller';
 import { AiLessonsService } from './ai-lessons.service';
 import { StrategyRegenerateConsumer } from './strategy-regenerate.consumer';
+import { SignalsBridgeService } from './signals-bridge.service';
 
 @Module({
   imports: [
@@ -36,7 +37,7 @@ import { StrategyRegenerateConsumer } from './strategy-regenerate.consumer';
     MarketDataModule,
     RiskExecutionModule,
   ],
-  providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService, StrategyRegenerateConsumer],
+  providers: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService, StrategyRegenerateConsumer, SignalsBridgeService],
   controllers: [StrategyController],
   exports: [StrategyEvaluatorService, StrategyEngineService, StrategyPerformanceService, AiLessonsService],
 })

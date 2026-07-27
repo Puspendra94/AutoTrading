@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { StrategyEngineService } from './strategy-engine.service';
 import { StrategyPerformanceService } from './strategy-performance.service';
 import { AiLessonsService } from './ai-lessons.service';
+import { SignalsBridgeService } from './signals-bridge.service';
 import { REDIS_PUBLISHER } from '../../common/redis/redis.module';
 import { publishJson } from '../../common/redis/redis-publish.util';
 import { config } from '../../config/configuration';
@@ -18,6 +19,7 @@ export class StrategyController {
     private readonly strategyEngineService: StrategyEngineService,
     private readonly performanceService: StrategyPerformanceService,
     private readonly aiLessonsService: AiLessonsService,
+    private readonly signalsBridge: SignalsBridgeService,
     @Inject(REDIS_PUBLISHER) private readonly redis: Redis,
   ) {}
 
@@ -64,7 +66,13 @@ export class StrategyController {
     @Query('interval') interval?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.strategyEngineService.getSignalsForTicker(tickerId, interval || '15m', limit ? parseInt(limit, 10) : 500);
+    const iv = interval || '15m';
+    const lim = limit ? parseInt(limit, 10) : 500;
+    // Phase B: the worker owns the DSL engine — request the chart markers from it over Redis.
+    if (config.generationSource === 'worker') {
+      return this.signalsBridge.requestSignals(tickerId, iv, lim);
+    }
+    return this.strategyEngineService.getSignalsForTicker(tickerId, iv, lim);
   }
 
   @Get('ticker/:tickerId/all')

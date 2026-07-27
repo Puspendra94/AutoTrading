@@ -103,13 +103,17 @@ async def main() -> None:
     else:
         log.info("Live ingestion disabled (LIVE_STREAM_ENABLED=false); backend still streams.")
 
-    # Consolidation Phase A: when the worker owns generation, consume strategy:generate jobs.
+    # Consolidation Phase A/B: when the worker owns the strategy engine, consume generation jobs
+    # AND compute chart-signal markers on request (so the backend needs no DSL interpreter).
     generate_task: asyncio.Task | None = None
+    signals_task: asyncio.Task | None = None
     if config.generation_source == "worker":
         from .strategy.generate_consumer import run_generate_consumer
+        from .strategy.signals_consumer import run_signals_consumer
 
         generate_task = asyncio.create_task(run_generate_consumer(stop))
-        log.info("Strategy generation owned by worker (consuming strategy:generate).")
+        signals_task = asyncio.create_task(run_signals_consumer(stop))
+        log.info("Strategy engine owned by worker (consuming strategy:generate + signals:request).")
 
     await stop.wait()
 
@@ -119,6 +123,8 @@ async def main() -> None:
         await live_task
     if generate_task is not None:
         await generate_task
+    if signals_task is not None:
+        await signals_task
     from .redis_bus import close_redis
 
     await close_redis()
