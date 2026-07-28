@@ -40,9 +40,10 @@ async def plan_generation(store, llm, pool, ticker: dict, active_policy: dict) -
 
     plan_prompt = (
         f"You are planning HOW to generate the next automated trading strategy for {ticker['symbol']}, "
-        f"BEFORE it is built. The generator composes a rule tree from EXACTLY these indicators (there is NO "
-        f"ADX, no supertrend, no VWAP — do not ask for any indicator not in this list): EMA, SMA, RSI, MACD, "
-        f"ATR, Bollinger, Donchian, Stochastic, rollingHigh, rollingLow, plus raw price/volume. Approaches: "
+        f"BEFORE it is built. The generator composes a rule tree from EXACTLY these indicators (do not ask for "
+        f"any indicator not in this list — e.g. no supertrend, no VWAP): EMA, SMA, RSI, MACD, ATR, ADX "
+        f"(trend strength 0-100, >25 = trending — usable as a trend filter), Bollinger, Donchian, Stochastic, "
+        f"rollingHigh, rollingLow, plus raw price/volume. Approaches: "
         f"trend-following, mean-reversion, or channel breakouts.\n"
         f"IMPORTANT lesson from this asset: plain moving-average CROSSOVERS repeatedly fail here (they whipsaw "
         f"and bleed fees). Unless the lessons clearly show a crossover working, steer the generator AWAY from "

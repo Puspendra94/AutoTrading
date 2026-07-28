@@ -54,6 +54,8 @@ def _series_for_operand(o: dict, s: dict, cache: dict) -> list[float]:
         arr = ind.rsi(src, o["period"])
     elif kind == "atr":
         arr = ind.atr(s, o["period"])
+    elif kind == "adx":
+        arr = ind.adx(s, o["period"])
     elif kind == "macd":
         m = ind.macd(src, o["fast"], o["slow"], o["signal"])
         arr = m["signal"] if o["field"] == "signal" else m["hist"] if o["field"] == "hist" else m["line"]

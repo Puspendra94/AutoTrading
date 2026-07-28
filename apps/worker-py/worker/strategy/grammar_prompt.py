@@ -18,6 +18,7 @@ STRATEGY_GRAMMAR_PROMPT = (
     '- {"op":"indicator","kind":"ema|sma|rsi","period":<int 2-400>}            // moving averages / RSI on close\n'
     '- {"op":"indicator","kind":"macd","fast":<int>,"slow":<int>,"signal":<int>,"field":"line|signal|hist"}  // fast<slow\n'
     '- {"op":"indicator","kind":"atr","period":<int>}                          // average true range (volatility)\n'
+    '- {"op":"indicator","kind":"adx","period":<int>}                          // trend strength 0-100 (>25 trending)\n'
     '- {"op":"indicator","kind":"bollinger","period":<int>,"mult":<0-5>,"field":"upper|mid|lower"}\n'
     '- {"op":"indicator","kind":"donchian","period":<int>,"field":"upper|lower"} // channel of highs/lows\n'
     '- {"op":"indicator","kind":"stochastic","period":<int>,"smoothK":<int>,"smoothD":<int>,"field":"k|d"}\n'

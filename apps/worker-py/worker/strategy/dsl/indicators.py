@@ -1,9 +1,8 @@
-"""Deterministic technical-indicator library for the strategy DSL — a faithful port of
-apps/backend/src/modules/strategy/dsl/indicators.ts.
+"""Deterministic technical-indicator library for the strategy DSL.
 
-Every function mirrors the TS arithmetic operation-for-operation (same accumulation order, same
-seeding, same population-stddev / Wilder-smoothing conventions) so both engines produce
-IEEE-754-identical arrays. tools/parity_dsl.py asserts this. If you change one side, change both.
+Originally a parity port of a TypeScript twin, but the backend engine was deleted in the
+single-engine consolidation (Phase B) — this is now the ONE implementation, so new indicators
+(e.g. adx) live here only.
 
 Series is a dict of equal-length float lists: {"open","high","low","close","volume"}.
 Positions before an indicator is defined hold float('nan'); the interpreter treats any condition
@@ -105,6 +104,54 @@ def atr(s: dict, period: int) -> list[float]:
     out[period] = total / period
     for i in range(period + 1, n):
         out[i] = (out[i - 1] * (period - 1) + tr[i]) / period
+    return out
+
+
+def adx(s: dict, period: int) -> list[float]:
+    """Average Directional Index (Wilder) — trend-strength (0-100; >25 = trending). Added in the
+    single-engine (Phase C) era, so worker-only (no TS parity). Uses Wilder smoothing throughout,
+    matching the atr() convention above."""
+    high, low, close = s["high"], s["low"], s["close"]
+    n = len(close)
+    out = _nan(n)
+    if n <= 2 * period:  # need `period` bars to seed the DIs, then `period` more to seed the ADX
+        return out
+
+    tr = [0.0] * n
+    plus_dm = [0.0] * n
+    minus_dm = [0.0] * n
+    for i in range(1, n):
+        up = high[i] - high[i - 1]
+        down = low[i - 1] - low[i]
+        plus_dm[i] = up if (up > down and up > 0) else 0.0
+        minus_dm[i] = down if (down > up and down > 0) else 0.0
+        tr[i] = max(high[i] - low[i], abs(high[i] - close[i - 1]), abs(low[i] - close[i - 1]))
+
+    # Wilder-smoothed TR / +DM / -DM (seed = sum over the first `period` bars starting at index 1).
+    atr_s = [0.0] * n
+    pdm_s = [0.0] * n
+    mdm_s = [0.0] * n
+    atr_s[period] = sum(tr[1:period + 1])
+    pdm_s[period] = sum(plus_dm[1:period + 1])
+    mdm_s[period] = sum(minus_dm[1:period + 1])
+    for i in range(period + 1, n):
+        atr_s[i] = atr_s[i - 1] - atr_s[i - 1] / period + tr[i]
+        pdm_s[i] = pdm_s[i - 1] - pdm_s[i - 1] / period + plus_dm[i]
+        mdm_s[i] = mdm_s[i - 1] - mdm_s[i - 1] / period + minus_dm[i]
+
+    dx = [0.0] * n
+    for i in range(period, n):
+        if atr_s[i] == 0:
+            continue
+        plus_di = 100 * pdm_s[i] / atr_s[i]
+        minus_di = 100 * mdm_s[i] / atr_s[i]
+        denom = plus_di + minus_di
+        dx[i] = 100 * abs(plus_di - minus_di) / denom if denom != 0 else 0.0
+
+    # ADX = Wilder-smoothed DX; first value at index 2*period-1 = mean of DX[period .. 2*period-1].
+    out[2 * period - 1] = sum(dx[period:2 * period]) / period
+    for i in range(2 * period, n):
+        out[i] = (out[i - 1] * (period - 1) + dx[i]) / period
     return out
 
 

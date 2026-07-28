@@ -24,6 +24,8 @@ def _operand_lookback(o: dict) -> int:
         return int(o["period"])
     if kind in ("rsi", "atr"):
         return int(o["period"]) + 1
+    if kind == "adx":
+        return 2 * int(o["period"]) + 1  # DI smoothing (period) + ADX smoothing (period)
     if kind == "macd":
         return int(o["slow"]) + int(o["signal"])
     if kind == "stochastic":
@@ -169,7 +171,7 @@ def validate_operand(o: Any, path: str) -> list[str]:
     if op != "indicator":
         return [f"{path}: unknown operand op '{op}'"]
     kind = o.get("kind")
-    if kind in ("ema", "sma", "rsi", "atr", "donchian", "rollingHigh", "rollingLow"):
+    if kind in ("ema", "sma", "rsi", "atr", "adx", "donchian", "rollingHigh", "rollingLow"):
         if not _is_period(o.get("period")):
             errs.append(f"{path}: {kind}.period must be an int in [{PERIOD_MIN},{PERIOD_MAX}]")
         if kind == "donchian" and o.get("field") not in ("upper", "lower"):
