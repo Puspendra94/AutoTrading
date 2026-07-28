@@ -12,6 +12,7 @@ discarded (never written to `strategies`) though their real LLM cost is still lo
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -257,7 +258,10 @@ class StrategyGenerator:
                     log.warning("Strategy attempt %d/%d for ticker %s: SHORT template on a non-futures market. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
-                opt = optimize(template, candles, policy)
+                # CPU-bound grid search (hundreds of backtests): run it off the event loop so the
+                # shared loop keeps servicing the live kline stream's websocket pongs (else Binance
+                # drops us with a 1008 Pong-timeout), live execution, and signals:request markers.
+                opt = await asyncio.to_thread(optimize, template, candles, policy)
                 ir, eval_result = opt["ir"], opt["evaluation"]
                 if ir is None:
                     log.warning("Strategy attempt %d/%d for ticker %s: optimizer found no scoreable config (%d tried). Discarding.",
@@ -273,7 +277,8 @@ class StrategyGenerator:
                     log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT on a non-futures market. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
-                eval_result = evaluate_strategy(candles, ir, policy)
+                # Full walk-forward backtest — also CPU-bound; keep it off the event loop (see above).
+                eval_result = await asyncio.to_thread(evaluate_strategy, candles, ir, policy)
 
             last_eval, last_params = eval_result, ir
 
