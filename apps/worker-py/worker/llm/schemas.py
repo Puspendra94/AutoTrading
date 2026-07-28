@@ -45,8 +45,13 @@ class StrategyGen(BaseModel):
 
     strategyName: str = Field(..., description="Short human-readable name for this strategy")
     reasoning: str = Field("", description="Brief rationale tied to the lessons and the market")
-    direction: Optional[Literal["long", "short"]] = Field(
-        None, description="'long' (default) or 'short' (futures markets only)")
+    # REQUIRED, never optional: an omitted direction silently defaulted to long, so a short-shaped
+    # rule tree ("enter when RSI is OVERBOUGHT in a downtrend") was executed and backtested as a
+    # LONG — i.e. exactly inverted. Forcing the model to state it makes that impossible.
+    direction: Literal["long", "short"] = Field(
+        ..., description="'long' (buy to open, sell to close) or 'short' (sell to open, buy to "
+                         "cover — futures markets only). MUST match the rule tree: an entry on an "
+                         "OVERBOUGHT/downtrend condition is a SHORT; oversold/uptrend is a LONG.")
     entry: dict = Field(..., description="Condition tree that, when true and flat, opens the position")
     exit: dict = Field(..., description="Condition tree that closes the open position (risk block also applies)")
     risk: dict = Field(..., description="{stopLossPct, takeProfitPct, and optionally trailingStopPct, maxHoldBars}")
@@ -59,7 +64,11 @@ class StrategyTemplate(BaseModel):
 
     strategyName: str = Field(..., description="Short human-readable name")
     reasoning: str = Field("", description="Why this shape, tied to lessons/market")
-    direction: Optional[Literal["long", "short"]] = Field(None, description="'long' (default) or 'short' (futures only)")
+    # Required for the same reason as StrategyGen.direction — see the note there.
+    direction: Literal["long", "short"] = Field(
+        ..., description="'long' (buy to open) or 'short' (sell to open — futures only). MUST match "
+                         "the rule tree: an OVERBOUGHT/downtrend entry is a SHORT, oversold/uptrend "
+                         "is a LONG.")
     search: dict = Field(..., description='Param name -> list of candidate values, e.g. {"oversold":[28,32,35]}')
     entry: dict = Field(..., description="Entry condition tree with {\"$param\":\"name\"} leaves")
     exit: dict = Field(..., description="Exit condition tree with {\"$param\":\"name\"} leaves")

@@ -97,6 +97,57 @@ def _num(v: Any) -> float:
         return float("nan")
 
 
+def looks_like_short(entry: Any) -> bool:
+    """True when an entry tree reads as a SHORT setup: enter while an oscillator is OVERBOUGHT
+    (rsi/stochastic ABOVE a high level) or price is BELOW a trend line. Used only to catch a
+    declared/actual direction MISMATCH — the LLM once emitted a textbook short rule tree while
+    omitting direction, so it was executed inverted as a long."""
+    hits = {"short": 0, "long": 0}
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        op = node.get("op")
+        left, right = node.get("left"), node.get("right")
+        if op in ("gt", "lt", "crossAbove", "crossBelow") and isinstance(left, dict):
+            kind = (left.get("kind") or "").lower() if left.get("op") == "indicator" else None
+            level = right.get("value") if isinstance(right, dict) and right.get("op") == "const" else None
+            if kind in ("rsi", "stochastic") and isinstance(level, (int, float)):
+                if op in ("gt", "crossAbove") and level >= 55:
+                    hits["short"] += 1      # entering while overbought
+                elif op in ("lt", "crossBelow") and level <= 45:
+                    hits["long"] += 1       # entering while oversold
+            if left.get("op") == "price" and isinstance(right, dict) and right.get("op") == "indicator":
+                if op in ("lt", "crossBelow"):
+                    hits["short"] += 1      # price below its trend line = downtrend filter
+                elif op in ("gt", "crossAbove"):
+                    hits["long"] += 1
+        for v in node.values():
+            if isinstance(v, dict):
+                walk(v)
+            elif isinstance(v, list):
+                for x in v:
+                    walk(x)
+
+    walk(entry)
+    return hits["short"] > hits["long"]
+
+
+def _direction_mismatch(spec: dict, attempt: int, ticker_id: str) -> bool:
+    """Discard a proposal whose declared direction contradicts its own rule tree. Trading such a
+    strategy would do the exact opposite of what it describes (buying every overbought spike in a
+    downtrend), so it is rejected rather than silently inverted."""
+    declared = spec.get("direction") or "long"
+    if looks_like_short(spec.get("entry")) == (declared == "short"):
+        return False
+    log.warning(
+        "Strategy attempt %d/%d for ticker %s declares direction=%s but its entry rules read as a %s "
+        "setup — refusing to trade it inverted. Discarding.",
+        attempt, MAX_ATTEMPTS, ticker_id, declared, "SHORT" if declared == "long" else "LONG",
+    )
+    return True
+
+
 def gate_failure_reasons(ev: dict, policy: dict) -> list[str]:
     """Human-readable list of which policy conditions a backtest failed — purely for logging,
     so a discarded attempt says *why* it was rejected instead of a bare 'failed the gate'.
@@ -258,6 +309,8 @@ class StrategyGenerator:
                     log.warning("Strategy attempt %d/%d for ticker %s: SHORT template on a non-futures market. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
+                if _direction_mismatch(template, attempt, ticker_id):
+                    continue
                 # CPU-bound grid search (hundreds of backtests): run it off the event loop so the
                 # shared loop keeps servicing the live kline stream's websocket pongs (else Binance
                 # drops us with a 1008 Pong-timeout), live execution, and signals:request markers.
@@ -276,6 +329,8 @@ class StrategyGenerator:
                 if ir.get("direction") == "short" and not allow_short:
                     log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT on a non-futures market. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
+                    continue
+                if _direction_mismatch(ir, attempt, ticker_id):
                     continue
                 # Full walk-forward backtest — also CPU-bound; keep it off the event loop (see above).
                 eval_result = await asyncio.to_thread(evaluate_strategy, candles, ir, policy)

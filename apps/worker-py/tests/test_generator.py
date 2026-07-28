@@ -25,6 +25,7 @@ RELAXED = {"minSharpe": -100.0, "maxDrawdownPct": 100.0, "minProfitFactor": 0.0,
 GEN_TREE = {
     "strategyName": "EMA cross test",
     "reasoning": "test",
+    "direction": "long",  # required: an omitted direction used to silently default and invert shorts
     "entry": {"op": "crossAbove", "left": {"op": "indicator", "kind": "ema", "period": 12},
               "right": {"op": "indicator", "kind": "ema", "period": 26}},
     "exit": {"op": "crossBelow", "left": {"op": "indicator", "kind": "ema", "period": 12},
@@ -218,6 +219,24 @@ async def test_generate_rejects_short_on_spot():
     assert "insert_strategy" not in store.calls
 
 
+async def test_generate_rejects_direction_mismatch():
+    """A short-shaped entry (enter while RSI is OVERBOUGHT, price BELOW its trend EMA) declared as a
+    LONG must be discarded, not traded inverted — the exact bug that promoted a 'Short Mean-Reversion'
+    strategy the engine then executed as a long (profit factor 1.37 -> 0.70)."""
+    inverted = {
+        **GEN_TREE, "direction": "long", "strategyName": "short rules mislabelled long",
+        "entry": {"op": "and", "conditions": [
+            {"op": "gt", "left": {"op": "indicator", "kind": "rsi", "period": 7},
+             "right": {"op": "const", "value": 75}},
+            {"op": "lt", "left": {"op": "price", "field": "close"},
+             "right": {"op": "indicator", "kind": "ema", "period": 200}}]},
+    }
+    store = FakeStore(RELAXED)
+    result = await StrategyGenerator(store, FakeLlm(inverted)).generate("tick-1", "cycle")
+    assert result["saved"] is False
+    assert "insert_strategy" not in store.calls
+
+
 async def test_generate_retires_previous_live_and_records_lesson():
     live = {"id": "old-sid", "version": 1, "parametersJson": {"indicatorConfig": {"emaFastPeriod": 10}}}
     store = FakeStore(RELAXED, live=live)
@@ -246,7 +265,7 @@ class FakeLlmTemplate:
 
 # RSI(7) mean-reversion template with a small search grid — fires often on the oscillatory fixture.
 RSI_TEMPLATE = {
-    "strategyName": "RSI template", "reasoning": "",
+    "strategyName": "RSI template", "reasoning": "", "direction": "long",
     "search": {"os": [30, 40], "rec": [55, 65]},
     "entry": {"op": "lt", "left": {"op": "indicator", "kind": "rsi", "period": 7},
               "right": {"op": "const", "value": {"$param": "os"}}},
