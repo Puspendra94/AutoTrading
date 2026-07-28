@@ -98,14 +98,22 @@ async def plan_generation(store, llm, pool, ticker: dict, active_policy: dict) -
 
     if allow_short:
         direction_block = (
-            f"MARKET TYPE: FUTURES — the generator can go LONG **or** SHORT. {regime['text']}\n"
-            f"Pick the direction that FITS THIS REGIME rather than defaulting to long. In a BEARISH "
-            f"regime a long strategy that requires an uptrend filter will sit flat and never trade — "
-            f"prefer a SHORT there (e.g. an OVERBOUGHT oscillator entry, RSI above ~65 / Stochastic "
-            f"above ~75, with a DOWNTREND filter of price BELOW the 200-EMA, exiting when the "
-            f"oscillator falls back toward the middle; or a breakdown of a Donchian/rolling low). "
-            f"In a BULLISH regime prefer the mirror-image long (oversold entry, uptrend filter). "
-            f"State the intended direction explicitly in signalEmphasis, using the word LONG or SHORT.\n"
+            f"MARKET TYPE: FUTURES — the generator can go LONG, SHORT, or BOTH. {regime['text']}\n"
+            f"Pick what FITS THIS REGIME rather than defaulting to long. A one-sided strategy only "
+            f"trades while its regime lasts: a long that requires an uptrend filter sits flat through "
+            f"every downtrend, and a short does the reverse once the market turns.\n"
+            f"PREFER **BOTH** unless the lessons give a strong reason not to. A BOTH strategy pairs an "
+            f"oversold-entry long (price above the trend EMA) with the mirrored overbought-entry short "
+            f"(price below it), so it keeps trading through a regime change instead of going idle. "
+            f"Because the two sides SHARE their indicators and periods and only mirror the thresholds, "
+            f"it costs about ONE extra tunable knob, and it roughly DOUBLES the number of trades — "
+            f"which directly helps clear minTradeCount, the condition that has rejected otherwise "
+            f"strong candidates here.\n"
+            f"Choose a single side only when one regime clearly dominates the whole backtest window: "
+            f"SHORT in a sustained downtrend (overbought entry, RSI above ~65 / Stochastic above ~75, "
+            f"price BELOW the trend EMA), LONG in a sustained uptrend (the mirror image).\n"
+            f"State the intended direction explicitly in signalEmphasis, using the word LONG, SHORT or "
+            f"BOTH — and when you choose BOTH, describe both legs.\n"
         )
     else:
         direction_block = (
