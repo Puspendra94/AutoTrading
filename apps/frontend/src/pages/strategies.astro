@@ -255,10 +255,13 @@ import Layout from '../layouts/Layout.astro';
             if (result.requestId !== res.requestId || done) return;
             done = true; clearTimeout(to); off(); finishGen(result);
           });
+          // Budget: up to 3 attempts, each an LLM call (retried on the provider's flaky structured
+          // output) plus a walk-forward parameter search over ~10k candles. Runs of 5-8 minutes are
+          // normal, so a 3-minute cap reported a false failure while the job was still working.
           const to = setTimeout(() => {
             if (done) return; done = true; off();
-            failGen('Generation timed out (no result after 3 minutes). It may still be running — check the list shortly.');
-          }, 180000);
+            failGen('Generation timed out (no result after 12 minutes). It may still be running — check the list shortly.');
+          }, 720000);
           return;
         }
 
