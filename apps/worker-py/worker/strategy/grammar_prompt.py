@@ -130,11 +130,37 @@ def build_template_generation_prompt(
                                    signal_emphasis, lessons_block)
     return (
         base.replace(
-            "Respond with strategyName, reasoning, and the entry, exit, and risk fields (JSON objects, not strings).",
-            _TEMPLATE_INSTRUCTION + "\n\nRespond with strategyName, reasoning, search, and the entry/exit/risk "
-            "fields (JSON objects, not strings).",
+            'Respond with strategyName, reasoning, direction, and the entry, exit, and risk fields (JSON '
+            'objects, not strings) — plus shortEntry and shortExit when direction is "both".',
+            _TEMPLATE_INSTRUCTION + "\n\nRespond with strategyName, reasoning, direction, search, and the "
+            'entry/exit/risk fields (JSON objects, not strings) — plus shortEntry and shortExit when '
+            'direction is "both" (reuse the SAME {"$param":"name"} period markers on both sides so the '
+            "optimizer tunes each shared period once).",
         )
     )
+
+
+_DIRECTION_SPOT = (
+    'MARKET TYPE: SPOT — LONG ONLY. Set "direction":"long". Do NOT use "short" or "both" '
+    '(you can only buy then sell).'
+)
+
+_DIRECTION_FUTURES = (
+    'MARKET TYPE: FUTURES — you may trade either side. Set "direction" to one of:\n'
+    '  * "long"  — buy to open, sell to close.\n'
+    '  * "short" — SELL to open (profits when price FALLS), buy to cover. Better than sitting flat '
+    'in a clear downtrend.\n'
+    '  * "both"  — PREFERRED when no single regime dominates: one strategy that takes the long side '
+    'in an uptrend AND the short side in a downtrend, so it keeps trading when the market turns '
+    'instead of going idle for months. Supply "shortEntry"/"shortExit" alongside "entry"/"exit"; '
+    '"entry"/"exit" are the LONG side.\n'
+    'Stop-loss / take-profit / trailing / profit-floor mirror automatically for whichever side is open.\n'
+    'For "both", make the two sides SYMMETRIC — reuse the SAME indicators and periods and just mirror '
+    'the thresholds and the trend filter, e.g. long: RSI(14) < 30 AND close > EMA(200), exit RSI > 50; '
+    'short: RSI(14) > 70 AND close < EMA(200), exit RSI < 50. Because shared indicators are counted '
+    'ONCE, a symmetric two-sided strategy costs only about one extra knob — an asymmetric one with '
+    'different indicators per side will blow the parameter budget and be rejected.'
+)
 
 
 def build_generation_prompt(
@@ -147,15 +173,7 @@ def build_generation_prompt(
     lessons_block: str,
 ) -> str:
     """Assemble the full DSL generation prompt — mirror of strategy-engine.service.ts summaryPrompt."""
-    direction_clause = (
-        'MARKET TYPE: FUTURES — you MAY compose a SHORT strategy instead of a long. To go short, set '
-        '"direction":"short": "entry" then SELLS to open (the trade profits when price FALLS) and "exit" '
-        'BUYS to close; stop-loss / take-profit / trailing / profit-floor all mirror automatically. In a '
-        'clear downtrend a short is usually better than sitting flat. For a long, set "direction":"long" '
-        'or omit it — pick whichever the market and lessons favor.'
-        if allow_short
-        else 'MARKET TYPE: SPOT — LONG ONLY. Do NOT set "direction":"short" (you can only buy then sell).'
-    )
+    direction_clause = _DIRECTION_FUTURES if allow_short else _DIRECTION_SPOT
     emphasis_line = f"\nPlanner emphasis for this cycle (follow it): {signal_emphasis}\n" if signal_emphasis else ""
     return (
         f"Design an automated trading strategy for {symbol} (Interval: {interval}, Latest Price: {_num(latest_price)}).\n"
@@ -175,5 +193,6 @@ def build_generation_prompt(
         f"Relevant lessons from past strategies on this ticker/strategy type (steer away from documented "
         f"failures, keep successful approaches in mind):\n{lessons_block}\n"
         f"\n"
-        f"Respond with strategyName, reasoning, and the entry, exit, and risk fields (JSON objects, not strings)."
+        f"Respond with strategyName, reasoning, direction, and the entry, exit, and risk fields (JSON "
+        f"objects, not strings) — plus shortEntry and shortExit when direction is \"both\"."
     )

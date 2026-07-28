@@ -136,3 +136,70 @@ async def test_overlay_wired_into_dispatcher_when_flag_on(monkeypatch):
     llm = FakeLlm("EXIT")
     sig, sid = await evaluate_live_signal(store, llm, None, "t1", 102)
     assert (sig, sid) == ("SELL", "s1") and llm.calls == 1
+
+
+# ---------------------------------------------------------------- dual-direction ('both')
+RSI = lambda p: {"op": "indicator", "kind": "rsi", "period": p}   # noqa: E731
+EMA = lambda p: {"op": "indicator", "kind": "ema", "period": p}   # noqa: E731
+CONST = lambda v: {"op": "const", "value": v}                     # noqa: E731
+CLOSE = {"op": "price", "field": "close"}
+
+# Symmetric: same rsi(5)/ema(10) on both sides, mirrored thresholds and trend filter.
+BOTH_PARAMS = {
+    "strategyName": "Symmetric RSI", "direction": "both",
+    "entry": {"op": "and", "conditions": [{"op": "lt", "left": RSI(5), "right": CONST(30)},
+                                          {"op": "gt", "left": CLOSE, "right": EMA(10)}]},
+    "exit": {"op": "gt", "left": RSI(5), "right": CONST(50)},
+    "shortEntry": {"op": "and", "conditions": [{"op": "gt", "left": RSI(5), "right": CONST(70)},
+                                               {"op": "lt", "left": CLOSE, "right": EMA(10)}]},
+    "shortExit": {"op": "lt", "left": RSI(5), "right": CONST(50)},
+    "risk": {"stopLossPct": 2, "takeProfitPct": 6},
+}
+LIVE_BOTH = {"id": "s-both", "executionMode": "mode_a_rules", "parametersJson": BOTH_PARAMS}
+
+# Long decline (price well below its EMA) then a sharp bounce -> RSI overbought while still under
+# the EMA: the SHORT leg's setup, and impossible for the long leg (which needs price ABOVE the EMA).
+SHORT_SETUP = [200 - 4 * i for i in range(40)] + [42, 52, 64, 78]
+
+
+async def test_both_strategy_opens_the_short_leg(monkeypatch):
+    monkeypatch.setattr(signals_mod, "config", dataclasses.replace(config, futures_execution_enabled=True))
+    store = FakeSignalStore(live=LIVE_BOTH, closes=SHORT_SETUP, open_pos=None)
+    # Must never be BUY: a long entry requires price above the EMA, which is false here.
+    assert await evaluate_rules_signal(store, "t1", LIVE_BOTH) in ("SHORT", "HOLD")
+
+
+async def test_both_strategy_short_leg_blocked_without_futures(monkeypatch):
+    """Futures execution off -> hold the short leg rather than place a wrong-direction long."""
+    monkeypatch.setattr(signals_mod, "config", dataclasses.replace(config, futures_execution_enabled=False))
+    store = FakeSignalStore(live=LIVE_BOTH, closes=SHORT_SETUP, open_pos=None)
+    assert await evaluate_rules_signal(store, "t1", LIVE_BOTH) == "HOLD"
+
+
+async def test_both_strategy_exit_uses_the_held_side():
+    """An open SHORT is judged with short P&L: a price RALLY must stop it out, not profit it."""
+    from worker.strategy.dsl.interpreter import exit_reason
+    from worker.strategy.dsl.ir import resolve_ir
+    ir = resolve_ir(BOTH_PARAMS)
+    candles = [{"open": c, "high": c, "low": c, "close": c, "volume": 0, "timestamp": i * 60000}
+               for i, c in enumerate([100 + i for i in range(40)])]
+    ctx = {"entryPrice": 100.0, "barsHeld": 10, "extremePrice": 100.0}
+    assert exit_reason(ir, candles, len(candles) - 1, ctx, direction="short") == "Stop loss"
+
+
+async def test_both_strategy_costs_about_one_extra_parameter():
+    """The whole point of the symmetric shape: shared indicators are counted once, so trading both
+    sides costs ~1 knob rather than doubling (which would blow the overfitting budget)."""
+    from worker.strategy.dsl.ir import count_ir_parameters, resolve_ir
+    long_only = {k: v for k, v in BOTH_PARAMS.items() if k not in ("shortEntry", "shortExit")}
+    long_only["direction"] = "long"
+    assert count_ir_parameters(resolve_ir(BOTH_PARAMS)) - count_ir_parameters(resolve_ir(long_only)) <= 2
+
+
+async def test_both_strategy_requires_its_short_side():
+    """direction='both' without shortEntry/shortExit is rejected — otherwise the short leg would
+    silently reuse the long rules and trade backwards."""
+    from worker.strategy.dsl.ir import validate_ir
+    broken = {k: v for k, v in BOTH_PARAMS.items() if k not in ("shortEntry", "shortExit")}
+    errs = validate_ir(broken)
+    assert any("shortEntry" in e for e in errs) and any("shortExit" in e for e in errs)

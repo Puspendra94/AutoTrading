@@ -15,7 +15,7 @@ from typing import Any, Optional, Protocol
 from ..config import config
 from ..llm.schemas import ExitTightenDecision, LiveDecision
 from ..llm.service import LlmPurpose, LlmService
-from ..strategy.dsl.interpreter import exit_reason, intended_position_state, should_enter
+from ..strategy.dsl.interpreter import entry_side, exit_reason, intended_position_state
 from ..strategy.dsl.ir import resolve_ir, warmup_bars
 from ..strategy.generator import format_lessons_for_prompt, infer_strategy_type, _js_num
 
@@ -44,13 +44,6 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
     if not ir:
         return "HOLD"
     direction = ir.get("direction") or "long"
-    if direction == "short" and not config.futures_execution_enabled:
-        # Short strategies are fully backtestable/promotable; live short EXECUTION goes through the
-        # futures order path (Phase 4b) and is opt-in. While disabled the live loop stays flat on
-        # them rather than placing a wrong-direction long order.
-        log.info("Live strategy %s is SHORT but FUTURES_EXECUTION_ENABLED is off; holding.",
-                 live_strategy.get("id"))
-        return "HOLD"
 
     warmup = warmup_bars(ir)
     need = max(warmup * 5 + 20, 300)
@@ -67,11 +60,22 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
         # Reconcile to the strategy's INTENDED exposure: if its stateful replay says it should
         # currently be holding (entered earlier and hasn't hit an exit), open to match it — not only
         # on a fresh entry edge this bar. Mirrors the backend's shouldEnter || intendedPositionState.
-        # Direction-aware: a short strategy reconciles to a SHORT holding state. "BUY" here means
-        # "open in the strategy's direction" (the executor sizes it long or short accordingly).
-        holding_state = "SHORT" if direction == "short" else "LONG"
-        intended = should_enter(ir, candles, i) or intended_position_state(ir, candles) == holding_state
-        return "BUY" if intended else "HOLD"
+        # For a 'both' strategy either leg may be the one that wants to open, so resolve the SIDE
+        # rather than a yes/no: BUY opens a long, SHORT opens a short.
+        side = entry_side(ir, candles, i)
+        if side is None:
+            intended = intended_position_state(ir, candles)
+            if intended == "NONE":
+                return "HOLD"
+            side = "short" if intended == "SHORT" else "long"
+        if side == "short" and not config.futures_execution_enabled:
+            # Shorts are fully backtestable/promotable; live short EXECUTION runs through the futures
+            # order path (Phase 4b) and is opt-in. While it's off we stay flat on the short leg
+            # rather than placing a wrong-direction long — a 'both' strategy still trades its long.
+            log.info("Live strategy %s wants a SHORT but FUTURES_EXECUTION_ENABLED is off; holding.",
+                     live_strategy.get("id"))
+            return "HOLD"
+        return "SHORT" if side == "short" else "BUY"
 
     entry_price = float(open_position["entryPrice"])
     entry_time = open_position.get("openedAt")
@@ -82,8 +86,11 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
                 entry_index = k
                 break
     bars_held = max(0, i - entry_index)
+    # Judge the exit against the leg ACTUALLY held (from the position row), not the strategy's
+    # nominal direction — for a 'both' strategy those differ whenever the short leg is open.
+    held_direction = open_position.get("side") or ("short" if direction == "short" else "long")
     # Favorable extreme since entry: highest HIGH for a long, lowest LOW for a short.
-    is_short = ir.get("direction") == "short"
+    is_short = held_direction == "short"
     extreme_price = entry_price
     for k in range(entry_index, i + 1):
         if is_short:
@@ -95,7 +102,9 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
             if hi > extreme_price:
                 extreme_price = hi
 
-    reason = exit_reason(ir, candles, i, {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price})
+    reason = exit_reason(ir, candles, i,
+                         {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price},
+                         direction=held_direction)
     return "SELL" if reason else "HOLD"
 
 

@@ -75,10 +75,18 @@ def test_build_generation_prompt_dsl_shape():
     assert "prefer RSI mean-reversion" in p  # planner emphasis threaded through
 
 
-def test_build_generation_prompt_futures_allows_short():
+def test_build_generation_prompt_futures_allows_short_and_both():
     p = build_generation_prompt("BTCUSDT", "1h", 120.0, param_budget=6, allow_short=True,
                                 signal_emphasis="", lessons_block="none")
-    assert "MARKET TYPE: FUTURES" in p and '"direction":"short"' in p
+    assert "MARKET TYPE: FUTURES" in p
+    assert '"short"' in p and '"both"' in p          # both one-sided and two-sided are offered
+    assert "shortEntry" in p and "SYMMETRIC" in p    # ...and the two-sided shape is spelled out
+
+
+def test_build_generation_prompt_spot_forbids_short_and_both():
+    p = build_generation_prompt("BTCUSDT", "1h", 120.0, param_budget=6, allow_short=False,
+                                signal_emphasis="", lessons_block="none")
+    assert "MARKET TYPE: SPOT" in p and "LONG ONLY" in p
 
 
 # ------------------------------------------------------------------ fakes

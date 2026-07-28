@@ -45,6 +45,11 @@ def parse_generated_strategy(data: Any) -> Optional[dict]:
     }
     if d.get("direction"):
         ir["direction"] = d["direction"]
+    # A 'both' strategy carries its mirrored short leg; dropping these would silently degrade it to
+    # long-only (validate_ir rejects direction='both' without them).
+    for key in ("shortEntry", "shortExit"):
+        if d.get(key):
+            ir[key] = d[key]
     errs = validate_ir(ir)
     if errs:
         log.warning("Generated strategy failed validation: %s", "; ".join(errs[:4]))
@@ -138,6 +143,17 @@ def _direction_mismatch(spec: dict, attempt: int, ticker_id: str) -> bool:
     strategy would do the exact opposite of what it describes (buying every overbought spike in a
     downtrend), so it is rejected rather than silently inverted."""
     declared = spec.get("direction") or "long"
+    if declared == "both":
+        # Both legs must read the way they're labelled: `entry` long-shaped, `shortEntry` short-shaped.
+        bad = [name for name, tree, want_short in
+               (("entry", spec.get("entry"), False), ("shortEntry", spec.get("shortEntry"), True))
+               if looks_like_short(tree) != want_short]
+        if not bad:
+            return False
+        log.warning("Strategy attempt %d/%d for ticker %s declares direction=both but %s reads as the "
+                    "wrong side — refusing to trade it inverted. Discarding.",
+                    attempt, MAX_ATTEMPTS, ticker_id, "/".join(bad))
+        return True
     if looks_like_short(spec.get("entry")) == (declared == "short"):
         return False
     log.warning(
@@ -312,8 +328,8 @@ class StrategyGenerator:
             if two_stage:
                 # Stage 1 gave a SHAPE; Stage 2 (optimizer) finds the best parameters walk-forward.
                 template = llm_res["data"].model_dump(exclude_none=True)
-                if template.get("direction") == "short" and not allow_short:
-                    log.warning("Strategy attempt %d/%d for ticker %s: SHORT template on a non-futures market. Discarding.",
+                if template.get("direction") in ("short", "both") and not allow_short:
+                    log.warning("Strategy attempt %d/%d for ticker %s: SHORT/BOTH template on a non-futures market. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
                 if _direction_mismatch(template, attempt, ticker_id):
@@ -333,8 +349,8 @@ class StrategyGenerator:
                     log.warning("Strategy attempt %d/%d for ticker %s produced an invalid rule tree. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
-                if ir.get("direction") == "short" and not allow_short:
-                    log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT on a non-futures market. Discarding.",
+                if ir.get("direction") in ("short", "both") and not allow_short:
+                    log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT/BOTH strategy on a non-futures market. Discarding.",
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
                 if _direction_mismatch(ir, attempt, ticker_id):

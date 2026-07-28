@@ -12,7 +12,7 @@ import math
 from typing import Optional
 
 from . import indicators as ind
-from .ir import warmup_bars
+from .ir import trade_sides, warmup_bars
 
 
 def _n(v) -> float:
@@ -133,16 +133,23 @@ def eval_condition(c: dict, s: dict, cache: dict, i: int) -> bool:
     return False
 
 
-def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict) -> Optional[str]:
+def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict,
+                   direction: Optional[str] = None, exit_tree: Optional[dict] = None) -> Optional[str]:
     """Adaptive exit ladder (Phase 1) — direction-aware (Phase 4). Deterministic and fully
     backtestable; a live AI overlay (Phase 2) may only TIGHTEN this, never loosen it. `extremePrice`
     is the peak-since-entry for a long, the trough-since-entry for a short. Mirrors exitDecision in
-    interpreter.ts."""
+    interpreter.ts.
+
+    `direction`/`exit_tree` name the side being closed. They default to the strategy's own single
+    direction and `exit` tree; a 'both' strategy passes the side it currently holds, so a short leg
+    is judged with short P&L and closed by the SHORT exit rules."""
     price = s["close"][i]
     entry_price = ctx["entryPrice"]
     bars_held = ctx["barsHeld"]
     extreme_price = ctx["extremePrice"]
-    is_short = ir.get("direction") == "short"
+    direction = direction or ir.get("direction") or "long"
+    exit_tree = ir["exit"] if exit_tree is None else exit_tree
+    is_short = direction == "short"
     if is_short:
         # Short profits when price FALLS; the favorable extreme is the trough, and the trailing
         # stop is triggered by an adverse RISE off that trough.
@@ -196,18 +203,40 @@ def _exit_decision(ir: dict, s: dict, cache: dict, i: int, ctx: dict) -> Optiona
     #    same/adjacent bar (the whipsaw that produced 0.00% round-trips live). Absent => 0 (no gate).
     min_hold = risk.get("minHoldBars")
     min_hold = 0 if min_hold is None else min_hold
-    if bars_held >= min_hold and eval_condition(ir["exit"], s, cache, i):
+    if bars_held >= min_hold and eval_condition(exit_tree, s, cache, i):
         return "Exit rule"
     return None
 
 
 def should_enter(ir: dict, candles: list[dict], i: int) -> bool:
+    """True when ANY side's entry fires on bar i (a 'both' strategy has two)."""
+    return entry_side(ir, candles, i) is not None
+
+
+def entry_side(ir: dict, candles: list[dict], i: int) -> Optional[str]:
+    """Which direction ('long'/'short') wants to open on bar i, or None. The live loop needs the
+    side — not just a yes/no — to open the correct leg of a 'both' strategy."""
+    if i < warmup_bars(ir):
+        return None
     s = build_series(candles)
-    return i >= warmup_bars(ir) and eval_condition(ir["entry"], s, {}, i)
+    cache: dict = {}
+    for side_direction, entry_tree, _ in trade_sides(ir):
+        if eval_condition(entry_tree, s, cache, i):
+            return side_direction
+    return None
 
 
-def exit_reason(ir: dict, candles: list[dict], i: int, ctx: dict) -> Optional[str]:
-    return _exit_decision(ir, build_series(candles), {}, i, ctx)
+def exit_reason(ir: dict, candles: list[dict], i: int, ctx: dict,
+                direction: Optional[str] = None) -> Optional[str]:
+    """`direction` is the side actually held — required for a 'both' strategy so the position is
+    judged with the right P&L sign and closed by that side's exit rules."""
+    exit_tree = None
+    if direction:
+        for side_direction, _, side_exit in trade_sides(ir):
+            if side_direction == direction:
+                exit_tree = side_exit
+                break
+    return _exit_decision(ir, build_series(candles), {}, i, ctx, direction=direction, exit_tree=exit_tree)
 
 
 def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
@@ -217,8 +246,13 @@ def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
     cache: dict = {}
     warmup = warmup_bars(ir)
 
-    direction = ir.get("direction") or "long"
-    position = "NONE"
+    # One side for a long/short strategy, two for 'both'. When flat, sides are tested in order and
+    # the first whose entry fires is opened; a symmetric strategy's trend filter keeps them mutually
+    # exclusive, and if both somehow fire the long is taken (never both at once — the risk gate caps
+    # a ticker at one open position anyway).
+    sides = trade_sides(ir)
+    position = "NONE"          # 'NONE' | 'long' | 'short' — the side currently held
+    open_exit_tree: dict = {}
     entry_price = 0.0
     bars_held = 0
     extreme_price = 0.0
@@ -246,19 +280,25 @@ def simulate_from_ir(candles: list[dict], ir: dict) -> dict:
                 max_dd_duration = current_dd_duration
 
         if position == "NONE":
-            if eval_condition(ir["entry"], s, cache, i):
-                position = "OPEN"
-                entry_price = _entry_fill(direction, price)
-                bars_held = 0
-                extreme_price = price
+            for side_direction, entry_tree, exit_tree in sides:
+                if eval_condition(entry_tree, s, cache, i):
+                    position = side_direction
+                    open_exit_tree = exit_tree
+                    entry_price = _entry_fill(side_direction, price)
+                    bars_held = 0
+                    extreme_price = price
+                    break
         else:
             bars_held += 1
-            extreme_price = _better_extreme(direction, extreme_price, price)
-            reason = _exit_decision(ir, s, cache, i,
-                                    {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price})
+            extreme_price = _better_extreme(position, extreme_price, price)
+            reason = _exit_decision(
+                ir, s, cache, i,
+                {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price},
+                direction=position, exit_tree=open_exit_tree,
+            )
             if reason:
-                exit_price = _exit_fill(direction, price)
-                net_return_pct = _net_return(direction, entry_price, exit_price)
+                exit_price = _exit_fill(position, price)
+                net_return_pct = _net_return(position, entry_price, exit_price)
                 equity += equity * net_return_pct
                 trades.append(net_return_pct)
                 hold_bars.append(bars_held)
@@ -280,9 +320,10 @@ def intended_position_state(ir: dict, candles: list[dict]) -> str:
     if len(candles) <= warmup:
         return "NONE"
 
-    direction = ir.get("direction") or "long"
-    holding_state = "SHORT" if direction == "short" else "LONG"
-    position = "NONE"
+    sides = trade_sides(ir)
+    position = "NONE"   # 'NONE' | 'LONG' | 'SHORT'
+    held_direction = "long"
+    open_exit_tree: dict = {}
     entry_price = 0.0
     bars_held = 0
     extreme_price = 0.0
@@ -291,16 +332,21 @@ def intended_position_state(ir: dict, candles: list[dict]) -> str:
         if not math.isfinite(price):
             continue
         if position == "NONE":
-            if eval_condition(ir["entry"], s, cache, i):
-                position = holding_state
-                entry_price = price
-                bars_held = 0
-                extreme_price = price
+            for side_direction, entry_tree, exit_tree in sides:
+                if eval_condition(entry_tree, s, cache, i):
+                    position = "SHORT" if side_direction == "short" else "LONG"
+                    held_direction = side_direction
+                    open_exit_tree = exit_tree
+                    entry_price = price
+                    bars_held = 0
+                    extreme_price = price
+                    break
         else:
             bars_held += 1
-            extreme_price = _better_extreme(direction, extreme_price, price)
+            extreme_price = _better_extreme(held_direction, extreme_price, price)
             if _exit_decision(ir, s, cache, i,
-                              {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price}):
+                              {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price},
+                              direction=held_direction, exit_tree=open_exit_tree):
                 position = "NONE"
     return position
 
@@ -312,10 +358,13 @@ def generate_signals_from_ir(candles: list[dict], ir: dict) -> list[dict]:
     warmup = warmup_bars(ir)
     times = [math.floor(int(c["timestamp"]) / 1000) for c in candles]
 
-    direction = ir.get("direction") or "long"
-    open_side = "sell" if direction == "short" else "buy"   # short opens by selling
-    close_side = "buy" if direction == "short" else "sell"  # ...and closes by buying back
+    # Each marker carries the direction of the leg that produced it, so a 'both' strategy's chart can
+    # label a long entry BUY and a short entry SHORT on the same series (a single strategy-level
+    # direction can't express that).
+    sides = trade_sides(ir)
     position = "NONE"
+    held_direction = "long"
+    open_exit_tree: dict = {}
     entry_price = 0.0
     bars_held = 0
     extreme_price = 0.0
@@ -324,18 +373,31 @@ def generate_signals_from_ir(candles: list[dict], ir: dict) -> list[dict]:
         if not math.isfinite(price):
             continue
         if position == "NONE":
-            if eval_condition(ir["entry"], s, cache, i):
-                position = "OPEN"
-                entry_price = price
-                bars_held = 0
-                extreme_price = price
-                signals.append({"time": times[i], "side": open_side, "price": price, "reason": "Entry rule"})
+            for side_direction, entry_tree, exit_tree in sides:
+                if eval_condition(entry_tree, s, cache, i):
+                    position = "OPEN"
+                    held_direction = side_direction
+                    open_exit_tree = exit_tree
+                    entry_price = price
+                    bars_held = 0
+                    extreme_price = price
+                    signals.append({
+                        "time": times[i],
+                        "side": "sell" if side_direction == "short" else "buy",  # a short opens by selling
+                        "direction": side_direction, "price": price, "reason": "Entry rule",
+                    })
+                    break
         else:
             bars_held += 1
-            extreme_price = _better_extreme(direction, extreme_price, price)
+            extreme_price = _better_extreme(held_direction, extreme_price, price)
             reason = _exit_decision(ir, s, cache, i,
-                                    {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price})
+                                    {"entryPrice": entry_price, "barsHeld": bars_held, "extremePrice": extreme_price},
+                                    direction=held_direction, exit_tree=open_exit_tree)
             if reason:
                 position = "NONE"
-                signals.append({"time": times[i], "side": close_side, "price": price, "reason": reason})
+                signals.append({
+                    "time": times[i],
+                    "side": "buy" if held_direction == "short" else "sell",  # ...and closes by buying back
+                    "direction": held_direction, "price": price, "reason": reason,
+                })
     return signals

@@ -303,24 +303,29 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     // scroll) is rendered, while markers outside the loaded candles simply wait until those
     // bars page in. setMarkers is cheap even at a few hundred markers.
     const SIGNAL_LOOKBACK = 6000;
-    type Signal = { time: number; side: 'buy' | 'sell'; price: number; reason: string };
+    // `direction` is per-signal, not per-strategy: a two-sided ('both') strategy emits long and
+    // short legs on the same series, so each marker carries the side that produced it.
+    type Signal = { time: number; side: 'buy' | 'sell'; direction?: 'long' | 'short'; price: number; reason: string };
     async function loadSignals(interval: string) {
       if (!tickerId || !series) return;
       try {
         const res = await apiGet<{ signals: Signal[]; direction?: 'long' | 'short' }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=${SIGNAL_LOOKBACK}`);
-        // A short strategy opens with a SELL and covers with a BUY; label those SHORT/COVER so the
-        // markers read correctly (a raw "SELL" on an entry is confusing on a short).
-        const isShort = res.direction === 'short';
+        // A short leg opens with a SELL and covers with a BUY; label those SHORT/COVER so the markers
+        // read correctly (a raw "SELL" on an entry is confusing on a short). Fall back to the
+        // strategy-level direction for rows persisted before per-signal direction existed.
         const markers = (res.signals || [])
           .slice()
           .sort((a, b) => a.time - b.time)
-          .map((s) => ({
-            time: s.time as UTCTimestamp,
-            position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
-            color: s.side === 'buy' ? UP : DOWN,
-            shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
-            text: isShort ? (s.side === 'buy' ? 'COVER' : 'SHORT') : (s.side === 'buy' ? 'BUY' : 'SELL'),
-          }));
+          .map((s) => {
+            const isShort = (s.direction ?? res.direction) === 'short';
+            return {
+              time: s.time as UTCTimestamp,
+              position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
+              color: s.side === 'buy' ? UP : DOWN,
+              shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
+              text: isShort ? (s.side === 'buy' ? 'COVER' : 'SHORT') : (s.side === 'buy' ? 'BUY' : 'SELL'),
+            };
+          });
         series.setMarkers(markers as any);
       } catch {
         series?.setMarkers([]); // no active strategy / fetch failed → keep the chart clean
@@ -597,8 +602,13 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         const metric = (label: string, val: string, cls = 'text-fg') => `<div class="flex flex-col gap-0.5"><span class="eyebrow">${label}</span><span class="tabular text-base font-bold ${cls}">${val}</span></div>`;
         // Direction (long/short) + venue (futures/spot). A short can only run on a futures ticker,
         // so surfacing both makes it clear the strategy trades — and which way — in either regime.
-        const dir = strategy.parametersJson?.direction === 'short' ? 'short' : 'long';
-        const dirBadge = `<span class="badge ${dir === 'long' ? 'badge-brand' : 'badge-bear'}" title="Trade direction">${dir.toUpperCase()}</span>`;
+        const raw = strategy.parametersJson?.direction;
+        const dir: 'long' | 'short' | 'both' = raw === 'short' || raw === 'both' ? raw : 'long';
+        const dirTitle = dir === 'both'
+          ? 'Trades BOTH sides — long in an uptrend, short in a downtrend'
+          : 'Trade direction';
+        const dirCls = dir === 'long' ? 'badge-brand' : dir === 'short' ? 'badge-bear' : 'badge-muted';
+        const dirBadge = `<span class="badge ${dirCls}" title="${dirTitle}">${dir.toUpperCase()}</span>`;
         const venueBadge = (marketType === 'futures')
           ? '<span class="badge badge-muted" title="USD-M futures — supports shorts and leverage">FUTURES</span>'
           : '';

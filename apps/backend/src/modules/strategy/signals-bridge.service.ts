@@ -10,8 +10,10 @@ const SIGNALS_RESPONSE_CHANNEL = 'signals:response';
 export interface SignalsResult {
   strategyId: string | null;
   strategyName: string | null;
-  direction: 'long' | 'short';
-  signals: Array<{ time: number; side: 'buy' | 'sell'; price: number; reason: string }>;
+  // Strategy-level direction ('both' = trades each side). Each signal also carries its own
+  // direction, which is what the chart labels from — a 'both' strategy mixes legs on one series.
+  direction: 'long' | 'short' | 'both';
+  signals: Array<{ time: number; side: 'buy' | 'sell'; direction?: 'long' | 'short'; price: number; reason: string }>;
 }
 
 const EMPTY: SignalsResult = { strategyId: null, strategyName: null, direction: 'long', signals: [] };
@@ -43,8 +45,9 @@ export class SignalsBridgeService implements OnModuleInit {
         const resolve = this.pending.get(r.requestId);
         if (resolve) {
           this.pending.delete(r.requestId);
+          const dir = r.direction === 'short' || r.direction === 'both' ? r.direction : 'long';
           resolve({ strategyId: r.strategyId ?? null, strategyName: r.strategyName ?? null,
-            direction: r.direction === 'short' ? 'short' : 'long', signals: r.signals ?? [] });
+            direction: dir, signals: r.signals ?? [] });
         }
       } catch (e) {
         this.logger.error(`Failed to parse signals:response: ${e.message}`);

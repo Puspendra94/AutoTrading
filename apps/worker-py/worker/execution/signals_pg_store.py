@@ -87,10 +87,12 @@ class PgSignalStore:
         makes re-replaying the same bars a no-op, so this can run on every request/candle close."""
         if not signals:
             return
+        # Prefer the PER-SIGNAL direction: a 'both' strategy emits long and short markers from the
+        # same replay, so a single strategy-level direction would mislabel half of them.
         rows = [
             (strategy_id, ticker_id, interval,
              datetime.fromtimestamp(int(s["time"]), tz=timezone.utc),
-             s["side"], direction, float(s["price"]), str(s.get("reason") or ""))
+             s["side"], s.get("direction") or direction, float(s["price"]), str(s.get("reason") or ""))
             for s in signals
         ]
         async with self.pool.acquire() as conn:
@@ -110,23 +112,25 @@ class PgSignalStore:
         and so markers survive the candles that produced them ageing out of the replay window."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT bar_time, side, price, reason FROM strategy_signals
+                """SELECT bar_time, side, direction, price, reason FROM strategy_signals
                    WHERE strategy_id = $1 AND interval = $2 ORDER BY bar_time ASC""",
                 strategy_id, interval,
             )
-        return [{"time": int(r["bar_time"].timestamp()), "side": r["side"],
+        return [{"time": int(r["bar_time"].timestamp()), "side": r["side"], "direction": r["direction"],
                  "price": float(r["price"]), "reason": r["reason"]} for r in rows]
 
     async def get_open_position_for_strategy(self, ticker_id: str, strategy_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, entry_price, unrealized_pl, opened_at FROM positions "
+                "SELECT id, side, entry_price, unrealized_pl, opened_at FROM positions "
                 "WHERE ticker_id = $1 AND strategy_id = $2 AND status = 'open' LIMIT 1",
                 ticker_id, strategy_id,
             )
         if not row:
             return None
-        return {"id": str(row["id"]), "entryPrice": row["entry_price"], "unrealizedPl": row["unrealized_pl"],
+        # `side` matters for a 'both' strategy: the exit must be judged against the leg actually held.
+        return {"id": str(row["id"]), "side": row["side"], "entryPrice": row["entry_price"],
+                "unrealizedPl": row["unrealized_pl"],
                 "openedAt": int(row["opened_at"].timestamp() * 1000) if row["opened_at"] else None}
 
     async def get_ticker(self, ticker_id: str) -> Optional[dict]:

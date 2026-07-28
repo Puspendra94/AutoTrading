@@ -15,6 +15,25 @@ PERIOD_MIN = 2
 PERIOD_MAX = 400
 COMPARISON_OPS = {"gt", "lt", "gte", "lte", "crossAbove", "crossBelow"}
 
+# A 'both' strategy trades LONG and SHORT from one rule tree: `entry`/`exit` are the long side and
+# `shortEntry`/`shortExit` the short side, with a trend filter picking which one can fire. Written
+# symmetrically (same indicator periods, mirrored thresholds) the shared operands de-duplicate in
+# count_ir_parameters, so it costs ~1-2 parameters over a single-sided strategy rather than double.
+BOTH = "both"
+DIRECTIONS = ("long", "short", BOTH)
+
+
+def trade_sides(ir: dict) -> list[tuple[str, dict, dict]]:
+    """[(direction, entry_tree, exit_tree), ...] — one entry for a single-sided strategy, two for
+    'both'. The single place that knows how a direction maps to its trees."""
+    direction = ir.get("direction") or "long"
+    if direction == BOTH:
+        return [
+            ("long", ir["entry"], ir["exit"]),
+            ("short", ir.get("shortEntry") or ir["entry"], ir.get("shortExit") or ir["exit"]),
+        ]
+    return [(direction, ir["entry"], ir["exit"])]
+
 
 # ---- Warmup ----
 def _operand_lookback(o: dict) -> int:
@@ -46,7 +65,10 @@ def _condition_lookback(c: dict) -> int:
 
 
 def warmup_bars(ir: dict) -> int:
-    return max(1, _condition_lookback(ir["entry"]), _condition_lookback(ir["exit"]))
+    lookbacks = [1]
+    for _, entry, exit_tree in trade_sides(ir):
+        lookbacks += [_condition_lookback(entry), _condition_lookback(exit_tree)]
+    return max(lookbacks)
 
 
 # ---- Overfitting budget: count DISTINCT tunable knobs (mirror of countIRParameters) ----
@@ -84,9 +106,12 @@ def _collect_operands(c: dict, into: dict) -> None:
 
 
 def count_ir_parameters(ir: dict) -> int:
+    # Operands are keyed by shape, so an indicator reused across the long and short sides (the point
+    # of a SYMMETRIC 'both' strategy) is charged once — only the mirrored thresholds cost extra.
     operands: dict = {}
-    _collect_operands(ir["entry"], operands)
-    _collect_operands(ir["exit"], operands)
+    for _, entry, exit_tree in trade_sides(ir):
+        _collect_operands(entry, operands)
+        _collect_operands(exit_tree, operands)
     total = sum(_operand_param_count(o) for o in operands.values())
     risk = ir.get("risk", {})
     risk_count = 2 + (1 if risk.get("trailingStopPct") is not None else 0) + (1 if risk.get("maxHoldBars") is not None else 0)
@@ -145,8 +170,9 @@ def strategy_type_tag(params: dict) -> str:
         return "unclassified"
     kinds: set = set()
     try:
-        _collect_indicator_kinds(ir["entry"], kinds)
-        _collect_indicator_kinds(ir["exit"], kinds)
+        for _, entry, exit_tree in trade_sides(ir):
+            _collect_indicator_kinds(entry, kinds)
+            _collect_indicator_kinds(exit_tree, kinds)
     except Exception:  # noqa: BLE001 — malformed tree -> unclassified
         return "unclassified"
     return "_".join(sorted(kinds)) if kinds else "price_action"
@@ -263,11 +289,17 @@ def validate_ir(ir: Any) -> list[str]:
     errs: list[str] = []
     if not ir.get("strategyName"):
         errs.append("strategyName is required")
-    if "direction" in ir and ir["direction"] is not None and ir["direction"] not in ("long", "short"):
-        errs.append("direction must be long|short")
+    if "direction" in ir and ir["direction"] is not None and ir["direction"] not in DIRECTIONS:
+        errs.append(f"direction must be {'|'.join(DIRECTIONS)}")
     for key in ("entry", "exit"):
         if key not in ir:
             errs.append(f"{key} is required")
+    if ir.get("direction") == BOTH:
+        # A 'both' strategy is only meaningful with its own short side; without it the short leg
+        # would silently reuse the long rules and trade backwards.
+        for key in ("shortEntry", "shortExit"):
+            if key not in ir:
+                errs.append(f"{key} is required when direction is '{BOTH}'")
     risk = ir.get("risk")
     if not isinstance(risk, dict):
         errs.append("risk is required")
@@ -280,7 +312,10 @@ def validate_ir(ir: Any) -> list[str]:
         errs += _validate_risk_extras(risk)
     if errs:
         return errs
-    return validate_condition(ir["entry"], "entry") + validate_condition(ir["exit"], "exit")
+    for direction, entry, exit_tree in trade_sides(ir):
+        label = "" if ir.get("direction") != BOTH else f"[{direction}] "
+        errs += validate_condition(entry, f"{label}entry") + validate_condition(exit_tree, f"{label}exit")
+    return errs
 
 
 # ---- Legacy auto-translate (mirrors legacyToIR) ----
