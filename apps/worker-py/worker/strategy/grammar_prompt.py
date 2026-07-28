@@ -104,6 +104,39 @@ def _num(x: float) -> str:
     return str(int(f)) if f.is_integer() else repr(f)
 
 
+_TEMPLATE_INSTRUCTION = (
+    'OUTPUT A TEMPLATE, NOT CONCRETE NUMBERS. You choose the strategy SHAPE; a deterministic optimizer will\n'
+    'then search the best parameters on the real data (so DON\'T guess exact numbers). For every tunable number\n'
+    '(indicator periods, comparison thresholds/levels, stopLossPct, takeProfitPct) write {"$param":"<name>"} in\n'
+    'place of the number, and provide a top-level "search" object mapping each <name> to a SHORT list of\n'
+    'candidate values (3-5 each) spanning a sensible range. The count of DISTINCT $param names is the parameter\n'
+    'budget — keep it <= the budget below. Example template (RSI mean-reversion):\n'
+    '{"strategyName":"RSI mean-reversion","search":{"rsi_p":[7,14,21],"os":[28,32,36,40],"rec":[50,55,60],'
+    '"trend":[100,200],"sl":[2,3,4],"tp":[6,8,12]},'
+    '"entry":{"op":"and","conditions":[{"op":"lt","left":{"op":"indicator","kind":"rsi","period":{"$param":"rsi_p"}},'
+    '"right":{"op":"const","value":{"$param":"os"}}},{"op":"gt","left":{"op":"price","field":"close"},'
+    '"right":{"op":"indicator","kind":"ema","period":{"$param":"trend"}}}]},'
+    '"exit":{"op":"gt","left":{"op":"indicator","kind":"rsi","period":{"$param":"rsi_p"}},"right":{"op":"const",'
+    '"value":{"$param":"rec"}}},"risk":{"stopLossPct":{"$param":"sl"},"takeProfitPct":{"$param":"tp"}}}'
+)
+
+
+def build_template_generation_prompt(
+    symbol: str, interval: str, latest_price: float, param_budget: int,
+    allow_short: bool, signal_emphasis: str, lessons_block: str,
+) -> str:
+    """Two-stage Stage 1: same grammar, but the LLM emits a SHAPE (template + search grid)."""
+    base = build_generation_prompt(symbol, interval, latest_price, param_budget, allow_short,
+                                   signal_emphasis, lessons_block)
+    return (
+        base.replace(
+            "Respond with strategyName, reasoning, and the entry, exit, and risk fields (JSON objects, not strings).",
+            _TEMPLATE_INSTRUCTION + "\n\nRespond with strategyName, reasoning, search, and the entry/exit/risk "
+            "fields (JSON objects, not strings).",
+        )
+    )
+
+
 def build_generation_prompt(
     symbol: str,
     interval: str,

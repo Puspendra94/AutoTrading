@@ -4,9 +4,12 @@ Pure helpers are asserted directly; the gate-retry-promote control flow is exerc
 fake store + fake LLM against the REAL (parity-verified) evaluator, so the flow is pinned to
 generateStrategyForTicker's behavior without a DB or network.
 """
+import dataclasses
 import math
 
-from worker.llm.schemas import StrategyGen
+import worker.strategy.generator as gmod
+from worker.config import config as worker_config
+from worker.llm.schemas import StrategyGen, StrategyTemplate
 from worker.strategy import generator as gen
 from worker.strategy.generator import (
     StrategyGenerator,
@@ -223,6 +226,47 @@ async def test_generate_retires_previous_live_and_records_lesson():
     assert "insert_lesson" in store.calls
     assert store.calls.index("retire_live") < store.calls.index("promote_strategy")
     assert store.lessons_inserted[0]["source_strategy_id"] == "old-sid"
+
+
+class FakeLlmTemplate:
+    """Returns a strategy TEMPLATE (Stage 1 output) for the two-stage path."""
+    def __init__(self, template: dict):
+        self.template = template
+
+    async def generate_structured_completion(self, prompt, schema, schema_name="x", max_tokens=1024):
+        return {"data": StrategyTemplate.model_validate(self.template), "model": "test-model",
+                "provider": "direct_api", "inputTokens": 0, "outputTokens": 0, "costUsd": 0.0}
+
+    async def generate_completion(self, prompt, max_tokens=1024):
+        return {"content": "x", "model": "t", "provider": "p", "inputTokens": 0, "outputTokens": 0, "costUsd": 0.0}
+
+    async def log_cost(self, *a, **k):
+        return None
+
+
+# RSI(7) mean-reversion template with a small search grid — fires often on the oscillatory fixture.
+RSI_TEMPLATE = {
+    "strategyName": "RSI template", "reasoning": "",
+    "search": {"os": [30, 40], "rec": [55, 65]},
+    "entry": {"op": "lt", "left": {"op": "indicator", "kind": "rsi", "period": 7},
+              "right": {"op": "const", "value": {"$param": "os"}}},
+    "exit": {"op": "gt", "left": {"op": "indicator", "kind": "rsi", "period": 7},
+             "right": {"op": "const", "value": {"$param": "rec"}}},
+    "risk": {"stopLossPct": 2, "takeProfitPct": 4},
+}
+
+
+async def test_two_stage_generation_optimizes_and_promotes(monkeypatch):
+    # Flip the module's config to two-stage; the LLM returns a SHAPE and the real optimizer searches it.
+    monkeypatch.setattr(gmod, "config", dataclasses.replace(worker_config, two_stage_generation=True))
+    store = FakeStore(RELAXED)
+    result = await StrategyGenerator(store, FakeLlmTemplate(RSI_TEMPLATE)).generate("tick-1", "cycle")
+    assert result["saved"] is True
+    assert "insert_strategy" in store.calls
+    # The promoted strategy is a CONCRETE tree (the optimizer substituted the $param markers).
+    params = store.inserted_strategy["params"]
+    assert "$param" not in str(params)
+    assert isinstance(params["exit"]["right"]["value"], (int, float))  # a real number, not a marker
 
 
 async def test_generate_refuses_on_blocking_flags():

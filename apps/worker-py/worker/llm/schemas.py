@@ -52,6 +52,20 @@ class StrategyGen(BaseModel):
     risk: dict = Field(..., description="{stopLossPct, takeProfitPct, and optionally trailingStopPct, maxHoldBars}")
 
 
+class StrategyTemplate(BaseModel):
+    """Two-stage generation, Stage 1 output: a strategy SHAPE. Same rule tree as StrategyGen, but
+    tunable numbers are {"$param": "name"} markers and `search` lists candidate values per name;
+    the optimizer (Stage 2) grid-searches them on the data. entry/exit/risk stay permissive dicts."""
+
+    strategyName: str = Field(..., description="Short human-readable name")
+    reasoning: str = Field("", description="Why this shape, tied to lessons/market")
+    direction: Optional[Literal["long", "short"]] = Field(None, description="'long' (default) or 'short' (futures only)")
+    search: dict = Field(..., description='Param name -> list of candidate values, e.g. {"oversold":[28,32,35]}')
+    entry: dict = Field(..., description="Entry condition tree with {\"$param\":\"name\"} leaves")
+    exit: dict = Field(..., description="Exit condition tree with {\"$param\":\"name\"} leaves")
+    risk: dict = Field(..., description="Risk object with {\"$param\":\"name\"} leaves")
+
+
 class GenerationPlan(BaseModel):
     """Meta-planner output (mirrors GenerationPlanSchema). Proposed gate thresholds are a REQUEST —
     the caller clamps every one to a hard floor before use."""

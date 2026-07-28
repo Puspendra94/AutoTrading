@@ -120,6 +120,11 @@ class Config:
     # (default) leaves generation in the NestJS backend. Mirrors the backend's GENERATION_SOURCE.
     generation_source: str = os.getenv("GENERATION_SOURCE", "backend")
 
+    # Two-stage generation: the LLM proposes a strategy SHAPE (template with a `search` grid) and a
+    # deterministic optimizer finds the best parameters on the data (walk-forward), instead of the
+    # LLM guessing concrete numbers. Off by default; opt-in while it's validated.
+    two_stage_generation: bool = os.getenv("TWO_STAGE_GENERATION", "false").lower() in ("1", "true", "yes", "on")
+
     @property
     def dsn(self) -> str:
         return (

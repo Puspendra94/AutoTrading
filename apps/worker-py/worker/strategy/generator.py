@@ -17,11 +17,13 @@ import logging
 import re
 from typing import Any, Optional, Protocol
 
-from ..llm.schemas import StrategyGen
+from ..config import config
+from ..llm.schemas import StrategyGen, StrategyTemplate
 from ..llm.service import LlmPurpose, LlmService
 from .dsl.ir import validate_ir
 from .evaluator import evaluate_strategy
-from .grammar_prompt import build_generation_prompt
+from .grammar_prompt import build_generation_prompt, build_template_generation_prompt
+from .optimizer import optimize
 
 log = logging.getLogger("worker.strategy.generator")
 
@@ -225,7 +227,9 @@ class StrategyGenerator:
         latest_price = float(candles[-1]["close"]) if candles else 0
         allow_short = (ticker.get("market_type_name") or "").lower() == "futures"
         param_budget = int(policy.get("maxParameterCount") or 5)
-        prompt = build_generation_prompt(
+        two_stage = config.two_stage_generation
+        prompt_builder = build_template_generation_prompt if two_stage else build_generation_prompt
+        prompt = prompt_builder(
             ticker["symbol"], eval_interval, latest_price, param_budget,
             allow_short, plan["signalEmphasis"], lessons_block,
         )
@@ -235,7 +239,9 @@ class StrategyGenerator:
         last_eval = None
         last_params = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            llm_res = await self.llm.generate_structured_completion(prompt, StrategyGen, schema_name="propose_strategy")
+            schema = StrategyTemplate if two_stage else StrategyGen
+            llm_res = await self.llm.generate_structured_completion(
+                prompt, schema, schema_name="propose_template" if two_stage else "propose_strategy")
             await self.llm.log_cost(
                 getattr(self.store, "pool", None),
                 ticker_id, None, LlmPurpose.STRATEGY_GENERATION,
@@ -243,17 +249,32 @@ class StrategyGenerator:
                  "inputTokens": llm_res["inputTokens"], "outputTokens": llm_res["outputTokens"],
                  "costUsd": llm_res["costUsd"]},
             )
-            ir = parse_generated_strategy(llm_res["data"])
-            if ir is None:
-                log.warning("Strategy attempt %d/%d for ticker %s produced an invalid rule tree. Discarding.",
-                            attempt, MAX_ATTEMPTS, ticker_id)
-                continue
-            if ir.get("direction") == "short" and not allow_short:
-                log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT on a non-futures market. Discarding.",
-                            attempt, MAX_ATTEMPTS, ticker_id)
-                continue
 
-            eval_result = evaluate_strategy(candles, ir, policy)
+            if two_stage:
+                # Stage 1 gave a SHAPE; Stage 2 (optimizer) finds the best parameters walk-forward.
+                template = llm_res["data"].model_dump(exclude_none=True)
+                if template.get("direction") == "short" and not allow_short:
+                    log.warning("Strategy attempt %d/%d for ticker %s: SHORT template on a non-futures market. Discarding.",
+                                attempt, MAX_ATTEMPTS, ticker_id)
+                    continue
+                opt = optimize(template, candles, policy)
+                ir, eval_result = opt["ir"], opt["evaluation"]
+                if ir is None:
+                    log.warning("Strategy attempt %d/%d for ticker %s: optimizer found no scoreable config (%d tried). Discarding.",
+                                attempt, MAX_ATTEMPTS, ticker_id, opt.get("tried") or 0)
+                    continue
+            else:
+                ir = parse_generated_strategy(llm_res["data"])
+                if ir is None:
+                    log.warning("Strategy attempt %d/%d for ticker %s produced an invalid rule tree. Discarding.",
+                                attempt, MAX_ATTEMPTS, ticker_id)
+                    continue
+                if ir.get("direction") == "short" and not allow_short:
+                    log.warning("Strategy attempt %d/%d for ticker %s proposed a SHORT on a non-futures market. Discarding.",
+                                attempt, MAX_ATTEMPTS, ticker_id)
+                    continue
+                eval_result = evaluate_strategy(candles, ir, policy)
+
             last_eval, last_params = eval_result, ir
 
             if not (eval_result["passedEvaluationGate"] or skip_gate):
