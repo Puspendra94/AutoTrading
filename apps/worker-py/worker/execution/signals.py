@@ -43,12 +43,13 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
     ir = resolve_ir(live_strategy["parametersJson"])
     if not ir:
         return "HOLD"
-    if ir.get("direction") == "short":
-        # Short strategies are fully backtestable/promotable, but live short EXECUTION needs the
-        # futures order path (Phase 4b). Until then the live loop stays flat on them rather than
-        # placing a wrong-direction long order.
-        log.warning("Live strategy %s is a SHORT strategy; live short execution is not yet wired "
-                    "(Phase 4b). Holding.", live_strategy.get("id"))
+    direction = ir.get("direction") or "long"
+    if direction == "short" and not config.futures_execution_enabled:
+        # Short strategies are fully backtestable/promotable; live short EXECUTION goes through the
+        # futures order path (Phase 4b) and is opt-in. While disabled the live loop stays flat on
+        # them rather than placing a wrong-direction long order.
+        log.info("Live strategy %s is SHORT but FUTURES_EXECUTION_ENABLED is off; holding.",
+                 live_strategy.get("id"))
         return "HOLD"
 
     warmup = warmup_bars(ir)
@@ -66,8 +67,11 @@ async def evaluate_rules_signal(store: SignalStore, ticker_id: str, live_strateg
         # Reconcile to the strategy's INTENDED exposure: if its stateful replay says it should
         # currently be holding (entered earlier and hasn't hit an exit), open to match it — not only
         # on a fresh entry edge this bar. Mirrors the backend's shouldEnter || intendedPositionState.
-        intended_long = should_enter(ir, candles, i) or intended_position_state(ir, candles) == "LONG"
-        return "BUY" if intended_long else "HOLD"
+        # Direction-aware: a short strategy reconciles to a SHORT holding state. "BUY" here means
+        # "open in the strategy's direction" (the executor sizes it long or short accordingly).
+        holding_state = "SHORT" if direction == "short" else "LONG"
+        intended = should_enter(ir, candles, i) or intended_position_state(ir, candles) == holding_state
+        return "BUY" if intended else "HOLD"
 
     entry_price = float(open_position["entryPrice"])
     entry_time = open_position.get("openedAt")

@@ -10,10 +10,11 @@ const SIGNALS_RESPONSE_CHANNEL = 'signals:response';
 export interface SignalsResult {
   strategyId: string | null;
   strategyName: string | null;
+  direction: 'long' | 'short';
   signals: Array<{ time: number; side: 'buy' | 'sell'; price: number; reason: string }>;
 }
 
-const EMPTY: SignalsResult = { strategyId: null, strategyName: null, signals: [] };
+const EMPTY: SignalsResult = { strategyId: null, strategyName: null, direction: 'long', signals: [] };
 
 /**
  * Consolidation Phase B — chart markers are computed by the worker (which owns the DSL engine), not
@@ -42,7 +43,8 @@ export class SignalsBridgeService implements OnModuleInit {
         const resolve = this.pending.get(r.requestId);
         if (resolve) {
           this.pending.delete(r.requestId);
-          resolve({ strategyId: r.strategyId ?? null, strategyName: r.strategyName ?? null, signals: r.signals ?? [] });
+          resolve({ strategyId: r.strategyId ?? null, strategyName: r.strategyName ?? null,
+            direction: r.direction === 'short' ? 'short' : 'long', signals: r.signals ?? [] });
         }
       } catch (e) {
         this.logger.error(`Failed to parse signals:response: ${e.message}`);

@@ -31,10 +31,11 @@ class _RiskStore:
 
 
 class _ExecStore:
-    def __init__(self, provider, creds=None, caps=None):
+    def __init__(self, provider, creds=None, caps=None, market_type=None):
         self.provider = provider
         self.creds = creds
         self.caps = caps
+        self.market_type = market_type
         self.positions: dict[str, dict] = {}
         self.orders: list[dict] = []
         self.api: list[str] = []
@@ -46,12 +47,15 @@ class _ExecStore:
         self.positions[pid] = {"entry_price": entry, "quantity": qty, "side": side, "status": "open"}
         return pid
 
-    async def get_ticker(self, i): return {"id": "t1", "symbol": "BTCUSDT", "providerId": "p1"}
+    async def get_ticker(self, i): return {"id": "t1", "symbol": "BTCUSDT", "providerId": "p1", "marketType": self.market_type}
     async def get_provider(self, i): return self.provider
     async def get_credential(self, i, use_testnet=False): return self.creds
 
-    async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation):
-        return self.seed(side, entry_price, quantity)
+    async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation,
+                              leverage=1, margin_type="isolated", trade_mode="paper", network=None):
+        pid = self.seed(side, entry_price, quantity)
+        self.positions[pid].update(leverage=leverage, margin_type=margin_type, trade_mode=trade_mode, network=network)
+        return pid
 
     async def insert_order(self, **k): self.orders.append(k)
 
@@ -61,7 +65,7 @@ class _ExecStore:
             return None
         return {"id": pid, "tickerId": "t1", "side": p["side"], "status": p["status"],
                 "entryPrice": p["entry_price"], "currentPrice": p["entry_price"], "quantity": p["quantity"],
-                "providerId": "p1", "symbol": "BTCUSDT"}
+                "providerId": "p1", "symbol": "BTCUSDT", "marketType": self.market_type}
 
     async def close_position_row(self, *, position_id, exit_price, realized_pl):
         self.positions[position_id]["status"] = "closed"
@@ -86,8 +90,8 @@ class _Placer:
         self.raises = raises
         self.fill = fill
 
-    async def place_market_order(self, creds, use_testnet, symbol, side, quantity):
-        self.calls.append((symbol, side, quantity))
+    async def place_market_order(self, creds, use_testnet, symbol, side, quantity, *, reduce_only=False, leverage=1):
+        self.calls.append((symbol, side, quantity, reduce_only, leverage))
         if self.raises:
             raise RuntimeError("exchange down")
         return self.fill or {"orderId": "LIVE123", "fillPrice": 101.0, "fillQuantity": quantity, "status": "FILLED"}
@@ -120,9 +124,33 @@ async def test_execute_live_places_real_order_and_uses_fill():
     placer = _Placer()
     r = await ExecutionService(store, _RiskStore(), placer).execute_trade_signal("t1", "long", 100)
     assert r["isLiveOrder"] is True
-    assert placer.calls == [("BTCUSDT", "BUY", 25.0)]
+    assert placer.calls == [("BTCUSDT", "BUY", 25.0, False, 1)]  # spot open: BUY, not reduceOnly, 1x
     assert store.orders[0]["price"] == 101.0  # exchange fill price, not the signal price
     assert store.api == ["success"]
+
+
+async def test_execute_live_short_routes_to_futures_venue():
+    """Phase 4b: a SHORT open on a futures ticker places a SELL-to-open on the FUTURES placer
+    (not the spot one), non-reduceOnly, and records the position as a short with leverage stamped."""
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    spot, futures = _Placer(), _Placer()
+    svc = ExecutionService(store, _RiskStore(), spot, futures)
+    r = await svc.execute_trade_signal("t1", "short", 100)
+    assert r["isLiveOrder"] is True
+    assert spot.calls == []                                    # spot venue untouched
+    assert futures.calls == [("BTCUSDT", "SELL", 25.0, False, 1)]  # SELL-to-open short, 1x
+    pos = list(store.positions.values())[0]
+    assert pos["side"] == "short" and pos["leverage"] == 1 and pos["trade_mode"] == "live" and pos["network"] == "testnet"
+
+
+async def test_close_short_on_futures_covers_reduce_only():
+    """Covering a short closes with a reduceOnly BUY on the futures venue."""
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    spot, futures = _Placer(), _Placer()
+    pid = store.seed("short", entry=100, qty=2)
+    await ExecutionService(store, _RiskStore(), spot, futures).close_position(pid, 90)
+    assert spot.calls == []
+    assert futures.calls == [("BTCUSDT", "BUY", 2.0, True, 1)]  # BUY-to-cover, reduceOnly
 
 
 async def test_execute_live_order_failure_rejects_and_records_failure():

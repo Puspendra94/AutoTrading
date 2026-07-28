@@ -72,6 +72,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
           <div class="flex items-center gap-2">
             <span class="live-dot"></span>
             <span class="eyebrow">Live Market · Binance</span>
+            <!-- Always-on venue indicator: FUTURES (shorts + leverage) vs SPOT. Populated once the
+                 ticker resolves; see paintMarketType(). -->
+            <span id="marketTypePill" hidden class="badge badge-muted" title="Trading venue"></span>
           </div>
           <div class="flex items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5" id="tfGroup" role="group" aria-label="Chart timeframe">
             {TIMEFRAMES.map((tf) => (
@@ -187,8 +190,25 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     let volSeries: ISeriesApi<'Histogram'> | null = null;
     let currentInterval = '5m';
     let tickerId: string | null = null;
+    let marketType: string | null = null; // 'spot' | 'futures' — drives the futures/short UI
     let lastBar: Bar | null = null;
     let bars: Bar[] = [];
+
+    // Venue pill in the chart header — the always-visible answer to "is this spot or futures?".
+    // FUTURES is highlighted (it can hold shorts and leverage); SPOT stays muted/neutral.
+    function paintMarketType() {
+      const pill = $('marketTypePill');
+      if (!marketType) { pill.hidden = true; return; }
+      const isFutures = marketType === 'futures';
+      pill.hidden = false;
+      pill.textContent = isFutures ? 'FUTURES' : 'SPOT';
+      pill.classList.toggle('badge-brand', isFutures);
+      pill.classList.toggle('badge-muted', !isFutures);
+      pill.title = isFutures
+        ? 'USD-M futures — can trade both directions (long and short); shorts open by selling.'
+        : 'Spot market — long-only; shorts require a futures ticker.';
+      paintTradesLabel(); // the venue is part of the trades label too (hoisted declaration)
+    }
 
     function initChart() {
       chart = createChart(chartEl, {
@@ -287,7 +307,10 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     async function loadSignals(interval: string) {
       if (!tickerId || !series) return;
       try {
-        const res = await apiGet<{ signals: Signal[] }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=${SIGNAL_LOOKBACK}`);
+        const res = await apiGet<{ signals: Signal[]; direction?: 'long' | 'short' }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=${SIGNAL_LOOKBACK}`);
+        // A short strategy opens with a SELL and covers with a BUY; label those SHORT/COVER so the
+        // markers read correctly (a raw "SELL" on an entry is confusing on a short).
+        const isShort = res.direction === 'short';
         const markers = (res.signals || [])
           .slice()
           .sort((a, b) => a.time - b.time)
@@ -296,7 +319,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
             color: s.side === 'buy' ? UP : DOWN,
             shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
-            text: s.side === 'buy' ? 'BUY' : 'SELL',
+            text: isShort ? (s.side === 'buy' ? 'COVER' : 'SHORT') : (s.side === 'buy' ? 'BUY' : 'SELL'),
           }));
         series.setMarkers(markers as any);
       } catch {
@@ -394,7 +417,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     let tradesCache: Position[] = [];
 
     function paintTradesLabel() {
-      if (tradesLabel) tradesLabel.textContent = activeMode === 'live' ? `live · ${activeNetwork}` : 'paper';
+      if (!tradesLabel) return;
+      // Mode (+ network when live), then the venue — so it's clear at a glance whether these
+      // trades are spot or futures (only futures trades can be shorts).
+      const mode = activeMode === 'live' ? `live · ${activeNetwork}` : 'paper';
+      tradesLabel.textContent = marketType ? `${mode} · ${marketType}` : mode;
     }
 
     function modeBadge(p: Position): string {
@@ -564,10 +591,17 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         alphaWrap.hidden = false; alphaBandName.textContent = name;
         loadPerformance(strategy.id);
         const metric = (label: string, val: string, cls = 'text-fg') => `<div class="flex flex-col gap-0.5"><span class="eyebrow">${label}</span><span class="tabular text-base font-bold ${cls}">${val}</span></div>`;
+        // Direction (long/short) + venue (futures/spot). A short can only run on a futures ticker,
+        // so surfacing both makes it clear the strategy trades — and which way — in either regime.
+        const dir = strategy.parametersJson?.direction === 'short' ? 'short' : 'long';
+        const dirBadge = `<span class="badge ${dir === 'long' ? 'badge-brand' : 'badge-bear'}" title="Trade direction">${dir.toUpperCase()}</span>`;
+        const venueBadge = (marketType === 'futures')
+          ? '<span class="badge badge-muted" title="USD-M futures — supports shorts and leverage">FUTURES</span>'
+          : '';
         alphaBody.innerHTML = `
           <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
             <div class="flex flex-col gap-0.5">
-              <span class="flex items-center gap-2 text-sm font-bold">${esc(name)} <span class="badge badge-brand">${esc(strategy.status.toUpperCase())}</span></span>
+              <span class="flex items-center gap-2 text-sm font-bold">${esc(name)} <span class="badge badge-brand">${esc(strategy.status.toUpperCase())}</span>${dirBadge}${venueBadge}</span>
               <span class="text-xs text-muted">v${strategy.version} · ${strategy.executionMode === 'mode_a_rules' ? 'Mode A · Rules' : 'Mode B · AI Live'}</span>
             </div>
             ${backtest ? metric('Sharpe', Number(backtest.sharpe).toFixed(2)) +
@@ -740,6 +774,8 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       const ticker = await resolveBtcTicker();
       if (!ticker) { chartEmpty.hidden = false; chartEmpty.querySelector('p')!.textContent = 'Market data initializing — refresh in a moment.'; return; }
       tickerId = ticker.id;
+      marketType = ticker.marketType?.name ?? null;
+      paintMarketType();
       await loadCandles(currentInterval); // historical renders immediately…
       subscribeTicker(ticker.id);          // …then live ticks keep populating
       loadAlpha(ticker.id);

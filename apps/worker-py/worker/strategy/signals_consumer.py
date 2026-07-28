@@ -36,7 +36,11 @@ async def _compute(payload: dict) -> dict:
         candles = await store.load_recent_candles_for_interval(ticker_id, interval, limit)
         signals = generate_signals_from_ir(candles, ir)
         name = live["parametersJson"].get("strategyName") or "Strategy"
-        return {"requestId": request_id, "strategyId": live["id"], "strategyName": name, "signals": signals}
+        # direction lets the chart label a short strategy's markers as SHORT/COVER (a short opens
+        # with a sell), instead of the raw buy/sell that only reads right for a long.
+        direction = ir.get("direction") or "long"
+        return {"requestId": request_id, "strategyId": live["id"], "strategyName": name,
+                "direction": direction, "signals": signals}
     except Exception as err:  # noqa: BLE001 — never crash the consumer; return empty markers
         log.warning("Signals computation failed for ticker %s: %s", ticker_id, err)
         return out

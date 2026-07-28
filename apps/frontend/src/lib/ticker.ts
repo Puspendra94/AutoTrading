@@ -11,6 +11,8 @@ export type Ticker = {
   status: string;
   onboardingStage: string;
   provider?: { id: string; name: string; type: string };
+  // 'spot' | 'futures' — futures tickers can hold shorts and route live orders to the futures venue.
+  marketType?: { name: string } | null;
 };
 
 // We store/stream BTCUSDT at 1m (the minimum interval) as the single source of truth;

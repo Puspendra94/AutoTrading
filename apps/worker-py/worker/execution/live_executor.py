@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
+from ..strategy.dsl.ir import resolve_ir
 from ..strategy.evaluator import to_fixed
 from .execution import ExecutionService
 from .signals import SignalStore, evaluate_live_signal
@@ -21,6 +22,7 @@ from .signals import SignalStore, evaluate_live_signal
 log = logging.getLogger("worker.execution.live")
 
 LONG = "long"
+SHORT = "short"
 
 
 class LiveExecutor:
@@ -49,13 +51,31 @@ class LiveExecutor:
         if signal == "HOLD":
             return
         if signal == "BUY":
-            result = await self.execution.execute_trade_signal(ticker_id, LONG, close, strategy_id)
+            # "BUY" = open in the strategy's own direction: LONG for a long strategy, SHORT (a real
+            # SELL-to-open on the futures venue) for a short one. The execution engine maps the
+            # side to the correct exchange order + P&L.
+            direction = await self._strategy_direction(ticker_id, strategy_id)
+            result = await self.execution.execute_trade_signal(ticker_id, direction, close, strategy_id)
             if result.get("status") == "REJECTED":
-                log.warning("Live BUY signal rejected for ticker %s: %s", ticker_id, result.get("reason"))
+                log.warning("Live entry signal rejected for ticker %s (%s): %s",
+                            ticker_id, direction, result.get("reason"))
         elif signal == "SELL":
             open_position = await self.signal_store.get_open_position_for_strategy(ticker_id, strategy_id)
             if open_position:
                 await self.execution.close_position(open_position["id"], close)
+
+    async def _strategy_direction(self, ticker_id: str, strategy_id: Optional[str]) -> str:
+        """Resolve the live strategy's trade direction ('long'/'short') from its rule tree, so an
+        entry opens the matching side. Defaults to LONG on any ambiguity (safe: never auto-shorts)."""
+        try:
+            live = await self.signal_store.get_live_strategy(ticker_id)
+            if live and (not strategy_id or live.get("id") == strategy_id):
+                ir = resolve_ir(live["parametersJson"])
+                if ir and ir.get("direction") == SHORT:
+                    return SHORT
+        except Exception:  # noqa: BLE001 — direction lookup must never break the trading loop
+            log.exception("Failed to resolve strategy direction for ticker %s; defaulting LONG", ticker_id)
+        return LONG
 
     async def _update_mark_prices(self, ticker_id: str, close: float) -> None:
         positions = await self.execution.store.find_open_positions_by_ticker(ticker_id)

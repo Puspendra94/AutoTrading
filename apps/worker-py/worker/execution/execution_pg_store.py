@@ -31,8 +31,14 @@ class PgExecutionStore:
 
     async def get_ticker(self, ticker_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT id, symbol, provider_id FROM tickers WHERE id = $1", ticker_id)
-        return {"id": str(row["id"]), "symbol": row["symbol"], "providerId": str(row["provider_id"])} if row else None
+            row = await conn.fetchrow(
+                """SELECT t.id, t.symbol, t.provider_id, mt.name AS market_type
+                   FROM tickers t LEFT JOIN market_types mt ON mt.id = t.market_type_id
+                   WHERE t.id = $1""",
+                ticker_id,
+            )
+        return {"id": str(row["id"]), "symbol": row["symbol"], "providerId": str(row["provider_id"]),
+                "marketType": row["market_type"]} if row else None
 
     async def get_provider(self, provider_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
@@ -51,17 +57,20 @@ class PgExecutionStore:
             return None
         return _resolve_credential(row["credential_json"], use_testnet)
 
-    async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation) -> str:
+    async def insert_position(self, *, ticker_id, strategy_id, side, entry_price, quantity, is_probation,
+                              leverage: int = 1, margin_type: str = "isolated",
+                              trade_mode: str = "paper", network: Optional[str] = None) -> str:
         async with self.pool.acquire() as conn:
             pid = await conn.fetchval(
                 """
                 INSERT INTO positions
                     (ticker_id, strategy_id, side, status, entry_price, current_price, quantity,
-                     unrealized_pl, realized_pl, is_probation)
-                VALUES ($1, $2, $3, 'open', $4, $4, $5, 0, 0, $6)
+                     unrealized_pl, realized_pl, is_probation, leverage, margin_type, trade_mode, network)
+                VALUES ($1, $2, $3, 'open', $4, $4, $5, 0, 0, $6, $7, $8, $9, $10)
                 RETURNING id
                 """,
                 ticker_id, strategy_id, side, entry_price, quantity, is_probation,
+                leverage, margin_type, trade_mode, network,
             )
         return str(pid)
 
@@ -80,8 +89,9 @@ class PgExecutionStore:
             row = await conn.fetchrow(
                 """
                 SELECT p.id, p.ticker_id, p.side, p.status, p.entry_price, p.current_price, p.quantity,
-                       t.provider_id, t.symbol
+                       t.provider_id, t.symbol, mt.name AS market_type
                 FROM positions p LEFT JOIN tickers t ON t.id = p.ticker_id
+                       LEFT JOIN market_types mt ON mt.id = t.market_type_id
                 WHERE p.id = $1
                 """,
                 position_id,
@@ -91,7 +101,7 @@ class PgExecutionStore:
         return {"id": str(row["id"]), "tickerId": str(row["ticker_id"]), "side": row["side"],
                 "status": row["status"], "entryPrice": row["entry_price"], "currentPrice": row["current_price"],
                 "quantity": row["quantity"], "providerId": str(row["provider_id"]) if row["provider_id"] else None,
-                "symbol": row["symbol"]}
+                "symbol": row["symbol"], "marketType": row["market_type"]}
 
     async def close_position_row(self, *, position_id, exit_price, realized_pl) -> None:
         async with self.pool.acquire() as conn:

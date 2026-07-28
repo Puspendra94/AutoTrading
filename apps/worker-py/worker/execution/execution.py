@@ -26,6 +26,7 @@ LONG = "long"
 SHORT = "short"
 LIVE = "live"
 BINANCE = "binance"
+FUTURES = "futures"
 
 
 class ExecutionError(Exception):
@@ -37,7 +38,9 @@ class ExecutionStore(Protocol):
     async def get_provider(self, provider_id: str) -> Optional[dict]: ...
     async def get_credential(self, provider_id: str, use_testnet: bool = False) -> Optional[dict]: ...
     async def insert_position(self, *, ticker_id: str, strategy_id: Optional[str], side: str,
-                              entry_price: float, quantity: float, is_probation: bool) -> str: ...
+                              entry_price: float, quantity: float, is_probation: bool,
+                              leverage: int = 1, margin_type: str = "isolated",
+                              trade_mode: str = "paper", network: Optional[str] = None) -> str: ...
     async def insert_order(self, *, position_id: str, provider_order_id: str, side: str,
                            quantity: float, price: float) -> None: ...
     async def get_position(self, position_id: str) -> Optional[dict]: ...
@@ -60,10 +63,18 @@ def _num(v: Any, default: float = 0.0) -> float:
 
 
 class ExecutionService:
-    def __init__(self, store: ExecutionStore, risk_store: RiskGateStore, order_placer: OrderPlacer) -> None:
+    def __init__(self, store: ExecutionStore, risk_store: RiskGateStore, order_placer: OrderPlacer,
+                 futures_order_placer: Optional[OrderPlacer] = None) -> None:
         self.store = store
         self.risk_store = risk_store
         self.orders = order_placer
+        # Futures venue (Phase 4b). Falls back to the spot placer if not supplied, so nothing breaks
+        # in spot-only setups / tests; a futures ticker without a futures placer would just error at
+        # order time rather than silently place a wrong-venue order.
+        self.futures_orders = futures_order_placer or order_placer
+
+    def _placer_for(self, market_type: Optional[str]) -> OrderPlacer:
+        return self.futures_orders if (market_type or "").lower() == FUTURES else self.orders
 
     async def execute_trade_signal(self, ticker_id: str, side: str, price: float, strategy_id: Optional[str] = None) -> dict:
         # 1. Unbypassable risk gate (may raise RiskGateHalt on daily-loss breach).
@@ -75,6 +86,11 @@ class ExecutionService:
         if not ticker:
             raise ExecutionError("Invalid ticker")
         provider = await self.store.get_provider(ticker["providerId"])
+
+        # Phase 4b: futures tickers route to the futures venue and carry leverage. 1x default keeps a
+        # futures long economically identical to spot until leverage is deliberately turned up later.
+        is_futures = (ticker.get("marketType") or "").lower() == FUTURES
+        leverage = 1
 
         fill_price = price
         fill_quantity = risk["allowedQuantity"]
@@ -90,9 +106,13 @@ class ExecutionService:
                     f"{'testnet' if provider.get('useTestnet') else 'mainnet'} network — cannot place a real order."
                 )
             try:
+                # A SHORT open is a SELL-to-open — only valid on the futures venue; the placer is
+                # chosen by the ticker's market type so a spot ticker never routes a short there.
                 order_side = "BUY" if side == LONG else "SELL"
-                result = await self.orders.place_market_order(
-                    creds, provider.get("useTestnet", False), ticker["symbol"], order_side, risk["allowedQuantity"]
+                placer = self._placer_for(ticker.get("marketType"))
+                result = await placer.place_market_order(
+                    creds, provider.get("useTestnet", False), ticker["symbol"], order_side,
+                    risk["allowedQuantity"], reduce_only=False, leverage=leverage,
                 )
                 fill_price = result.get("fillPrice") or price
                 fill_quantity = result.get("fillQuantity") or risk["allowedQuantity"]
@@ -104,9 +124,15 @@ class ExecutionService:
                 await self.store.record_api_failure(provider["id"])
                 return {"status": "REJECTED", "reason": f"Exchange order placement failed: {err}"}
 
+        # Stamp HOW the fill happened so the dashboard can filter by mode+network (a paper/simulated
+        # fill is network-agnostic → network stays NULL).
+        use_testnet = bool(provider.get("useTestnet")) if provider else False
         position_id = await self.store.insert_position(
             ticker_id=ticker_id, strategy_id=strategy_id, side=side,
             entry_price=fill_price, quantity=fill_quantity, is_probation=risk["isProbation"],
+            leverage=leverage if is_futures else 1, margin_type="isolated" if is_futures else "cross",
+            trade_mode=LIVE if is_live_order else "paper",
+            network=("testnet" if use_testnet else "mainnet") if is_live_order else None,
         )
         await self.store.insert_order(
             position_id=position_id, provider_order_id=provider_order_id,
@@ -127,9 +153,13 @@ class ExecutionService:
             creds = await self.store.get_credential(provider["id"], provider.get("useTestnet", False))
             if creds and creds.get("apiKey") and creds.get("apiSecret"):
                 try:
+                    # Cover a short with a BUY, close a long with a SELL. reduce_only guarantees the
+                    # order can only flatten the position, never accidentally open the opposite side.
                     close_side = "SELL" if position["side"] == LONG else "BUY"
-                    result = await self.orders.place_market_order(
-                        creds, provider.get("useTestnet", False), position["symbol"], close_side, _num(position["quantity"])
+                    placer = self._placer_for(position.get("marketType"))
+                    result = await placer.place_market_order(
+                        creds, provider.get("useTestnet", False), position["symbol"], close_side,
+                        _num(position["quantity"]), reduce_only=True,
                     )
                     final_exit_price = result.get("fillPrice") or exit_price
                     provider_order_id = result["orderId"]

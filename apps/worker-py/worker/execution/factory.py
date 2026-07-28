@@ -6,7 +6,7 @@ import json
 import logging
 
 from ..redis_bus import POSITIONS_UPDATE_CHANNEL, get_redis
-from .binance_orders import BinanceOrderPlacer
+from .binance_orders import BinanceOrderPlacer, FuturesOrderPlacer
 from .execution import ExecutionService
 from .execution_pg_store import PgExecutionStore
 from .live_executor import LiveExecutor
@@ -21,7 +21,7 @@ def build_live_executor(pool) -> LiveExecutor:
 
     exec_store = PgExecutionStore(pool)
     risk_store = PgRiskGateStore(pool)
-    execution = ExecutionService(exec_store, risk_store, BinanceOrderPlacer())
+    execution = ExecutionService(exec_store, risk_store, BinanceOrderPlacer(), FuturesOrderPlacer())
     # Close the risk-gate -> execution loop: on a breach the gate flattens via the engine.
     risk_store._flatten_fn = execution.flatten_all_positions_for_provider
 

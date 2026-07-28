@@ -71,6 +71,14 @@ export class Position {
   @Column({ name: 'is_probation', default: true })
   isProbation: boolean;
 
+  // Futures sizing, stamped at fill time. Default 1x / isolated — at 1x a futures position is
+  // economically a spot position, so spot fills carry these defaults harmlessly.
+  @Column({ name: 'leverage', type: 'int', default: 1 })
+  leverage: number;
+
+  @Column({ name: 'margin_type', default: 'isolated' })
+  marginType: string;
+
   // Set at fill time so the Live Trades panel can show only trades matching the active
   // Mode + Network. `network` is null for paper trades (network-agnostic).
   @Column({ name: 'trade_mode', type: 'enum', enum: TradeMode, default: TradeMode.PAPER })

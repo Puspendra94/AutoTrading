@@ -125,6 +125,12 @@ class Config:
     # LLM guessing concrete numbers. Off by default; opt-in while it's validated.
     two_stage_generation: bool = os.getenv("TWO_STAGE_GENERATION", "false").lower() in ("1", "true", "yes", "on")
 
+    # Phase 4b: live SHORT execution on the futures venue. Off by default — a short strategy stays
+    # flat (HOLD) until this is explicitly enabled, so shorting can never happen by surprise. When
+    # on, a live short strategy on a futures ticker opens a real SELL-to-open (or a simulated fill
+    # while the provider is in paper mode). Long execution is unaffected (a 1x futures long == spot).
+    futures_execution_enabled: bool = os.getenv("FUTURES_EXECUTION_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+
     @property
     def dsn(self) -> str:
         return (
