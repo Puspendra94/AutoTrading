@@ -3,13 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Not, Repository } from 'typeorm';
 import Redis from 'ioredis';
 import { Ticker, TickerStatus } from '../../entities/ticker.entity';
-import { Position, PositionStatus, PositionSide } from '../../entities/position.entity';
 import { BinanceAdapter, LiveKlineTick } from '../provider/adapters/binance.adapter';
 import { MarketDataService } from './market-data.service';
 import { MarketDataSeedService } from './market-data-seed.service';
 import { TradingGateway } from '../../websockets/trading.gateway';
-import { StrategyEngineService } from '../strategy/strategy-engine.service';
-import { ExecutionService } from '../risk-execution/execution.service';
 import { REDIS_SUBSCRIBER } from '../../common/redis/redis.module';
 import { config } from '../../config/configuration';
 
@@ -43,13 +40,10 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @InjectRepository(Ticker) private readonly tickerRepo: Repository<Ticker>,
-    @InjectRepository(Position) private readonly positionRepo: Repository<Position>,
     private readonly binanceAdapter: BinanceAdapter,
     private readonly marketDataService: MarketDataService,
     private readonly marketDataSeedService: MarketDataSeedService,
     private readonly tradingGateway: TradingGateway,
-    private readonly strategyEngineService: StrategyEngineService,
-    private readonly executionService: ExecutionService,
     @Inject(REDIS_SUBSCRIBER) private readonly redisSubscriber: Redis,
   ) {}
 
@@ -188,22 +182,5 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
     // Execution (mark price / hard exits / evaluate+execute) is owned entirely by the Python worker
     // (consolidation Phase B). The backend only ingests candles and fans ticks out to the frontend;
     // it never evaluates strategies or places orders.
-  }
-
-  private async updateOpenPositionsMarkPrice(tickerId: string, lastPrice: number) {
-    const openPositions = await this.positionRepo.find({ where: { tickerId, status: PositionStatus.OPEN } });
-    if (openPositions.length === 0) return;
-
-    for (const position of openPositions) {
-      const entry = Number(position.entryPrice);
-      const qty = Number(position.quantity);
-      const unrealized =
-        position.side === PositionSide.LONG ? (lastPrice - entry) * qty : (entry - lastPrice) * qty;
-      position.currentPrice = lastPrice;
-      position.unrealizedPl = Number(unrealized.toFixed(8));
-      await this.positionRepo.save(position);
-    }
-
-    await this.tradingGateway.broadcastPositionUpdate();
   }
 }

@@ -11,8 +11,6 @@ import { MarketDataSeedService } from './market-data-seed.service';
 import { MarketDataController } from './market-data.controller';
 import { ProviderModule } from '../provider/provider.module';
 import { WebsocketsModule } from '../../websockets/websockets.module';
-import { StrategyModule } from '../strategy/strategy.module';
-import { RiskExecutionModule } from '../risk-execution/risk-execution.module';
 
 // Live streaming: MarketStreamService.onModuleInit() opens live Binance WebSocket streams
 // and pushes through TradingGateway. Imported by app.module.ts (the API process, which has
@@ -24,8 +22,6 @@ import { RiskExecutionModule } from '../risk-execution/risk-execution.module';
     MarketDataModule,
     ProviderModule,
     WebsocketsModule,
-    StrategyModule,
-    RiskExecutionModule,
   ],
   providers: [MarketStreamService, MarketDataSeedService],
   controllers: [MarketDataController],

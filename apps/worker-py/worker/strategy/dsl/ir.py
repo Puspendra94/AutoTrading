@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .indicators import CANDLESTICK_PATTERNS
+
 PERIOD_MIN = 2
 PERIOD_MAX = 400
 COMPARISON_OPS = {"gt", "lt", "gte", "lte", "crossAbove", "crossBelow"}
@@ -26,6 +28,8 @@ def _operand_lookback(o: dict) -> int:
         return int(o["period"]) + 1
     if kind == "adx":
         return 2 * int(o["period"]) + 1  # DI smoothing (period) + ADX smoothing (period)
+    if kind == "candlestick":
+        return 12  # multi-bar patterns (morning/evening star, 3-soldiers) look back a few bars
     if kind == "macd":
         return int(o["slow"]) + int(o["signal"])
     if kind == "stochastic":
@@ -196,6 +200,9 @@ def validate_operand(o: Any, path: str) -> list[str]:
             errs.append(f"{path}: stochastic.period/smoothK/smoothD out of range")
         if o.get("field") not in ("k", "d"):
             errs.append(f"{path}: stochastic.field must be k|d")
+    elif kind == "candlestick":
+        if o.get("pattern") not in CANDLESTICK_PATTERNS:
+            errs.append(f"{path}: candlestick.pattern must be one of {sorted(CANDLESTICK_PATTERNS)}")
     else:
         errs.append(f"{path}: unknown indicator kind '{kind}'")
     return errs

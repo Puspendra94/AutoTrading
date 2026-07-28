@@ -12,11 +12,54 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
+try:  # TA-Lib needs the native ta-lib C library; guarded so the module imports even if absent.
+    import talib as _talib
+except Exception:  # noqa: BLE001
+    _talib = None
+
 NAN = float("nan")
+
+# Curated candlestick reversal patterns exposed to the DSL (friendly name -> TA-Lib CDL function).
+# Value per bar: +100 bullish, -100 bearish, 0 none. Chosen for reliability + coverage of the
+# reversals a strategy actually cares about — not all 61 TA-Lib patterns (that would just be noise
+# for the LLM to overfit to).
+CANDLESTICK_PATTERNS: dict[str, str] = {
+    "engulfing": "CDLENGULFING",
+    "hammer": "CDLHAMMER",
+    "invertedHammer": "CDLINVERTEDHAMMER",
+    "shootingStar": "CDLSHOOTINGSTAR",
+    "hangingMan": "CDLHANGINGMAN",
+    "doji": "CDLDOJI",
+    "morningStar": "CDLMORNINGSTAR",
+    "eveningStar": "CDLEVENINGSTAR",
+    "harami": "CDLHARAMI",
+    "piercing": "CDLPIERCING",
+    "darkCloudCover": "CDLDARKCLOUDCOVER",
+    "threeWhiteSoldiers": "CDL3WHITESOLDIERS",
+    "threeBlackCrows": "CDL3BLACKCROWS",
+}
 
 
 def _nan(n: int) -> list[float]:
     return [NAN] * n
+
+
+def candlestick(s: dict, pattern: str) -> list[float]:
+    """Candlestick-pattern signal per bar via TA-Lib: +100 (bullish), -100 (bearish), 0 (none).
+    Unknown pattern or missing TA-Lib -> all-NaN (the interpreter treats NaN conditions as false)."""
+    fn_name = CANDLESTICK_PATTERNS.get(pattern)
+    if fn_name is None or _talib is None:
+        return _nan(len(s["close"]))
+    fn = getattr(_talib, fn_name)
+    arr = fn(
+        np.asarray(s["open"], dtype="float64"),
+        np.asarray(s["high"], dtype="float64"),
+        np.asarray(s["low"], dtype="float64"),
+        np.asarray(s["close"], dtype="float64"),
+    )
+    return [float(x) for x in arr]
 
 
 def ema(prices: list[float], period: int) -> list[float]:

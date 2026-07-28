@@ -17,6 +17,9 @@ dependencies = [
     "langchain-aws>=0.2",
     "langchain-deepseek>=0.1",
     "binance-connector>=3.0",   # live market-order placement (Phase 3c-2 execution)
+    "numpy>=1.26",              # required by TA-Lib
+    "TA-Lib>=0.6",             # candlestick pattern recognition (needs the native ta-lib C library:
+                               # `brew install ta-lib` / apt `libta-lib0`) — see README.
 ]
 
 [project.optional-dependencies]
