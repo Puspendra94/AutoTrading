@@ -292,8 +292,15 @@ class StrategyGenerator:
         last_params = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             schema = StrategyTemplate if two_stage else StrategyGen
-            llm_res = await self.llm.generate_structured_completion(
-                prompt, schema, schema_name="propose_template" if two_stage else "propose_strategy")
+            try:
+                llm_res = await self.llm.generate_structured_completion(
+                    prompt, schema, schema_name="propose_template" if two_stage else "propose_strategy")
+            except Exception as err:  # noqa: BLE001 — a provider hiccup shouldn't abort the run
+                # Previously this propagated and killed the whole job on attempt 1, so a transient
+                # provider failure cost all remaining attempts.
+                log.warning("Strategy attempt %d/%d for ticker %s: LLM produced nothing (%s). Retrying.",
+                            attempt, MAX_ATTEMPTS, ticker_id, err)
+                continue
             await self.llm.log_cost(
                 getattr(self.store, "pool", None),
                 ticker_id, None, LlmPurpose.STRATEGY_GENERATION,

@@ -14,9 +14,14 @@ import logging
 import re
 from typing import Any, Type
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .chain_builder import ModelSpec, build_model, extract_text, parse_chain
+
+
+class LlmUnavailableError(RuntimeError):
+    """Every model in the chain failed and no synthetic fallback fits the requested schema.
+    Callers should treat this as "this attempt produced nothing", not as a crash."""
 
 log = logging.getLogger("worker.llm")
 
@@ -53,6 +58,10 @@ _FALLBACK_PARAMS = {
     },
     "reasoning": "Trend-following EMA fast/slow crossover with fixed stop-loss and take-profit on 1m/5m timeframe.",
 }
+
+
+# Consecutive tries per model for STRUCTURED calls before moving to the next chain entry.
+_STRUCTURED_RETRIES = 3
 
 
 def _cost(input_tokens: int, output_tokens: int, model_id: str) -> float:
@@ -103,7 +112,12 @@ class LlmService:
     ) -> dict:
         from langchain_core.messages import HumanMessage
 
-        for spec in self.model_chain:
+        # Structured output is FLAKY on some providers: the SAME prompt intermittently comes back as
+        # text that can't be coerced into the schema (parsed=None) — measured at roughly half of
+        # calls on DeepSeek's json_mode. Retrying the same model beats falling through the chain,
+        # especially when the remaining entries are misconfigured and fail instantly, leaving a
+        # single usable model. Each spec therefore gets _STRUCTURED_RETRIES consecutive tries.
+        for spec in [s for s in self.model_chain for _ in range(_STRUCTURED_RETRIES)]:
             try:
                 model = build_model(spec, max_tokens)
                 # DeepSeek reasoning models reject the forced tool_choice the default
@@ -139,7 +153,7 @@ class LlmService:
                 }
             except Exception as err:  # noqa: BLE001 — try the next model in the chain
                 log.warning(
-                    "Model '%s:%s' failed structured call: %s — trying next in chain.",
+                    "Model '%s:%s' failed structured call: %s — retrying / next in chain.",
                     spec.provider, spec.model_id, err,
                 )
 
@@ -159,10 +173,27 @@ class LlmService:
         }
 
     def _synthetic_structured_fallback(self, schema: Type[BaseModel], requested_model: str | None) -> dict:
+        """Last-resort stand-in when every model in the chain failed.
+
+        _FALLBACK_PARAMS is a legacy StrategyParams (indicatorConfig) blob, so it only validates
+        against that shape. Blindly validating it against ANY requested schema meant a DSL
+        generation (StrategyGen/StrategyTemplate) raised a bare pydantic ValidationError from in
+        here, aborting the whole job instead of failing the attempt cleanly.
+
+        We also deliberately do NOT invent a rule tree for the DSL schemas: a fabricated strategy
+        nobody designed could go on to be backtested and — with the gate bypassed — promoted. A
+        loud failure is much safer than a silent made-up strategy."""
         model_name = requested_model or "unknown-model"
         input_tokens, output_tokens = 210, 140
+        try:
+            data = schema.model_validate(_FALLBACK_PARAMS)
+        except ValidationError as err:
+            raise LlmUnavailableError(
+                f"Every model in LLM_MODELS failed structured output and no synthetic fallback "
+                f"exists for {schema.__name__}."
+            ) from err
         return {
-            "data": schema.model_validate(_FALLBACK_PARAMS),
+            "data": data,
             "inputTokens": input_tokens,
             "outputTokens": output_tokens,
             "costUsd": (input_tokens * 3 + output_tokens * 15) / 1_000_000,
