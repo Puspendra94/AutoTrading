@@ -1,9 +1,8 @@
-"""Strategy IR helpers — port of apps/backend/src/modules/strategy/dsl/strategy-ir.ts
-(warmup, overfitting-budget count, semantic validation, legacy auto-translate).
+"""Strategy IR helpers: warmup lookback, overfitting-budget parameter count, semantic validation,
+and legacy indicatorConfig auto-translate.
 
-The IR is plain JSON (dicts/lists) here since it arrives from the DB/LLM as parametersJson.
-Keep the numeric conventions (warmup lookback per indicator, parameter counting) identical to
-the TS so both engines gate a strategy the same way.
+The IR is plain JSON (dicts/lists) since it arrives from the DB/LLM as parametersJson. This is the
+single engine now (the TypeScript twin was deleted in the Phase B consolidation).
 """
 from __future__ import annotations
 
