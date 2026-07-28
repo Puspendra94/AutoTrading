@@ -49,6 +49,14 @@ export class TradingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     this.server.to(`ticker_${tickerId}`).emit('price_update', { tickerId, candle });
   }
 
+  /** A bar closed for this ticker, so the strategy's buy/sell (or short/cover) markers may have
+   * changed. Scoped to the ticker room like price_update — the client re-fetches for whichever
+   * interval it is currently displaying. */
+  broadcastSignalsUpdate(tickerId: string) {
+    if (!this.server) return;
+    this.server.to(`ticker_${tickerId}`).emit('signals_update', { tickerId });
+  }
+
   async broadcastPositionUpdate() {
     if (!this.server) return;
     const positions = await this.executionService.getOpenPositions();

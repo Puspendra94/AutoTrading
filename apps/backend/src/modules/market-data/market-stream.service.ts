@@ -13,6 +13,7 @@ import { config } from '../../config/configuration';
 // Must match worker-py's redis_bus channel names.
 export const MARKET_TICK_CHANNEL = 'market:tick';
 export const POSITIONS_UPDATE_CHANNEL = 'positions:update';
+export const SIGNALS_UPDATE_CHANNEL = 'signals:update';
 
 /**
  * Owns live Binance kline WebSocket subscriptions for every ACTIVE ticker. Runs inside
@@ -93,10 +94,25 @@ export class MarketStreamService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Failed to subscribe to ${POSITIONS_UPDATE_CHANNEL}: ${err.message}`);
       }
     });
+    // A bar closed in the worker -> the chart's entry/exit markers may have changed.
+    this.redisSubscriber.subscribe(SIGNALS_UPDATE_CHANNEL, (err) => {
+      if (err) {
+        this.logger.error(`Failed to subscribe to ${SIGNALS_UPDATE_CHANNEL}: ${err.message}`);
+      }
+    });
 
     this.redisSubscriber.on('message', (channel, message) => {
       if (channel === POSITIONS_UPDATE_CHANNEL) {
         this.tradingGateway.broadcastPositionUpdate();
+        return;
+      }
+      if (channel === SIGNALS_UPDATE_CHANNEL) {
+        try {
+          const { tickerId } = JSON.parse(message);
+          if (tickerId) this.tradingGateway.broadcastSignalsUpdate(tickerId);
+        } catch (e) {
+          this.logger.error(`Failed to parse signals:update payload: ${e.message}`);
+        }
         return;
       }
       if (channel !== MARKET_TICK_CHANNEL) return;

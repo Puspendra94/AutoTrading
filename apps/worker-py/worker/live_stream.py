@@ -21,7 +21,7 @@ import websockets
 
 from .config import config
 from .db import get_pool
-from .redis_bus import MARKET_TICK_CHANNEL, get_redis
+from .redis_bus import MARKET_TICK_CHANNEL, SIGNALS_UPDATE_CHANNEL, get_redis
 
 log = logging.getLogger("worker.live")
 
@@ -108,6 +108,10 @@ async def _handle_message(raw: str, by_key: dict[str, str], executor=None) -> No
     await get_redis().publish(MARKET_TICK_CHANNEL, json.dumps(tick))
     if is_final:
         await _upsert_final_candle(ticker_id, k)
+        # A bar closed, so the strategy's entry/exit markers may have changed. Tell the browsers to
+        # refresh them — the same push-then-render path live candles already use, so intents appear
+        # without a reload (and for shorts/exits too, since the marker set is direction-aware).
+        await get_redis().publish(SIGNALS_UPDATE_CHANNEL, json.dumps({"tickerId": ticker_id}))
 
     # Live trading loop (Phase 3c-3) — mark price + hard exits every tick, evaluate+execute on
     # close. Only when the worker owns execution; a failure must not break ingestion.

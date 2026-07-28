@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 import asyncpg
@@ -79,6 +80,42 @@ class PgSignalStore:
                 ticker_id, limit,
             )
         return _rows_to_candles(rows)
+
+    async def save_signals(self, strategy_id: str, ticker_id: str, interval: str,
+                           direction: str, signals: list[dict]) -> None:
+        """Idempotently persist a replay's signals. The unique key (strategy, interval, bar, side)
+        makes re-replaying the same bars a no-op, so this can run on every request/candle close."""
+        if not signals:
+            return
+        rows = [
+            (strategy_id, ticker_id, interval,
+             datetime.fromtimestamp(int(s["time"]), tz=timezone.utc),
+             s["side"], direction, float(s["price"]), str(s.get("reason") or ""))
+            for s in signals
+        ]
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO strategy_signals
+                    (strategy_id, ticker_id, interval, bar_time, side, direction, price, reason)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (strategy_id, interval, bar_time, side) DO NOTHING
+                """,
+                rows,
+            )
+
+    async def load_saved_signals(self, strategy_id: str, interval: str) -> list[dict]:
+        """Every signal ever recorded for this strategy+interval, oldest first. Read back instead of
+        returning the fresh replay so the answer is identical across interval switches and reloads,
+        and so markers survive the candles that produced them ageing out of the replay window."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT bar_time, side, price, reason FROM strategy_signals
+                   WHERE strategy_id = $1 AND interval = $2 ORDER BY bar_time ASC""",
+                strategy_id, interval,
+            )
+        return [{"time": int(r["bar_time"].timestamp()), "side": r["side"],
+                 "price": float(r["price"]), "reason": r["reason"]} for r in rows]
 
     async def get_open_position_for_strategy(self, ticker_id: str, strategy_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:

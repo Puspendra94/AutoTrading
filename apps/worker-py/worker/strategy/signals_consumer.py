@@ -34,11 +34,17 @@ async def _compute(payload: dict) -> dict:
         # Markers are drawn on the chart's CURRENT display interval (may differ from eval interval),
         # replayed over the same interval-rolled candles the chart renders so they line up.
         candles = await store.load_recent_candles_for_interval(ticker_id, interval, limit)
-        signals = generate_signals_from_ir(candles, ir)
-        name = live["parametersJson"].get("strategyName") or "Strategy"
         # direction lets the chart label a short strategy's markers as SHORT/COVER (a short opens
         # with a sell), instead of the raw buy/sell that only reads right for a long.
         direction = ir.get("direction") or "long"
+        replayed = generate_signals_from_ir(candles, ir)
+        # Persist this replay, then answer from the STORE rather than from `replayed`. The replay
+        # only covers the last `limit` candles, so as that window slides its earliest signals would
+        # otherwise vanish; reading back means the set only ever grows and is identical across
+        # interval switches and page reloads.
+        await store.save_signals(live["id"], ticker_id, interval, direction, replayed)
+        signals = await store.load_saved_signals(live["id"], interval)
+        name = live["parametersJson"].get("strategyName") or "Strategy"
         return {"requestId": request_id, "strategyId": live["id"], "strategyName": name,
                 "direction": direction, "signals": signals}
     except Exception as err:  # noqa: BLE001 — never crash the consumer; return empty markers

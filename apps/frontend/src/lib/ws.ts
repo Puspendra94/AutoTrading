@@ -38,6 +38,13 @@ export function onPriceUpdate(cb: (data: PriceUpdatePayload) => void) {
   return () => getSocket().off('price_update', cb);
 }
 
+// A bar closed for this ticker, so its buy/sell (short/cover) markers may have changed. The
+// payload is just the ticker id — the client re-fetches for the interval it currently shows.
+export function onSignalsUpdate(cb: (data: { tickerId: string }) => void) {
+  getSocket().on('signals_update', cb);
+  return () => getSocket().off('signals_update', cb);
+}
+
 export function onPositionsUpdate(cb: (positions: any[]) => void) {
   getSocket().on('live_positions_update', cb);
   return () => getSocket().off('live_positions_update', cb);

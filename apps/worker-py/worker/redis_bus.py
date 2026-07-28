@@ -24,6 +24,7 @@ STRATEGY_GENERATE_CHANNEL = "strategy:generate"      # API -> worker: run a gene
 STRATEGY_GENERATED_CHANNEL = "strategy:generated"    # worker -> API: generation result (bridged to WS)
 SIGNALS_REQUEST_CHANNEL = "signals:request"          # API -> worker: compute chart markers
 SIGNALS_RESPONSE_CHANNEL = "signals:response"        # worker -> API: chart markers (req/resp by requestId)
+SIGNALS_UPDATE_CHANNEL = "signals:update"            # worker -> API: a bar closed; refresh markers (bridged to WS)
 
 _client: redis.Redis | None = None
 

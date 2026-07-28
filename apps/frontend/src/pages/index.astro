@@ -146,7 +146,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     import { createChart, ColorType, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
     import { apiGet, apiPatch, apiPost, requireAuth, ApiError } from '../lib/api';
     import { resolveBtcTicker } from '../lib/ticker';
-    import { subscribeTicker, onPriceUpdate, onPositionsUpdate } from '../lib/ws';
+    import { subscribeTicker, onPriceUpdate, onPositionsUpdate, onSignalsUpdate } from '../lib/ws';
 
     requireAuth();
 
@@ -386,6 +386,10 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
 
     let lastPrice = 0;
     onPriceUpdate(({ tickerId: tid, candle }) => { if (tid === tickerId) { lastPrice = Number(candle.close) || lastPrice; applyLiveTick(candle); } });
+    // Markers used to be fetched only on load / timeframe switch, so a signal that fired while the
+    // page sat open never appeared. Refresh them whenever the worker reports a closed bar — the
+    // same push-driven path live candles use — for the interval currently on screen.
+    onSignalsUpdate(({ tickerId: tid }) => { if (tid === tickerId) loadSignals(currentInterval); });
 
     // ---------- Timeframe tabs ----------
     function paintTf() {
