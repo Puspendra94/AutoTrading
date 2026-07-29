@@ -185,6 +185,14 @@ def gate_failure_reasons(ev: dict, policy: dict) -> list[str]:
     return reasons
 
 
+def _json(obj: Any) -> str:
+    """Compact JSON for prompt embedding, tolerant of DB-native types. Values read straight from
+    Postgres arrive as Decimal/datetime, which json.dumps rejects — and this runs inside lesson
+    recording, so an encoder error silently cost the platform its learning signal. `default` keeps a
+    stray value from failing the whole dump."""
+    return json.dumps(obj, separators=(",", ":"), default=str)
+
+
 def build_lesson_prompt(symbol: str, params: dict, backtest: Optional[dict], reason: str, divergence: Optional[dict]) -> str:
     """Mirror AiLessonsService.recordLesson's summaryPrompt (JSON.stringify -> compact json)."""
     metrics: dict = {}
@@ -198,8 +206,8 @@ def build_lesson_prompt(symbol: str, params: dict, backtest: Optional[dict], rea
     return (
         "A trading strategy was just retired. Distill this into ONE short, generalized,\n"
         "reusable lesson (2-3 sentences) for future strategy generation on this or similar tickers — focus on the\n"
-        f"pattern/cause, not a trade-by-trade recap. Ticker: {symbol}. Strategy parameters: {json.dumps(params, separators=(',', ':'))}. "
-        f"Backtest metrics: {json.dumps(metrics, separators=(',', ':'))}. Retirement reason: {reason}. "
+        f"pattern/cause, not a trade-by-trade recap. Ticker: {symbol}. Strategy parameters: {_json(params)}. "
+        f"Backtest metrics: {_json(metrics)}. Retirement reason: {reason}. "
         f"Live-vs-backtest divergence: {divergence_str}. Respond with plain text only, no JSON."
     )
 
@@ -221,8 +229,8 @@ def build_failure_lesson_prompt(
         "Distill this into ONE short, generalized, reusable lesson (2-3 sentences) for the next strategy "
         "generation on this or similar tickers — focus on what to change to clear the gate and improve "
         "profitability, not a trade-by-trade recap. "
-        f"Ticker: {symbol}. Attempted parameters: {json.dumps(params, separators=(',', ':'))}. "
-        f"Out-of-sample backtest metrics: {json.dumps(metrics, separators=(',', ':'))}. "
+        f"Ticker: {symbol}. Attempted parameters: {_json(params)}. "
+        f"Out-of-sample backtest metrics: {_json(metrics)}. "
         f"Failing gate conditions: {conditions}. Trigger: {reason}. Respond with plain text only, no JSON."
     )
 

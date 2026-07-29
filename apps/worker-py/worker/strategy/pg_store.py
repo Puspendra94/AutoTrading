@@ -16,6 +16,12 @@ def _ts_ms(dt) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _f(v: Any) -> Optional[float]:
+    """Coerce a DB numeric (asyncpg hands these back as decimal.Decimal) to a plain float.
+    Decimal is not JSON-serializable, and these values are dumped into LLM prompts."""
+    return None if v is None else float(v)
+
+
 class PgGeneratorStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool  # also read by StrategyGenerator for llm.log_cost
@@ -162,8 +168,11 @@ class PgGeneratorStore:
             )
         if not row:
             return None
-        return {"sharpe": row["sharpe"], "profitFactor": row["profit_factor"],
-                "maxDrawdown": row["max_drawdown"], "passedEvaluationGate": row["passed_evaluation_gate"]}
+        # asyncpg maps numeric/decimal columns to decimal.Decimal, which json.dumps cannot encode —
+        # these metrics get JSON-dumped into the lesson prompt. Coerce at the boundary so callers
+        # always receive plain numbers.
+        return {"sharpe": _f(row["sharpe"]), "profitFactor": _f(row["profit_factor"]),
+                "maxDrawdown": _f(row["max_drawdown"]), "passedEvaluationGate": row["passed_evaluation_gate"]}
 
     async def get_latest_divergence(self, strategy_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
@@ -174,7 +183,7 @@ class PgGeneratorStore:
             )
         if not row:
             return None
-        return {"id": str(row["id"]), "divergencePct": row["divergence_pct"], "flagged": row["flagged"]}
+        return {"id": str(row["id"]), "divergencePct": _f(row["divergence_pct"]), "flagged": row["flagged"]}
 
     async def retire_live(self, ticker_id: str) -> None:
         async with self.pool.acquire() as conn:

@@ -304,3 +304,25 @@ async def test_generate_refuses_on_blocking_flags():
     except ValueError as e:
         assert "data quality" in str(e)
     assert store.stages[-1] == gen.STAGE_FAILED
+
+
+def test_lesson_prompt_handles_db_decimals():
+    """Regression: backtest metrics arrive from asyncpg as decimal.Decimal, which json.dumps
+    rejects. That exception was swallowed as 'Lesson recording failed (non-fatal)', so every
+    strategy retirement silently lost its lesson — the platform's learning signal."""
+    from decimal import Decimal
+    from datetime import datetime, timezone
+    metrics = {"sharpe": Decimal("1.26"), "profitFactor": Decimal("2.26"),
+               "maxDrawdown": Decimal("4.33"), "passedEvaluationGate": True}
+    p = gen.build_lesson_prompt("BTCUSDT", {"strategyName": "x", "at": datetime.now(timezone.utc)},
+                                metrics, "cycle", {"divergencePct": Decimal("12.5")})
+    assert "1.26" in p and "2.26" in p          # values survive, not stringified away
+    assert "Retirement reason: cycle" in p
+
+
+def test_failure_lesson_prompt_handles_db_decimals():
+    from decimal import Decimal
+    p = gen.build_failure_lesson_prompt(
+        "BTCUSDT", {"strategyName": "x"},
+        {"sharpe": Decimal("-0.5"), "profitFactor": Decimal("0.7")}, ["sharpe too low"], "cycle")
+    assert "-0.5" in p
