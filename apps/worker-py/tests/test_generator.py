@@ -326,3 +326,57 @@ def test_failure_lesson_prompt_handles_db_decimals():
         "BTCUSDT", {"strategyName": "x"},
         {"sharpe": Decimal("-0.5"), "profitFactor": Decimal("0.7")}, ["sharpe too low"], "cycle")
     assert "-0.5" in p
+
+
+# ------------------------------------------------------------------ mirrored two-sided levels
+def _both_ir(long_level, short_level):
+    RSI = {"op": "indicator", "kind": "rsi", "period": 14}
+    EMA = {"op": "indicator", "kind": "ema", "period": 150}
+    CLOSE = {"op": "price", "field": "close"}
+    return {
+        "strategyName": "x", "direction": "both",
+        "entry": {"op": "and", "conditions": [{"op": "gt", "left": CLOSE, "right": EMA},
+                                              {"op": "lt", "left": RSI, "right": {"op": "const", "value": long_level}}]},
+        "exit": {"op": "gt", "left": RSI, "right": {"op": "const", "value": 50}},
+        "shortEntry": {"op": "and", "conditions": [{"op": "lt", "left": CLOSE, "right": EMA},
+                                                   {"op": "gt", "left": RSI, "right": {"op": "const", "value": short_level}}]},
+        "shortExit": {"op": "lt", "left": RSI, "right": {"op": "const", "value": 50}},
+        "risk": {"stopLossPct": 2, "takeProfitPct": 6},
+    }
+
+
+def test_mirrored_levels_accepted():
+    from worker.strategy.optimizer import is_mirrored
+    assert is_mirrored(_both_ir(30, 70)) is True     # perfect mirror
+    assert is_mirrored(_both_ir(35, 65)) is True
+    assert is_mirrored(_both_ir(30, 65)) is True     # 95 — within tolerance
+
+
+def test_lopsided_levels_rejected():
+    """The exact pair that shipped live: long RSI<30 but short RSI>60. Over a 539-bar window the
+    short leg fired 10 times and the long leg zero, so 'both' was one-sided in practice."""
+    from worker.strategy.optimizer import is_mirrored
+    assert is_mirrored(_both_ir(30, 60)) is False
+    assert is_mirrored(_both_ir(25, 50)) is False
+
+
+def test_single_sided_strategies_are_unaffected():
+    from worker.strategy.optimizer import is_mirrored
+    one_sided = {**_both_ir(30, 60), "direction": "short"}
+    assert is_mirrored(one_sided) is True
+
+
+def test_optimizer_filters_grid_to_mirrored_pairs():
+    """The grid varies each side independently, so filtering must happen in the optimizer — a
+    symmetric template alone does not guarantee a symmetric result."""
+    from worker.strategy.optimizer import expand_template, is_mirrored
+    P = lambda n: {"$param": n}  # noqa: E731
+    tmpl = {**_both_ir(0, 0), "search": {"os": [25, 30], "ob": [60, 70, 75]}}
+    tmpl["entry"]["conditions"][1]["right"] = {"op": "const", "value": P("os")}
+    tmpl["shortEntry"]["conditions"][1]["right"] = {"op": "const", "value": P("ob")}
+    combos = expand_template(tmpl)
+    kept = [a for a, ir in combos if is_mirrored(ir)]
+    assert len(combos) == 6                     # 2 x 3 grid
+    assert {c["os"] + c["ob"] for c in kept} <= {95, 100, 105}   # only mirrors survive
+    assert all(abs(c["os"] + c["ob"] - 100) <= 5 for c in kept)
+    assert len(kept) < len(combos)              # lopsided pairs really were dropped

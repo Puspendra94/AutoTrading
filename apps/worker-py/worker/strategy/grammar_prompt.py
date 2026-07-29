@@ -159,7 +159,12 @@ _DIRECTION_FUTURES = (
     'the thresholds and the trend filter, e.g. long: RSI(14) < 30 AND close > EMA(200), exit RSI > 50; '
     'short: RSI(14) > 70 AND close < EMA(200), exit RSI < 50. Because shared indicators are counted '
     'ONCE, a symmetric two-sided strategy costs only about one extra knob — an asymmetric one with '
-    'different indicators per side will blow the parameter budget and be rejected.'
+    'different indicators per side will blow the parameter budget and be rejected.\n'
+    'MIRROR THE LEVELS: the long and short oscillator entry levels MUST sum to 100 (30/70, 35/65, '
+    '25/75) — likewise the exits. A lopsided pair such as 30/60 is REJECTED: it makes one leg fire far '
+    'more often than the other, so the strategy is really one-sided while claiming to trade both. '
+    'When you supply a `search` grid, list mirrored candidates on both sides (e.g. oversold [25,30,35] '
+    'with overbought [75,70,65]) so every combination the optimizer can pick stays a true mirror.'
 )
 
 

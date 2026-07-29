@@ -25,6 +25,13 @@ log = logging.getLogger("worker.strategy.optimizer")
 
 MAX_GRID = 800          # cap the search — more configs = more noise-fitting + compute
 IN_SAMPLE_FRAC = 0.7    # must match evaluate_strategy's walk-forward split
+BOTH = "both"
+# How far a two-sided strategy's oscillator entry levels may drift from a true mirror. Perfectly
+# mirrored levels sum to 100 (30/70, 35/65). A promoted strategy used 30/70's lopsided cousin —
+# long at RSI<30 but short at RSI>60 — which made the short leg far easier to trigger: over one
+# 539-bar window the short leg fired 10 times and the long leg ZERO. 5 points keeps 30/65 while
+# rejecting 30/60.
+MIRROR_TOLERANCE = 5.0
 
 
 def _substitute(node: Any, assignment: dict) -> Any:
@@ -55,6 +62,44 @@ def expand_template(template: dict, cap: int = MAX_GRID, seed: int = 0) -> list[
     return out
 
 
+def oscillator_level(tree: Any) -> Optional[float]:
+    """The RSI/Stochastic threshold an entry tree compares against, or None if it uses no oscillator."""
+    found: list[float] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("op") in ("gt", "lt", "gte", "lte", "crossAbove", "crossBelow"):
+            left, right = node.get("left"), node.get("right")
+            if (isinstance(left, dict) and left.get("op") == "indicator"
+                    and (left.get("kind") or "").lower() in ("rsi", "stochastic")
+                    and isinstance(right, dict) and right.get("op") == "const"
+                    and isinstance(right.get("value"), (int, float)) and not isinstance(right.get("value"), bool)):
+                found.append(float(right["value"]))
+        for v in node.values():
+            if isinstance(v, dict):
+                walk(v)
+            elif isinstance(v, list):
+                for x in v:
+                    walk(x)
+
+    walk(tree)
+    return found[0] if found else None
+
+
+def is_mirrored(ir: dict) -> bool:
+    """True when a two-sided strategy's long and short entry levels are genuine mirrors. Without
+    this the two legs fire at wildly different rates and 'both' degrades into a one-sided strategy
+    that merely claims to trade the other way."""
+    if (ir.get("direction") or "") != BOTH:
+        return True
+    long_level = oscillator_level(ir.get("entry"))
+    short_level = oscillator_level(ir.get("shortEntry"))
+    if long_level is None or short_level is None:
+        return True  # not an oscillator pair — nothing to mirror
+    return abs((long_level + short_level) - 100.0) <= MIRROR_TOLERANCE
+
+
 def optimize(template: dict, candles: list[dict], policy: dict) -> dict:
     """Grid-search `template` on in-sample, robust-select, then validate the winner walk-forward.
     Returns {ir, evaluation, assignment, tried, inSampleSharpe} — ir/evaluation are None if the
@@ -63,6 +108,21 @@ def optimize(template: dict, candles: list[dict], policy: dict) -> dict:
     empty = {"ir": None, "evaluation": None, "assignment": None, "tried": 0, "inSampleSharpe": None}
     if not combos or len(candles) < 50:
         return empty
+
+    # For a two-sided strategy, keep only genuinely mirrored level pairs. The template can be written
+    # symmetrically and STILL come out lopsided, because the grid varies the long and short levels
+    # independently — the search is what picks the final numbers. Filtering here also shrinks the
+    # grid, which is a bonus against overfitting.
+    if (template.get("direction") or "") == BOTH:
+        mirrored = [(a, ir) for a, ir in combos if is_mirrored(ir)]
+        if mirrored:
+            log.info("Optimizer: two-sided strategy — %d/%d configs have mirrored entry levels.",
+                     len(mirrored), len(combos))
+            combos = mirrored
+        else:
+            # Better a lopsided candidate the gate can still reject than no candidate at all.
+            log.warning("Optimizer: no mirrored level pair in the grid (%d configs); the long and "
+                        "short legs will fire at different rates.", len(combos))
 
     split = floor(len(candles) * IN_SAMPLE_FRAC)
     in_sample = candles[:split]
