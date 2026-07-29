@@ -467,7 +467,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         const isOpen = p.status === 'open';
         const pl = isOpen ? Number(p.unrealizedPl) : Number(p.realizedPl);
         const bull = pl >= 0;
-        const plPct = p.entryPrice ? (pl / (Number(p.entryPrice) * Number(p.quantity))) * 100 : 0;
+        // Guard the notional, not just the entry price: a zero-quantity position makes the
+        // denominator 0 and rendered "NaN%". The risk gate now refuses to open those, but a
+        // percentage of nothing is still undefined, so never divide by a zero notional.
+        const notional = Number(p.entryPrice) * Number(p.quantity);
+        const plPct = notional > 0 ? (pl / notional) * 100 : 0;
         const when = isOpen ? p.openedAt : (p.closedAt || p.openedAt);
         const mins = Math.floor((Date.now() - new Date(when).getTime()) / 60000);
         const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ${mins % 60}m ago`;

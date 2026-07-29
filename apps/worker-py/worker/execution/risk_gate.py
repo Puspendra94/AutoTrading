@@ -184,4 +184,19 @@ async def evaluate_order_risk_gate(store: RiskGateStore, intent: OrderIntent, no
     capital_to_use = allocated_capital * sizing_multiplier
     allowed_quantity = to_fixed(capital_to_use / intent.price, 4)
 
+    # A size that rounds away to zero is not a trade. This fired for real: a balance sync replaced
+    # the $10,000 default with a near-empty live balance, the allocation job handed the ticker $9.30,
+    # and 25% of that against BTC came to 0.000036 -> 0.0000 at our 4-dp precision. The order was
+    # still "approved", so a zero-quantity position was opened that could never gain or lose, and
+    # showed as "Size 0 / NaN%". Reject it here instead, with the arithmetic in the message.
+    if allowed_quantity <= 0:
+        return {
+            "approved": False, "allowedQuantity": 0, "isProbation": is_probation,
+            "reason": (
+                f"Position size rounds to zero: allocated capital {allocated_capital:.2f} × sizing "
+                f"{sizing_multiplier:.0%} = {capital_to_use:.2f} at price {intent.price:.2f} gives "
+                f"{capital_to_use / intent.price:.8f} units. Fund the provider or raise its allocation."
+            ),
+        }
+
     return {"approved": True, "allowedQuantity": allowed_quantity, "isProbation": is_probation}

@@ -125,3 +125,22 @@ async def test_loss_under_limit_does_not_breach():
     r = await evaluate_order_risk_gate(store, _intent())
     assert r["approved"] is True
     assert "mark_breached" not in store.calls
+
+
+async def test_rejects_order_whose_size_rounds_to_zero():
+    """Regression: a balance sync replaced the $10k default with a near-empty live balance, the
+    allocation job gave the ticker $9.30, and 25% of that against BTC rounded to 0.0000 units. The
+    gate approved it, so a zero-quantity position was opened that could never gain or lose and
+    rendered as 'Size 0 / NaN%'. A size that rounds away is not a trade."""
+    store = FakeStore(allocation={"allocatedCapital": 9.29996646})
+    res = await evaluate_order_risk_gate(store, OrderIntent("t1", "short", 64657.43, "s1"))
+    assert res["approved"] is False
+    assert res["allowedQuantity"] == 0
+    assert "rounds to zero" in res["reason"]
+
+
+async def test_allows_order_when_allocation_is_adequate():
+    """The same path with a funded allocation still sizes normally."""
+    store = FakeStore(allocation={"allocatedCapital": 10000.0})
+    res = await evaluate_order_risk_gate(store, OrderIntent("t1", "short", 64657.43, "s1"))
+    assert res["approved"] is True and res["allowedQuantity"] > 0
