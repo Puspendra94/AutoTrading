@@ -5,6 +5,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { ProviderModule } from './modules/provider/provider.module';
 import { MarketStreamModule } from './modules/market-data/market-stream.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
+import { PatternModule } from './modules/pattern/pattern.module';
 import { RiskExecutionModule } from './modules/risk-execution/risk-execution.module';
 import { AllocationModule } from './modules/allocation/allocation.module';
 import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
@@ -24,6 +25,7 @@ import { RedisModule } from './common/redis/redis.module';
     ProviderModule,
     MarketStreamModule,
     StrategyModule,
+    PatternModule,
     RiskExecutionModule,
     AllocationModule,
     ReconciliationModule,

@@ -125,6 +125,32 @@ class Config:
     # LLM guessing concrete numbers. Off by default; opt-in while it's validated.
     two_stage_generation: bool = os.getenv("TWO_STAGE_GENERATION", "false").lower() in ("1", "true", "yes", "on")
 
+    # --- Which brain drives live trading. ---------------------------------------------------
+    # 'strategy' (default) = the generated-strategy engine: backtested + gate-promoted strategies,
+    #     evaluated on candle close by the DSL interpreter. Everything below this line in the
+    #     strategy/ package belongs to it.
+    # 'pattern'  = the pattern/indicator brain: a deterministic feature engine (TA-Lib + chart
+    #     patterns + S/R levels) decides WHEN to ask the LLM, and the LLM returns a concrete
+    #     entry/exit decision that local guardrails then validate and size.
+    #
+    # The two are mutually exclusive and must never run together — they would both drive
+    # on_final_candle, both enforce exits over the same open position, and both write chart
+    # markers. Selecting 'pattern' therefore also disables strategy re-evaluation, strategy
+    # generation and the chart-marker replay consumer (see main.py), so nothing can promote a
+    # strategy to live, or repaint the chart, behind the pattern brain's back.
+    #
+    # Nothing is deleted: flip back to 'strategy' and restart to get the old behaviour verbatim.
+    trading_brain: str = os.getenv("TRADING_BRAIN", "strategy").strip().lower()
+
+    # --- Pattern brain (TRADING_BRAIN=pattern). -----------------------------------------------
+    # The timeframe the feature engine evaluates on. 15m is the deliberate default: BTC's 5m ATR
+    # is small enough that the noise dominates (measured on real data, and the strategy-brain
+    # backtests said the same), while 15m still produces several triggers a day to watch.
+    pattern_interval: str = os.getenv("PATTERN_INTERVAL", "15m")
+    # Bars loaded per evaluation. Must comfortably exceed the indicator warm-up (EMA200 + margin
+    # = 260) or the engine never goes warm and never emits a trigger.
+    pattern_candle_limit: int = int(os.getenv("PATTERN_CANDLE_LIMIT", "500"))
+
     # Phase 4b: live SHORT execution on the futures venue. Off by default — a short strategy stays
     # flat (HOLD) until this is explicitly enabled, so shorting can never happen by surprise. When
     # on, a live short strategy on a futures ticker opens a real SELL-to-open (or a simulated fill

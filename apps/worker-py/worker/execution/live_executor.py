@@ -15,7 +15,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Optional
 
-from ..strategy.evaluator import to_fixed
+from ..util import to_fixed
 from .execution import ExecutionService
 from .signals import SignalStore, evaluate_live_signal
 

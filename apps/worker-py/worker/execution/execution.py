@@ -16,7 +16,7 @@ import logging
 import time
 from typing import Any, Optional, Protocol
 
-from ..strategy.evaluator import to_fixed
+from ..util import to_fixed
 from .binance_orders import OrderPlacer
 from .risk_gate import OrderIntent, RiskGateStore, evaluate_order_risk_gate
 

@@ -17,23 +17,15 @@ from __future__ import annotations
 
 import math
 import random
-from decimal import ROUND_HALF_DOWN, ROUND_HALF_UP, Decimal
 from typing import Any
 
+from ..util import to_fixed  # re-exported: this module has always been its public home
 from .dsl.interpreter import simulate_from_ir
 from .dsl.ir import count_ir_parameters, resolve_ir
 
 MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000
 
-
-def to_fixed(x: float, digits: int) -> float:
-    """Match JS `Number(x.toFixed(digits))`: round the EXACT double half toward +infinity
-    (ties -> larger value), then return it as a float. Uses Decimal(x) — the exact binary
-    value, not repr — so e.g. 1.005 rounds like V8 does."""
-    d = Decimal(x)
-    q = Decimal(1).scaleb(-digits)
-    rounding = ROUND_HALF_UP if d >= 0 else ROUND_HALF_DOWN  # both = half toward +infinity
-    return float(d.quantize(q, rounding=rounding))
+__all__ = ["to_fixed", "evaluate_strategy"]
 
 
 def _num(v: Any) -> float:

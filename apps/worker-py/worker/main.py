@@ -42,6 +42,18 @@ async def _daily_backfill() -> None:
 async def main() -> None:
     log.info("Python Data+AI worker starting (sole background scheduler).")
 
+    # Resolve the trading brain before anything is scheduled — an unknown value must stop the
+    # process, not silently fall back to 'strategy' and re-arm an engine believed to be off.
+    from .execution.factory import KNOWN_BRAINS, PATTERN_BRAIN
+
+    brain = config.trading_brain
+    if brain not in KNOWN_BRAINS:
+        raise SystemExit(
+            f"Unknown TRADING_BRAIN '{brain}' — must be one of: {', '.join(KNOWN_BRAINS)}."
+        )
+    strategy_brain_active = brain != PATTERN_BRAIN
+    log.info("TRADING_BRAIN=%s", brain)
+
     # Backfill missing data on every startup (cheap — resumes from the last stored month).
     if config.backfill_on_start:
         log.info("Running startup archive gap-fill…")
@@ -65,12 +77,17 @@ async def main() -> None:
     scheduler.add_job(backend_jobs.reconciliation, CronTrigger(minute=0), id="reconciliation", max_instances=1)  # hourly
     scheduler.add_job(backend_jobs.data_quality, CronTrigger(hour="*/6", minute=15), id="data_quality", max_instances=1)
     scheduler.add_job(backend_jobs.alert_digest, CronTrigger(hour="*/4", minute=5), id="alert_digest", max_instances=1)
-    scheduler.add_job(backend_jobs.strategy_reevaluation, CronTrigger(hour=1, minute=0), id="strategy_reevaluation", max_instances=1)
     scheduler.add_job(backend_jobs.allocation_rebalance, CronTrigger(hour=2, minute=0), id="allocation_rebalance", max_instances=1)
+
+    # Strategy re-evaluation can RETIRE a live strategy and trigger regeneration, which ends in a
+    # newly promoted 'live' strategy. Under the pattern brain that would silently re-arm the engine
+    # we just switched off, so the job is not scheduled at all.
+    if strategy_brain_active:
+        scheduler.add_job(backend_jobs.strategy_reevaluation, CronTrigger(hour=1, minute=0), id="strategy_reevaluation", max_instances=1)
 
     # --- Strategy Supervisor (Phase 3a) — continuous deterministic guardrail monitor. When
     # enabled it is the responsive replacement for the daily strategy_reevaluation trigger.
-    if config.supervisor_enabled:
+    if config.supervisor_enabled and strategy_brain_active:
         from . import supervisor
 
         scheduler.add_job(
@@ -105,9 +122,12 @@ async def main() -> None:
 
     # Consolidation Phase A/B: when the worker owns the strategy engine, consume generation jobs
     # AND compute chart-signal markers on request (so the backend needs no DSL interpreter).
+    # Both consumers belong to the strategy brain. signals_consumer in particular REPLAYS the live
+    # strategy and WRITES rows into strategy_signals on every chart request, so leaving it running
+    # under the pattern brain would keep repainting the chart with the old engine's markers.
     generate_task: asyncio.Task | None = None
     signals_task: asyncio.Task | None = None
-    if config.generation_source == "worker":
+    if config.generation_source == "worker" and strategy_brain_active:
         from .strategy.generate_consumer import run_generate_consumer
         from .strategy.signals_consumer import run_signals_consumer
 

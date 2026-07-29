@@ -106,6 +106,23 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
           </div>
         </section>
 
+        <!-- What the pattern brain currently reads from the market. Deterministic — this is the
+             feature engine's own output, before any AI is involved. -->
+        <section id="readWrap" hidden class="card flex flex-col overflow-hidden">
+          <div class="flex items-center justify-between border-b border-border px-4 py-2.5">
+            <span class="eyebrow">Market Read</span>
+            <span id="readRegime" class="badge badge-muted">—</span>
+          </div>
+          <div class="grid grid-cols-2 gap-x-4 gap-y-3.5 p-4">
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">ADX</span><span id="readAdx" class="tabular text-sm font-bold">—</span></div>
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">RSI 14</span><span id="readRsi" class="tabular text-sm font-bold">—</span></div>
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">ATR 14</span><span id="readAtr" class="tabular text-sm font-bold">—</span></div>
+            <div class="flex flex-col gap-0.5"><span class="eyebrow">EMA Stack</span><span id="readStack" class="tabular text-sm font-bold">—</span></div>
+            <div class="col-span-2 flex flex-col gap-0.5"><span class="eyebrow">Nearest Support / Resistance</span><span id="readLevels" class="tabular text-sm font-bold">—</span></div>
+            <div class="col-span-2 flex flex-col gap-1"><span class="eyebrow">Patterns</span><span id="readPatterns" class="text-sm font-semibold text-muted">—</span></div>
+          </div>
+        </section>
+
         <section class="card flex flex-col overflow-hidden">
           <div class="border-b border-border px-4 py-2.5"><span class="eyebrow">Market Stats · BTCUSDT</span></div>
           <div id="marketStats" class="grid grid-cols-2 gap-x-4 gap-y-3.5 p-4">
@@ -263,7 +280,8 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         lastBar = bars.length ? { ...bars[bars.length - 1] } : null;
         chart?.timeScale().fitContent();
         chartEmpty.hidden = bars.length > 0;
-        loadSignals(interval); // overlay the active strategy's buy/sell intents on this timeframe
+        loadSignals(interval);  // overlay the engine's triggers on this timeframe
+        loadPatternState();     // refresh the Market Read panel + S/R lines
         if (bars.length) { updatePriceHeader(lastBar!.close); renderMarketStats(); }
         else chartEmpty.querySelector('p')!.textContent = 'No candles yet — backfilling from Binance archive…';
       } catch {
@@ -294,41 +312,120 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       }
     }
 
-    // Overlay the active strategy's buy/sell intents as chart markers. Recomputed by the
-    // backend over the same interval-rolled candles, so a BUY/SELL sits on its exact bar.
-    // The lookback is deliberately far larger than the visible page (PAGE_SIZE): the rule
-    // tree needs a long warmup (e.g. a 200-bar trend EMA) before it emits its FIRST signal,
-    // so a 500-bar request left the entire visible window inside the warmup zone → zero
-    // markers. A wide window means every crossover on-screen (and further back, revealed on
-    // scroll) is rendered, while markers outside the loaded candles simply wait until those
-    // bars page in. setMarkers is cheap even at a few hundred markers.
+    // Overlay the pattern brain's TRIGGERS as chart markers. These are not trades — a trigger is
+    // the feature engine saying "something happened on this bar worth a look" (a level broke, a
+    // chart pattern completed, the regime flipped). Trades get their own markers in Phase 2.
+    //
+    // The lookback is deliberately far larger than the visible page (PAGE_SIZE): the engine needs
+    // a long warmup (EMA200 + margin) before it emits its FIRST trigger, so a small request can
+    // leave the whole visible window inside the warmup zone and render nothing. Markers outside
+    // the loaded candles simply wait until those bars page in; setMarkers is cheap at this size.
     const SIGNAL_LOOKBACK = 6000;
-    // `direction` is per-signal, not per-strategy: a two-sided ('both') strategy emits long and
-    // short legs on the same series, so each marker carries the side that produced it.
-    type Signal = { time: number; side: 'buy' | 'sell'; direction?: 'long' | 'short'; price: number; reason: string };
+
+    // Short labels — the full explanation goes in the Market Read panel, not on the chart.
+    const TRIGGER_LABEL: Record<string, string> = {
+      resistance_break: 'R-BREAK',
+      support_break: 'S-BREAK',
+      pullback_to_support: 'PULLBACK',
+      pullback_to_resistance: 'PULLBACK',
+      range_breakout_up: 'BREAKOUT',
+      range_breakout_down: 'BREAKDOWN',
+      pattern_complete: 'PATTERN',
+      regime_flip: 'REGIME',
+    };
+
+    type PatternMarker = { time: number; kind: string; side: 'long' | 'short'; price: number; detail: string };
     async function loadSignals(interval: string) {
       if (!tickerId || !series) return;
       try {
-        const res = await apiGet<{ signals: Signal[]; direction?: 'long' | 'short' }>(`/strategies/ticker/${tickerId}/signals?interval=${interval}&limit=${SIGNAL_LOOKBACK}`);
-        // A short leg opens with a SELL and covers with a BUY; label those SHORT/COVER so the markers
-        // read correctly (a raw "SELL" on an entry is confusing on a short). Fall back to the
-        // strategy-level direction for rows persisted before per-signal direction existed.
-        const markers = (res.signals || [])
+        const res = await apiGet<{ markers: PatternMarker[] }>(`/pattern/ticker/${tickerId}/markers?interval=${interval}&limit=${SIGNAL_LOOKBACK}`);
+        const markers = (res.markers || [])
           .slice()
           .sort((a, b) => a.time - b.time)
-          .map((s) => {
-            const isShort = (s.direction ?? res.direction) === 'short';
-            return {
-              time: s.time as UTCTimestamp,
-              position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
-              color: s.side === 'buy' ? UP : DOWN,
-              shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
-              text: isShort ? (s.side === 'buy' ? 'COVER' : 'SHORT') : (s.side === 'buy' ? 'BUY' : 'SELL'),
-            };
-          });
+          .map((m) => ({
+            time: m.time as UTCTimestamp,
+            position: m.side === 'long' ? 'belowBar' : 'aboveBar',
+            color: m.side === 'long' ? UP : DOWN,
+            shape: m.side === 'long' ? 'arrowUp' : 'arrowDown',
+            text: TRIGGER_LABEL[m.kind] ?? m.kind.toUpperCase(),
+          }));
         series.setMarkers(markers as any);
       } catch {
-        series?.setMarkers([]); // no active strategy / fetch failed → keep the chart clean
+        series?.setMarkers([]); // engine hasn't produced anything yet → keep the chart clean
+      }
+    }
+
+    // --- Market Read panel + S/R price lines, both from the engine's stored feature state.
+    const readWrap = $('readWrap');
+    let levelLines: any[] = [];
+
+    // Reuses the design system's badge variants rather than inventing colours — the palette has
+    // brand/bear/warn, not up/down.
+    const REGIME_STYLE: Record<string, string> = {
+      strong_uptrend: 'badge badge-brand',
+      uptrend: 'badge badge-brand',
+      strong_downtrend: 'badge badge-bear',
+      downtrend: 'badge badge-bear',
+      range: 'badge badge-muted',
+    };
+
+    function clearLevelLines() {
+      // Defensive: a stale handle (e.g. after the series was rebuilt) must not break the panel.
+      for (const line of levelLines) {
+        try { series?.removePriceLine(line); } catch { /* already gone */ }
+      }
+      levelLines = [];
+    }
+
+    async function loadPatternState() {
+      if (!tickerId) return;
+      try {
+        const res = await apiGet<{ state: any }>(`/pattern/ticker/${tickerId}/state`);
+        const st = res?.state;
+        if (!st) { readWrap.hidden = true; clearLevelLines(); return; }
+        readWrap.hidden = false;
+
+        const regime = st.regime?.label ?? 'range';
+        const chip = $('readRegime');
+        chip.textContent = String(regime).replace(/_/g, ' ');
+        chip.className = `rounded px-1.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-wide ${REGIME_STYLE[regime] ?? REGIME_STYLE.range}`;
+
+        const ind = st.indicators ?? {};
+        const num = (v: any, digits = 2) => (typeof v === 'number' ? v.toFixed(digits) : '—');
+        $('readAdx').textContent = num(st.regime?.adx, 1);
+        $('readRsi').textContent = num(ind.rsi14, 1);
+        $('readAtr').textContent = ind.atr14 ? `${num(ind.atr14)} (${num(ind.atrPct)}%)` : '—';
+        $('readStack').textContent = st.regime?.emaStack ?? '—';
+
+        const support = st.levels?.support?.[0];
+        const resistance = st.levels?.resistance?.[0];
+        $('readLevels').textContent =
+          `${support ? num(support.price) : '—'} / ${resistance ? num(resistance.price) : '—'}`;
+
+        const chart = (st.patterns?.chart ?? []).map((p: any) => p.name.replace(/_/g, ' '));
+        const candle = (st.patterns?.candle ?? []).map((p: any) => p.name.replace(/_/g, ' '));
+        const all = [...chart, ...candle];
+        $('readPatterns').textContent = all.length ? all.join(' · ') : 'none detected';
+
+        // Draw the levels the engine is actually watching. Touch count is in the label because a
+        // level tapped four times is a much stronger statement than one tapped twice.
+        clearLevelLines();
+        if (!series) return;
+        for (const lv of (st.levels?.support ?? []).slice(0, 2)) {
+          levelLines.push(series.createPriceLine({
+            price: lv.price, color: UP, lineWidth: 1, lineStyle: 2,
+            axisLabelVisible: true, title: `S ×${lv.touches}`,
+          }));
+        }
+        for (const lv of (st.levels?.resistance ?? []).slice(0, 2)) {
+          levelLines.push(series.createPriceLine({
+            price: lv.price, color: DOWN, lineWidth: 1, lineStyle: 2,
+            axisLabelVisible: true, title: `R ×${lv.touches}`,
+          }));
+        }
+      } catch {
+        readWrap.hidden = true;
+        clearLevelLines();
       }
     }
 
@@ -394,7 +491,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     // Markers used to be fetched only on load / timeframe switch, so a signal that fired while the
     // page sat open never appeared. Refresh them whenever the worker reports a closed bar — the
     // same push-driven path live candles use — for the interval currently on screen.
-    onSignalsUpdate(({ tickerId: tid }) => { if (tid === tickerId) loadSignals(currentInterval); });
+    onSignalsUpdate(({ tickerId: tid }) => {
+      if (tid !== tickerId) return;
+      loadSignals(currentInterval);
+      loadPatternState();
+    });
 
     // ---------- Timeframe tabs ----------
     function paintTf() {

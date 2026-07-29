@@ -9,17 +9,28 @@ const { title = 'AI Algorithmic Trading Platform' } = Astro.props;
 
 // Icon rail. Primary items sit up top; Profile (formerly "Connector") is pinned to the
 // bottom of the rail, right above the connection dot + logout.
+//
+// The Alpha (/strategies) entry is hidden while the pattern brain drives trading — the page
+// and its API still work if you navigate to /strategies directly, but nothing there is live,
+// so surfacing it in the rail would only be misleading. Set SHOW_STRATEGY_NAV=true (or flip
+// the default below) if you switch TRADING_BRAIN back to 'strategy'.
+const showStrategyNav = import.meta.env.SHOW_STRATEGY_NAV === 'true';
+
 const topNav = [
   {
     href: '/',
     label: 'Dashboard',
     icon: '<path d="M3 12 12 3l9 9"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
   },
-  {
-    href: '/strategies',
-    label: 'Alpha',
-    icon: '<path d="M9 3h6"/><path d="M10 3v6l-4.5 8A2 2 0 0 0 7.3 20h9.4a2 2 0 0 0 1.8-3L14 9V3"/>',
-  },
+  ...(showStrategyNav
+    ? [
+        {
+          href: '/strategies',
+          label: 'Alpha',
+          icon: '<path d="M9 3h6"/><path d="M10 3v6l-4.5 8A2 2 0 0 0 7.3 20h9.4a2 2 0 0 0 1.8-3L14 9V3"/>',
+        },
+      ]
+    : []),
 ];
 
 const profileNav = {
