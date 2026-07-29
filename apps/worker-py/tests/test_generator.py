@@ -380,3 +380,17 @@ def test_optimizer_filters_grid_to_mirrored_pairs():
     assert {c["os"] + c["ob"] for c in kept} <= {95, 100, 105}   # only mirrors survive
     assert all(abs(c["os"] + c["ob"] - 100) <= 5 for c in kept)
     assert len(kept) < len(combos)              # lopsided pairs really were dropped
+
+
+def test_wrong_direction_discarded_when_planner_required_both():
+    """The planner asking for BOTH must be enforced: a one-sided proposal is discarded rather than
+    promoted, which is how the system kept drifting back to a single direction."""
+    assert gen._wrong_direction({"direction": "long"}, "both", 1, "t1") is True
+    assert gen._wrong_direction({"direction": "short"}, "both", 1, "t1") is True
+    assert gen._wrong_direction({"direction": "both"}, "both", 1, "t1") is False
+
+
+def test_wrong_direction_noop_without_a_planner_preference():
+    """No preference (planner unavailable / spot) -> nothing to enforce."""
+    assert gen._wrong_direction({"direction": "long"}, None, 1, "t1") is False
+    assert gen._wrong_direction({}, "long", 1, "t1") is False  # absent defaults to long

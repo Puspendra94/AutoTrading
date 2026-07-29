@@ -162,9 +162,13 @@ _DIRECTION_FUTURES = (
     'different indicators per side will blow the parameter budget and be rejected.\n'
     'MIRROR THE LEVELS: the long and short oscillator entry levels MUST sum to 100 (30/70, 35/65, '
     '25/75) — likewise the exits. A lopsided pair such as 30/60 is REJECTED: it makes one leg fire far '
-    'more often than the other, so the strategy is really one-sided while claiming to trade both. '
-    'When you supply a `search` grid, list mirrored candidates on both sides (e.g. oversold [25,30,35] '
-    'with overbought [75,70,65]) so every combination the optimizer can pick stays a true mirror.'
+    'more often than the other, so the strategy is really one-sided while claiming to trade both.\n'
+    'There is NO ARITHMETIC in this grammar. You cannot write {"$param":"100-oversold"} or any '
+    'expression — a $param is only ever a NAME that must appear verbatim as a key in `search`. To '
+    'mirror, give each side its OWN parameter and list the mirrored values in the same order, e.g. '
+    '"search": {"oversold": [25, 30, 35], "overbought": [75, 70, 65]} — then use {"$param":"oversold"} '
+    'on the long leg and {"$param":"overbought"} on the short leg. Every $param you reference MUST be '
+    'declared in `search`, or the template is discarded.'
 )
 
 

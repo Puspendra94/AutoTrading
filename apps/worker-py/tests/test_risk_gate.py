@@ -99,7 +99,9 @@ async def test_probation_when_strategy_under_trade_count():
 
 
 async def test_allocation_snapshot_overrides_even_share():
-    store = FakeStore(allocation={"allocatedCapital": 4000}, strategy={"status": "live"}, strategy_positions=10)
+    # Allocation snapshots apply in LIVE mode; paper sizes off its own notional (see the paper test).
+    store = FakeStore(provider={"id": "p1", "tradingEnabled": True, "killSwitchActive": False, "killSwitchReason": None, "tradingMode": "live"},
+                      allocation={"allocatedCapital": 4000}, strategy={"status": "live"}, strategy_positions=10)
     r = await evaluate_order_risk_gate(store, _intent(strategy_id="s1"))
     assert r["allowedQuantity"] == 40.0  # 4000 / 100, full size
 
@@ -132,7 +134,7 @@ async def test_rejects_order_whose_size_rounds_to_zero():
     allocation job gave the ticker $9.30, and 25% of that against BTC rounded to 0.0000 units. The
     gate approved it, so a zero-quantity position was opened that could never gain or lose and
     rendered as 'Size 0 / NaN%'. A size that rounds away is not a trade."""
-    store = FakeStore(allocation={"allocatedCapital": 9.29996646})
+    store = FakeStore(provider={"id": "p1", "tradingEnabled": True, "killSwitchActive": False, "killSwitchReason": None, "tradingMode": "live"}, allocation={"allocatedCapital": 9.29996646})
     res = await evaluate_order_risk_gate(store, OrderIntent("t1", "short", 64657.43, "s1"))
     assert res["approved"] is False
     assert res["allowedQuantity"] == 0
@@ -141,6 +143,21 @@ async def test_rejects_order_whose_size_rounds_to_zero():
 
 async def test_allows_order_when_allocation_is_adequate():
     """The same path with a funded allocation still sizes normally."""
-    store = FakeStore(allocation={"allocatedCapital": 10000.0})
+    store = FakeStore(provider={"id": "p1", "tradingEnabled": True, "killSwitchActive": False, "killSwitchReason": None, "tradingMode": "live"}, allocation={"allocatedCapital": 10000.0})
     res = await evaluate_order_risk_gate(store, OrderIntent("t1", "short", 64657.43, "s1"))
     assert res["approved"] is True and res["allowedQuantity"] > 0
+
+
+async def test_paper_sizing_ignores_a_near_empty_live_balance():
+    """Regression: a balance sync recorded the real exchange balance ($23.25) and the allocation job
+    derived a $9.30 ceiling from it, shrinking every PAPER position to zero — a live-account balance
+    silently switched paper trading off. Paper sizes off its own notional instead."""
+    store = FakeStore(
+        provider={"id": "p1", "tradingEnabled": True, "killSwitchActive": False,
+                  "killSwitchReason": None, "tradingMode": "paper"},
+        balance={"tradableBalance": 23.24991615},
+        allocation={"allocatedCapital": 9.29996646},
+    )
+    res = await evaluate_order_risk_gate(store, OrderIntent("t1", "short", 64657.43, "s1"))
+    assert res["approved"] is True
+    assert res["allowedQuantity"] > 0.03          # ~25% of $10k against BTC

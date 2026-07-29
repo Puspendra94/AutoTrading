@@ -76,6 +76,7 @@ async def plan_generation(store, llm, pool, ticker: dict, active_policy: dict) -
         "candleLimit": config.strategy_eval_candle_limit,
         "policy": active_policy,
         "signalEmphasis": "",
+        "preferredDirection": None,
         "reasoning": "default plan (planner unavailable / no lessons yet)",
     }
 
@@ -153,7 +154,9 @@ async def plan_generation(store, llm, pool, ticker: dict, active_policy: dict) -
         f"\n"
         f'Respond in JSON with exactly these fields: interval (one of "1h","2h","4h","6h","12h","1d"), '
         f"candleLimit (integer 1000-20000), minSharpe (number 0.5-3), minProfitFactor (number 1.2-3), "
-        f"maxDrawdownPct (number 5-25), minTradeCount (integer 5-300), signalEmphasis (string: concrete "
+        f"maxDrawdownPct (number 5-25), minTradeCount (integer 5-300), preferredDirection (\"long\", "
+        f"\"short\" or \"both\" — must match signalEmphasis; on futures prefer \"both\"), "
+        f"signalEmphasis (string: concrete "
         f"guidance for the generator — which indicator family/approach and structure to favor or avoid given "
         f"the lessons; name a SPECIFIC non-crossover shape when crossovers have failed), reasoning (string).\n"
         f"\n"
@@ -187,4 +190,7 @@ async def plan_generation(store, llm, pool, ticker: dict, active_policy: dict) -
         effective_policy["maxDrawdownPct"], effective_policy["minTradeCount"], plan.signalEmphasis,
     )
     return {"interval": plan.interval, "candleLimit": int(plan.candleLimit), "policy": effective_policy,
-            "signalEmphasis": plan.signalEmphasis, "reasoning": plan.reasoning}
+            "signalEmphasis": plan.signalEmphasis,
+            # Only meaningful where shorts are allowed; a spot ticker is always long.
+            "preferredDirection": plan.preferredDirection if allow_short else "long",
+            "reasoning": plan.reasoning}

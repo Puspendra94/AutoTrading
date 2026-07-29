@@ -203,3 +203,62 @@ async def test_both_strategy_requires_its_short_side():
     broken = {k: v for k, v in BOTH_PARAMS.items() if k not in ("shortEntry", "shortExit")}
     errs = validate_ir(broken)
     assert any("shortEntry" in e for e in errs) and any("shortExit" in e for e in errs)
+
+
+# ---------------------------------------------------------------- live decisions become markers
+class _RecordingSignalStore:
+    """Minimal SignalStore that captures save_signals calls."""
+    def __init__(self, live, position=None):
+        self._live, self._position = live, position
+        self.saved: list[dict] = []
+
+    async def get_live_strategy(self, t): return self._live
+    async def get_open_position_for_strategy(self, t, s): return self._position
+    async def save_signals(self, strategy_id, ticker_id, interval, direction, signals):
+        for s in signals:
+            self.saved.append({"interval": interval, "direction": direction, **s})
+
+
+class _Exec:
+    def __init__(self, status="EXECUTED"):
+        self.status, self.closed = status, []
+        self.store = None
+    async def execute_trade_signal(self, *a, **k): return {"status": self.status}
+    async def close_position(self, pid, price): self.closed.append(pid)
+
+
+async def test_live_entry_is_recorded_as_a_marker():
+    """Markers used to be written from ONE place — the chart-request path — so a live trade left no
+    marker at all and the user could not see what opened their position."""
+    from worker.execution.live_executor import CHART_INTERVALS, LiveExecutor
+    store = _RecordingSignalStore(live={"id": "s1"})
+    ex = LiveExecutor(store, _Exec(), None, None)
+    await ex._record_live_signal("t1", "s1", "short", opening=True, price=64620.0, reason="Live entry")
+    assert len(store.saved) == len(CHART_INTERVALS)          # visible on every chart timeframe
+    assert {s["interval"] for s in store.saved} == set(CHART_INTERVALS)
+    one = store.saved[0]
+    assert one["direction"] == "short" and one["side"] == "sell"   # a short OPENS by selling
+    assert one["price"] == 64620.0 and one["reason"] == "Live entry"
+
+
+async def test_live_exit_records_the_covering_side():
+    from worker.execution.live_executor import LiveExecutor
+    store = _RecordingSignalStore(live={"id": "s1"})
+    ex = LiveExecutor(store, _Exec(), None, None)
+    await ex._record_live_signal("t1", "s1", "short", opening=False, price=64000.0, reason="Live exit")
+    assert store.saved[0]["side"] == "buy"      # a short CLOSES by buying back
+
+
+async def test_rejected_entry_records_nothing():
+    """A rejected order (e.g. size rounds to zero) must not leave a phantom marker."""
+    from worker.execution.live_executor import LiveExecutor
+    store = _RecordingSignalStore(live={"id": "s1"})
+    ex = LiveExecutor(store, _Exec(status="REJECTED"), None, None)
+    import worker.execution.live_executor as lm
+    async def fake_eval(*a, **k): return ("SHORT", "s1")
+    orig, lm.evaluate_live_signal = lm.evaluate_live_signal, fake_eval
+    try:
+        await ex.on_final_candle("t1", 64620.0)
+    finally:
+        lm.evaluate_live_signal = orig
+    assert store.saved == []

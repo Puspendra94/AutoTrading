@@ -100,6 +100,12 @@ class GenerationPlan(BaseModel):
     maxDrawdownPct: float = Field(..., ge=5, le=50, description="Proposed max-drawdown ceiling % (clamped to <=25)")
     minTradeCount: int = Field(..., ge=5, le=300, description="Proposed minimum OOS trades (clamped to >=5)")
     signalEmphasis: str = Field(..., description="Concrete guidance for the generator given the lessons")
+    # Structured, so the generator can ENFORCE the plan rather than hoping the next model reads the
+    # emphasis prose. Without this the planner asked for BOTH and the generator quietly returned a
+    # one-sided strategy, which was then promoted.
+    preferredDirection: Literal["long", "short", "both"] = Field(
+        ..., description="Which direction the generated strategy MUST take: 'long', 'short', or "
+                         "'both' (two-sided, futures only). Must agree with signalEmphasis.")
     reasoning: str = Field(..., description="Brief rationale tying the plan to the lessons")
 
 

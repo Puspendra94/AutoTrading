@@ -34,11 +34,22 @@ BOTH = "both"
 MIRROR_TOLERANCE = 5.0
 
 
+class TemplateError(ValueError):
+    """The LLM's template is internally inconsistent (e.g. references an undeclared $param).
+    Raised so the caller can discard that ATTEMPT instead of the whole generation job."""
+
+
 def _substitute(node: Any, assignment: dict) -> Any:
     """Deep-copy a template node, replacing every {"$param": name} leaf with assignment[name]."""
     if isinstance(node, dict):
         if set(node.keys()) == {"$param"}:
-            return assignment[node["$param"]]
+            name = node["$param"]
+            if name not in assignment:
+                # Seen in the wild: the tree used {"$param":"overbought"} while `search` only
+                # declared other names. This raised a bare KeyError out of optimize() and killed the
+                # entire generation run — all remaining attempts included.
+                raise TemplateError(f"template references undeclared search parameter '{name}'")
+            return assignment[name]
         return {k: _substitute(v, assignment) for k, v in node.items()}
     if isinstance(node, list):
         return [_substitute(x, assignment) for x in node]
@@ -58,7 +69,7 @@ def expand_template(template: dict, cap: int = MAX_GRID, seed: int = 0) -> list[
     out = []
     for combo in combos:
         assignment = dict(zip(names, combo))
-        out.append((assignment, _substitute(base, assignment)))
+        out.append((assignment, _substitute(base, assignment)))  # TemplateError -> caller discards
     return out
 
 

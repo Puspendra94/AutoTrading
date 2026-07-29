@@ -39,13 +39,16 @@ class PgRiskGateStore:
     async def get_provider(self, provider_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, kill_switch_active, kill_switch_reason, trading_enabled FROM providers WHERE id = $1",
+                "SELECT id, kill_switch_active, kill_switch_reason, trading_enabled, trading_mode "
+                "FROM providers WHERE id = $1",
                 provider_id,
             )
         if not row:
             return None
+        # tradingMode drives paper-vs-live position sizing (see evaluate_order_risk_gate).
         return {"id": str(row["id"]), "killSwitchActive": row["kill_switch_active"],
-                "killSwitchReason": row["kill_switch_reason"], "tradingEnabled": row["trading_enabled"]}
+                "killSwitchReason": row["kill_switch_reason"], "tradingEnabled": row["trading_enabled"],
+                "tradingMode": row["trading_mode"]}
 
     async def get_schedule(self, provider_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:

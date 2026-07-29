@@ -24,7 +24,7 @@ from ..llm.service import LlmPurpose, LlmService
 from .dsl.ir import validate_ir
 from .evaluator import evaluate_strategy
 from .grammar_prompt import build_generation_prompt, build_template_generation_prompt
-from .optimizer import optimize
+from .optimizer import TemplateError, is_mirrored, optimize
 
 log = logging.getLogger("worker.strategy.generator")
 
@@ -161,6 +161,20 @@ def _direction_mismatch(spec: dict, attempt: int, ticker_id: str) -> bool:
         "setup — refusing to trade it inverted. Discarding.",
         attempt, MAX_ATTEMPTS, ticker_id, declared, "SHORT" if declared == "long" else "LONG",
     )
+    return True
+
+
+def _wrong_direction(spec: dict, required: Optional[str], attempt: int, ticker_id: str) -> bool:
+    """Discard a proposal that ignores the direction the planner prescribed. Without this the
+    planner can ask for a two-sided strategy, the model can hand back a long, and — with the gate
+    bypassed — that long gets promoted, leaving the system single-sided again."""
+    if not required:
+        return False
+    proposed = spec.get("direction") or "long"
+    if proposed == required:
+        return False
+    log.warning("Strategy attempt %d/%d for ticker %s: planner required direction=%s but the "
+                "proposal is %s. Discarding.", attempt, MAX_ATTEMPTS, ticker_id, required, proposed)
     return True
 
 
@@ -302,6 +316,10 @@ class StrategyGenerator:
 
         latest_price = float(candles[-1]["close"]) if candles else 0
         allow_short = (ticker.get("market_type_name") or "").lower() == "futures"
+        # The planner's direction is a REQUIREMENT, not a suggestion. It asked for BOTH and the
+        # generator returned a one-sided strategy, which was promoted — the plan has to be enforced
+        # the same way direction/mirroring are.
+        required_direction = plan.get("preferredDirection") if allow_short else "long"
         param_budget = int(policy.get("maxParameterCount") or 5)
         two_stage = config.two_stage_generation
         prompt_builder = build_template_generation_prompt if two_stage else build_generation_prompt
@@ -342,10 +360,17 @@ class StrategyGenerator:
                     continue
                 if _direction_mismatch(template, attempt, ticker_id):
                     continue
+                if _wrong_direction(template, required_direction, attempt, ticker_id):
+                    continue
                 # CPU-bound grid search (hundreds of backtests): run it off the event loop so the
                 # shared loop keeps servicing the live kline stream's websocket pongs (else Binance
                 # drops us with a 1008 Pong-timeout), live execution, and signals:request markers.
-                opt = await asyncio.to_thread(optimize, template, candles, policy)
+                try:
+                    opt = await asyncio.to_thread(optimize, template, candles, policy)
+                except TemplateError as err:
+                    log.warning("Strategy attempt %d/%d for ticker %s: malformed template (%s). Discarding.",
+                                attempt, MAX_ATTEMPTS, ticker_id, err)
+                    continue
                 ir, eval_result = opt["ir"], opt["evaluation"]
                 if ir is None:
                     log.warning("Strategy attempt %d/%d for ticker %s: optimizer found no scoreable config (%d tried). Discarding.",
@@ -362,6 +387,13 @@ class StrategyGenerator:
                                 attempt, MAX_ATTEMPTS, ticker_id)
                     continue
                 if _direction_mismatch(ir, attempt, ticker_id):
+                    continue
+                if _wrong_direction(ir, required_direction, attempt, ticker_id):
+                    continue
+                if not is_mirrored(ir):
+                    log.warning("Strategy attempt %d/%d for ticker %s: two-sided but its long/short "
+                                "entry levels are not mirrors — one leg would fire far more often. "
+                                "Discarding.", attempt, MAX_ATTEMPTS, ticker_id)
                     continue
                 # Full walk-forward backtest — also CPU-bound; keep it off the event loop (see above).
                 eval_result = await asyncio.to_thread(evaluate_strategy, candles, ir, policy)

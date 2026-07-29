@@ -12,6 +12,7 @@ in LIVE_EXECUTION_SOURCE=worker so execution isn't run twice.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 from ..strategy.evaluator import to_fixed
@@ -22,6 +23,13 @@ log = logging.getLogger("worker.execution.live")
 
 LONG = "long"
 SHORT = "short"
+
+# Chart timeframes a live trade is stamped onto (must match the UI's selector), with each bar length
+# in ms so the event lands on the right bar for whichever interval is being viewed.
+CHART_INTERVALS = {
+    "1m": 60_000, "5m": 300_000, "15m": 900_000,
+    "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000,
+}
 
 
 class LiveExecutor:
@@ -58,10 +66,41 @@ class LiveExecutor:
             if result.get("status") == "REJECTED":
                 log.warning("Live entry signal rejected for ticker %s (%s): %s",
                             ticker_id, direction, result.get("reason"))
+            else:
+                await self._record_live_signal(ticker_id, strategy_id, direction, opening=True,
+                                               price=close, reason="Live entry")
         elif signal == "SELL":
             open_position = await self.signal_store.get_open_position_for_strategy(ticker_id, strategy_id)
             if open_position:
                 await self.execution.close_position(open_position["id"], close)
+                await self._record_live_signal(ticker_id, strategy_id, open_position.get("side") or LONG,
+                                               opening=False, price=close, reason="Live exit")
+
+    async def _record_live_signal(self, ticker_id: str, strategy_id: Optional[str], direction: str,
+                                  *, opening: bool, price: float, reason: str) -> None:
+        """Persist what the LIVE loop actually did, so the chart is a record of real trades and not
+        only a replay reconstruction.
+
+        This was a real gap: markers were written from ONE place — the chart-request path — so a
+        position opened live had no marker at all, and the replay's own entry could sit on a
+        different bar entirely (a trade opened at 10:32 traced back to a 06:00 replay entry, because
+        the loop reconciles to intended exposure rather than waiting for a fresh edge).
+
+        The event is stamped onto every chart timeframe, bucketed to each one's bar, so the trade is
+        visible whichever interval is on screen. Where the replay already produced a marker on that
+        bar the unique key makes this a no-op."""
+        if not strategy_id:
+            return
+        try:
+            side = "sell" if (direction == SHORT) == opening else "buy"
+            sig = {"side": side, "direction": direction, "price": price, "reason": reason}
+            now_ms = int(time.time() * 1000)
+            for interval, step_ms in CHART_INTERVALS.items():
+                bar_ms = (now_ms // step_ms) * step_ms
+                await self.signal_store.save_signals(
+                    strategy_id, ticker_id, interval, direction, [{**sig, "time": bar_ms // 1000}])
+        except Exception:  # noqa: BLE001 — recording must never break the trading loop
+            log.exception("Failed to record live signal for ticker %s", ticker_id)
 
     async def _update_mark_prices(self, ticker_id: str, close: float) -> None:
         positions = await self.execution.store.find_open_positions_by_ticker(ticker_id)

@@ -19,6 +19,11 @@ from ..strategy.evaluator import to_fixed
 
 DAY_ABBREVIATIONS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
+LIVE_MODE = "live"
+# Notional a PAPER account trades against — matches the paper-performance panel's starting balance
+# and StrategyPerformance.notionalUsd, so simulated sizing is consistent wherever it is shown.
+PAPER_NOTIONAL = 10000.0
+
 
 class RiskGateHalt(Exception):
     """Trading is halted (mirrors the backend's ForbiddenException) — the order is blocked
@@ -141,8 +146,16 @@ async def evaluate_order_risk_gate(store: RiskGateStore, intent: OrderIntent, no
     # 2. Daily loss limit (Section 5.1).
     today = now.astimezone(timezone.utc).strftime("%Y-%m-%d")
     daily_tracker = await store.get_today_tracker(provider_id, today)
-    latest_balance = await store.get_latest_balance(provider_id)
-    cum_base = _num(latest_balance["tradableBalance"]) if latest_balance else 10000.0
+    # PAPER trading sizes off a fixed notional, not the provider's real balance. Sizing paper trades
+    # from the live account meant a near-empty exchange account ($23) shrank every simulated position
+    # to nothing — a balance sync silently disabled paper trading entirely. Live mode still sizes
+    # from the real balance, which is the only safe basis when real capital moves.
+    is_paper = (provider.get("tradingMode") or "paper") != LIVE_MODE
+    if is_paper:
+        cum_base = PAPER_NOTIONAL
+    else:
+        latest_balance = await store.get_latest_balance(provider_id)
+        cum_base = _num(latest_balance["tradableBalance"]) if latest_balance else PAPER_NOTIONAL
 
     if not daily_tracker:
         await store.create_today_tracker(provider_id, today, cum_base)
@@ -178,7 +191,14 @@ async def evaluate_order_risk_gate(store: RiskGateStore, intent: OrderIntent, no
                 "reason": f"Max concurrent positions limit reached ({risk_limit['maxConcurrentPositionsPerTicker']} max per ticker)."}
 
     # 4. Position sizing (Section 5.3 & 6) — allocation ceiling × probation multiplier.
-    allocated_capital = await _resolve_allocation_ceiling(store, provider_id, intent.ticker_id, cum_base)
+    # Allocation snapshots are computed from the live balance by the rebalance job, so in paper mode
+    # they carry the same contamination — a $9.30 ceiling from a $23 account. Share the paper
+    # notional across active tickers instead.
+    if is_paper:
+        active = await store.count_active_tickers(provider_id)
+        allocated_capital = cum_base / active if active > 0 else cum_base
+    else:
+        allocated_capital = await _resolve_allocation_ceiling(store, provider_id, intent.ticker_id, cum_base)
     is_probation = await _is_strategy_still_in_probation(store, intent.strategy_id, int(_num(risk_limit["probationTradesCount"])))
     sizing_multiplier = _num(risk_limit["probationSizePct"]) / 100 if is_probation else 1.0
     capital_to_use = allocated_capital * sizing_multiplier
