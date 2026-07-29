@@ -345,18 +345,29 @@ def _both_ir(long_level, short_level):
     }
 
 
-def test_mirrored_levels_accepted():
+def test_mirrored_and_tradeable_levels_accepted():
     from worker.strategy.optimizer import is_mirrored
-    assert is_mirrored(_both_ir(30, 70)) is True     # perfect mirror
-    assert is_mirrored(_both_ir(35, 65)) is True
-    assert is_mirrored(_both_ir(30, 65)) is True     # 95 — within tolerance
+    assert is_mirrored(_both_ir(35, 65)) is True     # mirrored AND frequent enough
+    assert is_mirrored(_both_ir(40, 60)) is True
+    assert is_mirrored(_both_ir(45, 55)) is True
+
+
+def test_extreme_levels_rejected_even_when_mirrored():
+    """30/70 mirrors perfectly and is still useless: an RSI under 30 while price is ABOVE the trend
+    EMA barely happens, so that shape produced two long entries in seven months."""
+    from worker.strategy.optimizer import is_mirrored, level_problem
+    assert is_mirrored(_both_ir(30, 70)) is False
+    assert "too rarely" in level_problem(_both_ir(30, 70))
+    assert is_mirrored(_both_ir(25, 75)) is False
 
 
 def test_lopsided_levels_rejected():
     """The exact pair that shipped live: long RSI<30 but short RSI>60. Over a 539-bar window the
     short leg fired 10 times and the long leg zero, so 'both' was one-sided in practice."""
     from worker.strategy.optimizer import is_mirrored
+    from worker.strategy.optimizer import level_problem
     assert is_mirrored(_both_ir(30, 60)) is False
+    assert "not mirrored" in level_problem(_both_ir(30, 60))
     assert is_mirrored(_both_ir(25, 50)) is False
 
 
@@ -377,8 +388,7 @@ def test_optimizer_filters_grid_to_mirrored_pairs():
     combos = expand_template(tmpl)
     kept = [a for a, ir in combos if is_mirrored(ir)]
     assert len(combos) == 6                     # 2 x 3 grid
-    assert {c["os"] + c["ob"] for c in kept} <= {95, 100, 105}   # only mirrors survive
-    assert all(abs(c["os"] + c["ob"] - 100) <= 5 for c in kept)
+    assert all(abs(c["os"] + c["ob"] - 100) <= 3 for c in kept)   # only mirrors survive
     assert len(kept) < len(combos)              # lopsided pairs really were dropped
 
 

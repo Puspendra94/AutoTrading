@@ -31,7 +31,14 @@ BOTH = "both"
 # long at RSI<30 but short at RSI>60 — which made the short leg far easier to trigger: over one
 # 539-bar window the short leg fired 10 times and the long leg ZERO. 5 points keeps 30/65 while
 # rejecting 30/60.
-MIRROR_TOLERANCE = 5.0
+MIRROR_TOLERANCE = 3.0
+# Mirroring alone is not enough: a perfectly mirrored 30/70 pair is still too EXTREME to fire. The
+# promoted 30/65 strategy produced two long entries in seven months — technically two-sided, useless
+# in practice. The planner's own prompt already says "RSI below ~35 (NOT below 30: below 30 fires
+# too rarely)"; nothing enforced it, so the model used 30 anyway. These bands make it enforceable —
+# and combined with mirroring they permit 35/65, 40/60, 45/55 while rejecting 30/70.
+LONG_LEVEL_BAND = (33.0, 47.0)
+SHORT_LEVEL_BAND = (53.0, 67.0)
 
 
 class TemplateError(ValueError):
@@ -98,17 +105,34 @@ def oscillator_level(tree: Any) -> Optional[float]:
     return found[0] if found else None
 
 
-def is_mirrored(ir: dict) -> bool:
-    """True when a two-sided strategy's long and short entry levels are genuine mirrors. Without
-    this the two legs fire at wildly different rates and 'both' degrades into a one-sided strategy
-    that merely claims to trade the other way."""
+def level_problem(ir: dict) -> Optional[str]:
+    """Why a two-sided strategy's entry levels are unusable, or None if they're fine.
+
+    Two independent requirements, both learned the hard way:
+      * MIRRORED — 30/60 made the short leg fire far more often than the long.
+      * TRADEABLE — even a perfect 30/70 mirror is too extreme to fire; that shape produced two
+        long entries in seven months."""
     if (ir.get("direction") or "") != BOTH:
-        return True
+        return None
     long_level = oscillator_level(ir.get("entry"))
     short_level = oscillator_level(ir.get("shortEntry"))
     if long_level is None or short_level is None:
-        return True  # not an oscillator pair — nothing to mirror
-    return abs((long_level + short_level) - 100.0) <= MIRROR_TOLERANCE
+        return None  # not an oscillator pair — nothing to check
+    if abs((long_level + short_level) - 100.0) > MIRROR_TOLERANCE:
+        return (f"entry levels {long_level:g}/{short_level:g} are not mirrored "
+                f"(sum {long_level + short_level:g}, need 100±{MIRROR_TOLERANCE:g})")
+    if not (LONG_LEVEL_BAND[0] <= long_level <= LONG_LEVEL_BAND[1]):
+        return (f"long entry level {long_level:g} is outside the tradeable band "
+                f"{LONG_LEVEL_BAND[0]:g}-{LONG_LEVEL_BAND[1]:g} — it would fire too rarely")
+    if not (SHORT_LEVEL_BAND[0] <= short_level <= SHORT_LEVEL_BAND[1]):
+        return (f"short entry level {short_level:g} is outside the tradeable band "
+                f"{SHORT_LEVEL_BAND[0]:g}-{SHORT_LEVEL_BAND[1]:g} — it would fire too rarely")
+    return None
+
+
+def is_mirrored(ir: dict) -> bool:
+    """True when a two-sided strategy's entry levels are both mirrored AND frequent enough to trade."""
+    return level_problem(ir) is None
 
 
 def optimize(template: dict, candles: list[dict], policy: dict) -> dict:

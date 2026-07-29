@@ -24,7 +24,7 @@ from ..llm.service import LlmPurpose, LlmService
 from .dsl.ir import validate_ir
 from .evaluator import evaluate_strategy
 from .grammar_prompt import build_generation_prompt, build_template_generation_prompt
-from .optimizer import TemplateError, is_mirrored, optimize
+from .optimizer import TemplateError, level_problem, optimize
 
 log = logging.getLogger("worker.strategy.generator")
 
@@ -390,10 +390,10 @@ class StrategyGenerator:
                     continue
                 if _wrong_direction(ir, required_direction, attempt, ticker_id):
                     continue
-                if not is_mirrored(ir):
-                    log.warning("Strategy attempt %d/%d for ticker %s: two-sided but its long/short "
-                                "entry levels are not mirrors — one leg would fire far more often. "
-                                "Discarding.", attempt, MAX_ATTEMPTS, ticker_id)
+                problem = level_problem(ir)
+                if problem:
+                    log.warning("Strategy attempt %d/%d for ticker %s: %s. Discarding.",
+                                attempt, MAX_ATTEMPTS, ticker_id, problem)
                     continue
                 # Full walk-forward backtest — also CPU-bound; keep it off the event loop (see above).
                 eval_result = await asyncio.to_thread(evaluate_strategy, candles, ir, policy)
