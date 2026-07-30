@@ -145,6 +145,77 @@ class PatternSignalStore:
                 int(decision.get("inputTokens") or 0), int(decision.get("outputTokens") or 0),
             )
 
+    async def set_protective_levels(self, position_id: str, *, stop_loss: float,
+                                    take_profit: float, entry_price: float) -> None:
+        """Stamp the exit ladder's starting state onto a freshly opened position.
+
+        `initial_stop` is recorded separately from `stop_loss` and never changes: the live stop
+        ratchets, so measuring a result in R against it would say a runner that trailed to +3R
+        made 0R. `extreme_price` starts at entry.
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE positions
+                   SET stop_loss = $2, take_profit = $3, initial_stop = $2,
+                       extreme_price = $4, lifecycle = 'open'
+                   WHERE id = $1""",
+                position_id, stop_loss, take_profit, entry_price,
+            )
+
+    async def ratchet_stop(self, position_id: str, *, new_stop: float, lifecycle: str,
+                           extreme_price: float) -> None:
+        """Move a stop toward profit. The WHERE clause enforces ratchet-only at the database
+        level as well as in exits.py — two concurrent ticks must not be able to interleave and
+        leave the looser of two stops behind."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE positions
+                   SET stop_loss = $2, lifecycle = $3, extreme_price = $4
+                   WHERE id = $1
+                     AND (stop_loss IS NULL
+                          OR (side = 'long'  AND $2 > stop_loss)
+                          OR (side = 'short' AND $2 < stop_loss)
+                          OR lifecycle <> $3)""",
+                position_id, new_stop, lifecycle, extreme_price,
+            )
+
+    async def update_extreme(self, position_id: str, side: str, price: float) -> None:
+        """Track the best price seen since entry — what the trailing stop measures from."""
+        comparison = "GREATEST" if side == "long" else "LEAST"
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                f"""UPDATE positions
+                    SET extreme_price = {comparison}(COALESCE(extreme_price, $2), $2)
+                    WHERE id = $1""",
+                position_id, price,
+            )
+
+    async def record_exit_reason(self, position_id: str, reason: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("UPDATE positions SET exit_reason = $2 WHERE id = $1",
+                               position_id, reason[:255])
+
+    async def open_pattern_positions(self, ticker_id: str) -> list[dict]:
+        """Open positions owned by THIS brain, with their ladder state.
+
+        `strategy_id IS NULL` is the ownership test: the strategy engine always stamps one, the
+        pattern brain never does. Without it this loop would manage the other engine's trades.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, side, entry_price, quantity, stop_loss, take_profit, initial_stop,
+                          extreme_price, lifecycle, opened_at
+                   FROM positions
+                   WHERE ticker_id = $1 AND status = 'open' AND strategy_id IS NULL""",
+                ticker_id,
+            )
+        return [{
+            "id": str(r["id"]), "side": r["side"], "entryPrice": r["entry_price"],
+            "quantity": r["quantity"], "stopLoss": r["stop_loss"], "takeProfit": r["take_profit"],
+            "initialStop": r["initial_stop"], "extremePrice": r["extreme_price"],
+            "lifecycle": r["lifecycle"] or "open", "openedAt": r["opened_at"],
+        } for r in rows]
+
     async def recent_failures(self, ticker_id: str, limit: int = 5) -> list[dict]:
         """The last few LOSING trades, compressed to what the prompt can use.
 

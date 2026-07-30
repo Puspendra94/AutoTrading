@@ -159,6 +159,29 @@ class DecisionEngine:
                                 llm=decision.model_dump(), response=response,
                                 validation=verdict.as_dict(), sizing=sizing.as_dict())
 
+        # Stamp the protective levels onto the position so the exit ladder has something to
+        # enforce. Without this the trade would be running with no stop at all — the ladder reads
+        # them from the row, not from this decision.
+        position_id = exec_result.get("positionId")
+        if position_id and self.store is not None:
+            try:
+                await self.store.set_protective_levels(
+                    position_id, stop_loss=sizing.stop_price, take_profit=target,
+                    entry_price=state.close,
+                )
+            except Exception:  # noqa: BLE001
+                # An unprotected position is the one failure here that must be loud. Flatten it
+                # rather than leave it open with no stop.
+                log.exception("Could not set protective levels on %s — closing it immediately.", position_id)
+                try:
+                    await self.execution.close_position(position_id, state.close)
+                except Exception:  # noqa: BLE001
+                    log.exception("Emergency close of unprotected position %s FAILED.", position_id)
+                return self._record(state, ERROR, gate=result,
+                                    reason="Could not stamp protective levels; position closed.",
+                                    llm=decision.model_dump(), response=response,
+                                    validation=verdict.as_dict(), sizing=sizing.as_dict())
+
         log.warning(
             "ENTRY %s %s qty=%s @ %.2f | stop %.2f (%.2f%%) target %.2f | risking %.2f of %.2f USD",
             decision.side, state.ticker_id, sizing.quantity, state.close,
@@ -194,6 +217,11 @@ class DecisionEngine:
                                 reason=verdict.reason or decision.reasoning,
                                 llm=decision.model_dump(), response=response)
 
+        if self.store is not None:
+            try:
+                await self.store.record_exit_reason(position["id"], f"AI: {decision.reasoning}")
+            except Exception:  # noqa: BLE001 — annotation is not worth blocking the exit
+                log.warning("Could not record the exit reason", exc_info=True)
         await self.execution.close_position(position["id"], state.close)
         log.warning("EXIT %s position %s @ %.2f: %s",
                     position.get("side"), position["id"], state.close, decision.reasoning)

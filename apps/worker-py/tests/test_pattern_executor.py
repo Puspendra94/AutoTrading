@@ -3,6 +3,8 @@
 The stream fires every 1m but the engine evaluates on 15m, so the interesting behaviour is all
 about WHICH bar gets processed and how often — partial bars, repeats, restarts.
 """
+import pytest
+
 from worker.pattern.executor import PatternExecutor, _drop_incomplete_bar
 
 BAR_MS = 900_000  # 15m
@@ -169,3 +171,122 @@ async def test_state_pack_is_passed_as_a_dict_not_pre_serialised():
     )
 
     assert captured["rows"][0][-1] is pack, "state pack must reach asyncpg as a dict"
+
+
+# --------------------------------------------------------------------- exit ladder wiring
+class LadderStore:
+    """Records what the ladder asked the DB to do."""
+
+    def __init__(self, positions):
+        self.positions = positions
+        self.ratchets, self.extremes, self.exit_reasons = [], [], []
+
+    async def open_pattern_positions(self, ticker_id):
+        return self.positions
+
+    async def ratchet_stop(self, position_id, *, new_stop, lifecycle, extreme_price):
+        self.ratchets.append({"id": position_id, "stop": new_stop, "lifecycle": lifecycle,
+                              "extreme": extreme_price})
+
+    async def update_extreme(self, position_id, side, price):
+        self.extremes.append((position_id, side, price))
+
+    async def record_exit_reason(self, position_id, reason):
+        self.exit_reasons.append((position_id, reason))
+
+    async def save_triggers(self, *a, **kw):
+        return 0
+
+    async def save_decision(self, *a, **kw):
+        return None
+
+
+class ClosingExec(FakeExec):
+    def __init__(self):
+        super().__init__()
+        self.closed = []
+
+    async def close_position(self, position_id, price):
+        self.closed.append((position_id, price))
+        return {"positionId": position_id, "realizedPl": 0}
+
+
+ENTRY = 60000.0
+
+
+def open_position(**over):
+    base = dict(id="p1", side="long", entryPrice=ENTRY, quantity=0.01,
+                stopLoss=ENTRY - 600, takeProfit=ENTRY + 900, initialStop=ENTRY - 600,
+                extremePrice=ENTRY, lifecycle="open", openedAt=None)
+    base.update(over)
+    return base
+
+
+async def _tick_executor(positions):
+    store = LadderStore(positions)
+    ex = ClosingExec()
+    executor = PatternExecutor(ex, pool=None, store=store, load_candles=None)
+    executor._atr_by_ticker["t1"] = 200.0
+    return executor, store, ex
+
+
+async def test_stop_is_enforced_on_a_tick_not_only_on_candle_close():
+    """A stop checked once every 15 minutes is not a stop."""
+    executor, store, ex = await _tick_executor([open_position()])
+    await executor.on_tick("t1", ENTRY - 700)
+
+    assert ex.closed == [("p1", ENTRY - 700)]
+    assert store.exit_reasons and "Stop-loss hit" in store.exit_reasons[0][1]
+
+
+async def test_crossing_the_target_ratchets_instead_of_closing():
+    executor, store, ex = await _tick_executor([open_position()])
+    await executor.on_tick("t1", ENTRY + 950)
+
+    assert ex.closed == []  # profit runs
+    assert len(store.ratchets) == 1
+    r = store.ratchets[0]
+    assert r["lifecycle"] == "runner"
+    assert r["stop"] > ENTRY  # protected above breakeven
+
+
+async def test_runner_trails_and_still_does_not_close():
+    executor, store, ex = await _tick_executor(
+        [open_position(lifecycle="runner", stopLoss=ENTRY + 100, extremePrice=ENTRY + 2000)])
+    await executor.on_tick("t1", ENTRY + 2000)
+
+    assert ex.closed == []
+    assert store.ratchets[0]["stop"] == pytest.approx(ENTRY + 2000 - 400)
+
+
+async def test_quiet_tick_only_advances_the_high_water_mark():
+    executor, store, ex = await _tick_executor([open_position()])
+    await executor.on_tick("t1", ENTRY + 100)
+
+    assert ex.closed == [] and store.ratchets == []
+    assert store.extremes == [("p1", "long", ENTRY + 100)]
+
+
+async def test_ladder_failure_on_one_position_does_not_stop_the_others():
+    class Exploding(LadderStore):
+        async def update_extreme(self, position_id, side, price):
+            if position_id == "p1":
+                raise RuntimeError("boom")
+            await super().update_extreme(position_id, side, price)
+
+    store = Exploding([open_position(id="p1"), open_position(id="p2")])
+    executor = PatternExecutor(ClosingExec(), pool=None, store=store, load_candles=None)
+    executor._atr_by_ticker["t1"] = 200.0
+
+    await executor.on_tick("t1", ENTRY + 100)  # must not raise
+    assert [e[0] for e in store.extremes] == ["p2"]
+
+
+async def test_strategy_brain_positions_are_never_touched():
+    """open_pattern_positions filters on strategy_id IS NULL; the ladder only ever sees ours."""
+    store = LadderStore([])  # store returns nothing -> nothing managed
+    ex = ClosingExec()
+    executor = PatternExecutor(ex, pool=None, store=store, load_candles=None)
+
+    await executor.on_tick("t1", ENTRY - 5000)
+    assert ex.closed == []

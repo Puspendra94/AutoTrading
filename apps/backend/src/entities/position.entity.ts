@@ -71,6 +71,34 @@ export class Position {
   @Column({ name: 'is_probation', default: true })
   isProbation: boolean;
 
+  // --- Pattern-brain exit ladder (null for strategy-brain positions, which use the
+  // provider-level percentage caps instead). See worker/pattern/exits.py.
+  //
+  // `stopLoss` ratchets toward profit and never away from it. `initialStop` is frozen at entry so
+  // a result can be measured in R against what the trade actually risked — a runner that trailed
+  // to +3R did not make 0R just because its live stop reached breakeven.
+  @Column({ name: 'stop_loss', type: 'decimal', precision: 18, scale: 8, nullable: true })
+  stopLoss: number | null;
+
+  // A soft target: reaching it does NOT close the position, it promotes it to 'runner' and
+  // ratchets the stop to breakeven+fees.
+  @Column({ name: 'take_profit', type: 'decimal', precision: 18, scale: 8, nullable: true })
+  takeProfit: number | null;
+
+  @Column({ name: 'initial_stop', type: 'decimal', precision: 18, scale: 8, nullable: true })
+  initialStop: number | null;
+
+  // Best price seen since entry — what the trailing stop is measured from.
+  @Column({ name: 'extreme_price', type: 'decimal', precision: 18, scale: 8, nullable: true })
+  extremePrice: number | null;
+
+  // 'open' = fixed stop; 'runner' = past target, stop trailing.
+  @Column({ default: 'open' })
+  lifecycle: string;
+
+  @Column({ name: 'exit_reason', type: 'varchar', nullable: true })
+  exitReason: string | null;
+
   // Futures sizing, stamped at fill time. Default 1x / isolated — at 1x a futures position is
   // economically a spot position, so spot fills carry these defaults harmlessly.
   @Column({ name: 'leverage', type: 'int', default: 1 })

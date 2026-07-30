@@ -394,6 +394,43 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       levelLines = [];
     }
 
+    // Stop/target of the open position, drawn on the chart. Kept separate from the S/R level
+    // lines so a position update does not wipe the levels and vice versa.
+    let positionLines: any[] = [];
+
+    function clearPositionLines() {
+      for (const line of positionLines) {
+        try { series?.removePriceLine(line); } catch { /* already gone */ }
+      }
+      positionLines = [];
+    }
+
+    function drawPositionLines(positions: any[]) {
+      clearPositionLines();
+      if (!series) return;
+      const open = (positions || []).find((p) => p.status === 'open' && (p.stopLoss != null || p.takeProfit != null));
+      if (!open) return;
+
+      positionLines.push(series.createPriceLine({
+        price: Number(open.entryPrice), color: '#8496b8', lineWidth: 1, lineStyle: 0,
+        axisLabelVisible: true, title: 'ENTRY',
+      }));
+      if (open.stopLoss != null) {
+        positionLines.push(series.createPriceLine({
+          price: Number(open.stopLoss), color: DOWN, lineWidth: 2, lineStyle: 0,
+          axisLabelVisible: true,
+          // A trailing stop is a materially different promise from a fixed one; say which.
+          title: open.lifecycle === 'runner' ? 'TRAIL' : 'STOP',
+        }));
+      }
+      if (open.takeProfit != null && open.lifecycle !== 'runner') {
+        positionLines.push(series.createPriceLine({
+          price: Number(open.takeProfit), color: UP, lineWidth: 1, lineStyle: 2,
+          axisLabelVisible: true, title: 'TARGET',
+        }));
+      }
+    }
+
     async function loadPatternState() {
       if (!tickerId) return;
       try {
@@ -686,9 +723,27 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       }
 
       if (!tradesCache.length) {
+        clearPositionLines();
         positionsList.innerHTML = `<p class="p-4 text-sm text-muted">No ${activeMode} trades yet${activeMode === 'live' ? ` on ${activeNetwork}` : ''}.</p>`;
         return;
       }
+      // Pattern-brain positions carry their own stop/target. A RUNNER is past its target with the
+      // stop trailing — worth calling out, because "no target left" is otherwise indistinguishable
+      // from "no protection".
+      const protectionRow = (p: any, isOpen: boolean) => {
+        if (!isOpen || (p.stopLoss == null && p.takeProfit == null)) return '';
+        const running = p.lifecycle === 'runner';
+        const stop = p.stopLoss != null ? `$${fmt(Number(p.stopLoss))}` : '—';
+        const target = p.takeProfit != null ? `$${fmt(Number(p.takeProfit))}` : '—';
+        return `
+            <div class="mt-1 flex items-center justify-between text-[0.7rem]">
+              <span class="tabular text-dim">Stop <span class="text-bear">${stop}</span>
+                · Target <span class="text-brand">${target}</span></span>
+              ${running ? '<span class="badge badge-brand">RUNNING</span>' : ''}
+            </div>`;
+      };
+
+      drawPositionLines(tradesCache);
       positionsList.innerHTML = tradesCache.map((p) => {
         const isOpen = p.status === 'open';
         const pl = isOpen ? Number(p.unrealizedPl) : Number(p.realizedPl);
@@ -713,6 +768,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
               <span>Entry <span class="tabular text-fg">$${fmt(Number(p.entryPrice))}</span>${isOpen ? '' : ` → Exit <span class="tabular text-fg">$${fmt(Number(p.exitPrice))}</span>`}</span>
               <span class="tabular ${bull ? 'text-brand' : 'text-bear'}">${plPct >= 0 ? '+' : ''}${plPct.toFixed(2)}%</span>
             </div>
+            ${protectionRow(p, isOpen)}
             <div class="mt-0.5 flex items-center justify-between text-[0.7rem] text-dim">
               <span class="tabular">Size ${fmt(Number(p.quantity), 6)}</span>
               <span class="flex items-center gap-2">

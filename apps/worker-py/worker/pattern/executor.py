@@ -17,6 +17,7 @@ reconnects and replayed closes, none of which a counter would survive.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
@@ -27,6 +28,7 @@ from ..exchange_info import get_symbol_filters
 from ..execution.risk_gate import PAPER_NOTIONAL
 from ..util import to_fixed
 from .decision.engine import build_account_snapshot
+from .exits import better_extreme, evaluate_exit
 from .features import build_feature_state
 from .store import PatternSignalStore, interval_ms
 
@@ -58,13 +60,66 @@ class PatternExecutor:
         self.candle_limit = config.pattern_candle_limit
         self._last_bar_ms: dict[str, int] = {}
         self._warned_cold = False
+        # Latest ATR per ticker, refreshed on each candle close. The tick loop needs it to size
+        # the trailing stop but must not recompute indicators 60 times a bar to get it.
+        self._atr_by_ticker: dict[str, float] = {}
 
     async def on_tick(self, ticker_id: str, close: float) -> None:
-        # Mark-to-market only. Deliberately NOT calling execution.enforce_hard_exits: those are
-        # the provider-level hard caps the strategy brain relies on, and letting them run here
-        # would mean two exit systems acting on one position the moment the pattern brain opens
-        # anything. The pattern brain's own exit ladder lands in Phase 3.
+        # Mark first, then run the ladder. Deliberately NOT calling execution.enforce_hard_exits:
+        # those are the provider-level percentage caps the strategy brain relies on, and running
+        # both would mean two exit systems acting on one position.
         await self._update_mark_prices(ticker_id, close)
+        await self._enforce_exit_ladder(ticker_id, close)
+
+    async def _enforce_exit_ladder(self, ticker_id: str, price: float) -> None:
+        """Run the deterministic ladder over every open pattern position.
+
+        On EVERY tick, not just candle closes: a stop that is only checked every 15 minutes is not
+        a stop. This is what makes "let the target run" safe — protection ratchets continuously
+        while the LLM is consulted at most once a bar.
+        """
+        if self.store is None:
+            return
+        try:
+            positions = await self.store.open_pattern_positions(ticker_id)
+        except Exception:  # noqa: BLE001 — never let the ladder break ingestion
+            log.exception("Could not load pattern positions for %s", ticker_id)
+            return
+        if not positions:
+            return
+
+        atr = self._atr_by_ticker.get(ticker_id, 0.0)
+        for position in positions:
+            try:
+                await self._apply_exit_action(position, price, atr)
+            except Exception:  # noqa: BLE001 — one bad position must not stop the others
+                log.exception("Exit ladder failed for position %s", position["id"])
+
+    async def _apply_exit_action(self, position: dict, price: float, atr: float) -> None:
+        side = position.get("side") or LONG
+        bars = _bars_held(position.get("openedAt"), self.interval)
+        action = evaluate_exit(position, price, atr, bars_held=bars)
+
+        if action.is_exit:
+            log.warning("EXIT position %s @ %.2f — %s", position["id"], price, action.reason)
+            await self.store.record_exit_reason(position["id"], action.reason)
+            await self.execution.close_position(position["id"], price)
+            if self.publish_positions:
+                await self.publish_positions()
+            return
+
+        if action.is_ratchet and action.new_stop is not None:
+            extreme = better_extreme(side, _num_or_none(position.get("extremePrice")), price)
+            await self.store.ratchet_stop(
+                position["id"], new_stop=action.new_stop,
+                lifecycle=action.new_lifecycle or position.get("lifecycle") or "open",
+                extreme_price=extreme,
+            )
+            log.info("Position %s: %s", position["id"], action.reason)
+            return
+
+        # No action, but the high-water mark still moves — it is what the trail measures from.
+        await self.store.update_extreme(position["id"], side, price)
 
     async def on_final_candle(self, ticker_id: str, close: float) -> None:
         """Evaluate features when a new COMPLETE bar of the decision interval has closed, then
@@ -134,6 +189,11 @@ class PatternExecutor:
         symbol = await self._symbol_for(ticker_id)
         state = build_feature_state(ticker_id, symbol, self.interval, candles)
 
+        # Cache ATR for the tick-rate exit ladder (see _enforce_exit_ladder).
+        atr = state.summary.get("atr14")
+        if atr and not math.isnan(atr):
+            self._atr_by_ticker[ticker_id] = float(atr)
+
         if not state.warm:
             if not self._warned_cold:
                 # Once per process: a cold engine is normal right after a backfill, but if it
@@ -199,10 +259,9 @@ class PatternExecutor:
             filters=filters,
         )
 
-        open_positions = await self.execution.store.find_open_positions_by_ticker(ticker_id)
-        # Only positions this brain owns. A strategy-brain position (strategy_id set) must not be
-        # read as ours, or the gate would try to manage a position belonging to the other engine.
-        mine = [p for p in open_positions if not p.get("strategyId")]
+        # open_pattern_positions filters on strategy_id IS NULL (this brain never sets one) AND
+        # returns the ladder state, which the gate needs: a RUNNER earns a look every bar.
+        mine = await self.store.open_pattern_positions(ticker_id) if self.store else []
         return account, (mine[0] if mine else None)
 
     async def _todays_pnl(self, ticker_id: str) -> tuple[float, float]:
@@ -241,6 +300,18 @@ class PatternExecutor:
             await self.execution.store.update_position_mark(p["id"], close, to_fixed(unrealized, 8))
         if self.publish_positions:
             await self.publish_positions()
+
+
+def _num_or_none(value):
+    return None if value is None else float(value)
+
+
+def _bars_held(opened_at, interval: str) -> int:
+    """Bars elapsed since the position opened, in units of the decision interval."""
+    if not opened_at:
+        return 0
+    elapsed_ms = (datetime.now(timezone.utc) - opened_at).total_seconds() * 1000
+    return max(int(elapsed_ms / interval_ms(interval)), 0)
 
 
 def _bar_time_ms(candle: dict) -> int:

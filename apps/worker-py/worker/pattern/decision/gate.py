@@ -86,6 +86,17 @@ def evaluate_gate(
         )
         if regime_against:
             return GateResult(True, EXIT, f"Regime is {regime_label} against an open {side}.")
+
+        # A RUNNER is past its target with profit on the table, so it earns a look on every closed
+        # bar — this is the "wait for the reversal" the operator asked for. Note it is once per
+        # BAR, not the once-a-minute poll originally sketched: on 15m that is ~4% of the calls, and
+        # the trailing stop (not the poll) is what actually protects the gains in between.
+        if (open_position.get("lifecycle") or "open") == "runner":
+            return GateResult(
+                True, EXIT,
+                f"Open {side} runner past its target — checking whether the move is exhausted.",
+            )
+
         return GateResult(False, "", f"Open {side} position, market read still aligned ({regime_label}).")
 
     # --- Flat: an entry needs a trigger the regime agrees with.
