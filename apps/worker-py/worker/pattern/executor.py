@@ -128,6 +128,14 @@ class PatternExecutor:
         if state is None:
             return
 
+        # Heartbeat on every evaluated bar. Without it a stalled decision loop is indistinguishable
+        # from a quiet market in the logs — which is exactly how a ten-hour gap went unnoticed.
+        log.info(
+            "Evaluated %s bar %d: regime=%s bias=%s triggers=%d warm=%s",
+            self.interval, state.bar_time_ms, state.regime["label"], state.bias,
+            len(state.triggers), state.warm,
+        )
+
         if state.triggers:
             log.info(
                 "Pattern triggers on %s %s bar %d: %s | regime=%s",
@@ -149,8 +157,14 @@ class PatternExecutor:
         the free ones where the gate declined — a gate that is too tight is invisible otherwise."""
         try:
             account, open_position = await self._account_and_position(state.ticker_id)
-        except Exception:  # noqa: BLE001 — never let account lookup break ingestion
+        except Exception as err:  # noqa: BLE001 — never let account lookup break ingestion
+            # Record the failure as a decision instead of returning silently. This module claims
+            # "every evaluated bar produces exactly one decision", and a bare `return` broke that
+            # promise in the worst possible way: a stalled decision loop looked EXACTLY like a
+            # quiet market — no rows, no trades, nothing to notice. An error row makes a stall
+            # visible in the same feed you already read.
             log.exception("Could not build the account snapshot for %s", state.ticker_id)
+            await self._persist(self._error_decision(state, f"Account snapshot failed: {err}"))
             return
 
         failures = []
@@ -163,11 +177,26 @@ class PatternExecutor:
         decision = await self.decisions.decide(
             state, open_position=open_position, account=account, failures=failures,
         )
-        if self.store is not None:
-            try:
-                await self.store.save_decision(decision)
-            except Exception:  # noqa: BLE001
-                log.exception("Failed to persist the decision for %s", state.ticker_id)
+        await self._persist(decision)
+
+    async def _persist(self, decision: dict) -> None:
+        if self.store is None:
+            return
+        try:
+            await self.store.save_decision(decision)
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to persist the decision for %s", decision.get("tickerId"))
+
+    def _error_decision(self, state, reason: str) -> dict:
+        """A minimal decision row for a failure that happened before the engine could run."""
+        return {
+            "tickerId": state.ticker_id, "interval": state.interval,
+            "barTimeMs": state.bar_time_ms, "outcome": "error", "reason": reason,
+            "gate": None, "statePack": state.to_state_pack(), "llmDecision": None,
+            "validation": None, "sizing": None, "positionId": None,
+            "stopPrice": None, "takeProfit": None, "model": None, "costUsd": 0.0,
+            "inputTokens": 0, "outputTokens": 0,
+        }
 
     async def evaluate(self, ticker_id: str):
         """Load candles, drop the in-progress bar, and build the feature state for the newest
@@ -184,10 +213,13 @@ class PatternExecutor:
         bar_ms = _bar_time_ms(candles[-1])
         if self._last_bar_ms.get(ticker_id) == bar_ms:
             return None  # this bar has already been evaluated
-        self._last_bar_ms[ticker_id] = bar_ms
 
         symbol = await self._symbol_for(ticker_id)
         state = build_feature_state(ticker_id, symbol, self.interval, candles)
+        # Marked processed only AFTER the state is built. Setting it first meant a transient
+        # failure in build_feature_state permanently consumed that bar — it would never be retried
+        # and would leave no trace.
+        self._last_bar_ms[ticker_id] = bar_ms
 
         # Cache ATR for the tick-rate exit ladder (see _enforce_exit_ladder).
         atr = state.summary.get("atr14")

@@ -120,6 +120,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             <div class="flex flex-col gap-0.5"><span class="eyebrow">EMA Stack</span><span id="readStack" class="tabular text-sm font-bold">—</span></div>
             <div class="col-span-2 flex flex-col gap-0.5"><span class="eyebrow">Nearest Support / Resistance</span><span id="readLevels" class="tabular text-sm font-bold">—</span></div>
             <div class="col-span-2 flex flex-col gap-1"><span class="eyebrow">Patterns</span><span id="readPatterns" class="text-sm font-semibold text-muted">—</span></div>
+            <!-- Markers are SIGNALS, not trades. This says why the latest one did or did not
+                 become a position, so an idle system is never a mystery. -->
+            <div class="col-span-2 flex flex-col gap-1 border-t border-border pt-3"><span class="eyebrow">Last decision</span><span id="readGate" class="text-sm font-semibold text-muted">—</span></div>
           </div>
         </section>
 
@@ -339,7 +342,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     // the loaded candles simply wait until those bars page in; setMarkers is cheap at this size.
     const SIGNAL_LOOKBACK = 6000;
 
-    // Short labels — the full explanation goes in the Market Read panel, not on the chart.
+    // Short labels for what fired. These are SIGNALS, not trades — nothing was bought or sold at
+    // one. So the label leads with the direction the signal implies (BULL/BEAR) rather than
+    // BUY/SELL/SHORT/COVER, which would wrongly imply a position changed hands.
     const TRIGGER_LABEL: Record<string, string> = {
       resistance_break: 'R-BREAK',
       support_break: 'S-BREAK',
@@ -350,6 +355,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       pattern_complete: 'PATTERN',
       regime_flip: 'REGIME',
     };
+
+    const signalLabel = (m: PatternMarker) =>
+      `${m.side === 'long' ? 'BULL' : 'BEAR'} ${TRIGGER_LABEL[m.kind] ?? m.kind.toUpperCase()}`;
 
     type PatternMarker = { time: number; kind: string; side: 'long' | 'short'; price: number; detail: string };
     async function loadSignals(interval: string) {
@@ -364,7 +372,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             position: m.side === 'long' ? 'belowBar' : 'aboveBar',
             color: m.side === 'long' ? UP : DOWN,
             shape: m.side === 'long' ? 'arrowUp' : 'arrowDown',
-            text: TRIGGER_LABEL[m.kind] ?? m.kind.toUpperCase(),
+            text: signalLabel(m),
           }));
         series.setMarkers(markers as any);
       } catch {
@@ -578,6 +586,15 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         // a quiet market legitimately produces an empty list while the engine is working fine —
         // say which one it is rather than implying the brain is idle.
         const quietButWorking = rows.length === 0 && (summary?.evaluated ?? 0) > 0;
+        // Mirror the newest decision into the Market Read panel. The chart shows signals; this is
+        // what actually happened to the most recent one.
+        const latest = await apiGet<{ decisions: Decision[] }>(`/pattern/ticker/${tickerId}/decisions?limit=1&includeSkips=true`);
+        const newest = latest.decisions?.[0];
+        if (newest) {
+          const meta = OUTCOME_META[newest.outcome] ?? { label: newest.outcome.toUpperCase(), cls: '' };
+          $('readGate').textContent = `${meta.label} — ${newest.reason}`;
+        }
+
         decisionsBody.innerHTML = rows.length
           ? rows.map(decisionRow).join('')
           : quietButWorking
