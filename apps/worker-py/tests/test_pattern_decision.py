@@ -62,18 +62,26 @@ def test_no_trigger_is_a_free_skip():
     assert not r.should_call and "No trigger" in r.reason
 
 
-def test_range_regime_ignores_triggers():
-    """No directional bias means no trade, however exciting the trigger looks."""
+def test_range_regime_still_reaches_the_model():
+    """A range is not a reason to stay out — its edges are tradeable, and judging that is the
+    model's job. The regime is context in the prompt, not a veto in the gate."""
     state = FakeState(regime={"label": "range", "adx": 15.0, "emaStack": "mixed"},
                       triggers=[trigger()], bias="none")
     r = evaluate_gate(state, None)
-    assert not r.should_call and "no directional bias" in r.reason
+    assert r.should_call and r.kind == "entry"
 
 
-def test_counter_trend_trigger_is_skipped_before_paying():
-    state = FakeState(triggers=[trigger(side="short")], bias="long")
+def test_trigger_against_a_weak_trend_still_reaches_the_model():
+    state = FakeState(triggers=[trigger(side="short")], bias="long")  # regime is plain 'uptrend'
+    assert evaluate_gate(state, None).should_call
+
+
+def test_fading_a_strong_trend_is_refused_before_paying():
+    """The one deterministic refusal kept: do not stand in front of a strong trend."""
+    state = FakeState(regime={"label": "strong_uptrend", "adx": 45.0, "emaStack": "20>50>200"},
+                      triggers=[trigger(side="short")], bias="long")
     r = evaluate_gate(state, None)
-    assert not r.should_call and "oppose" in r.reason
+    assert not r.should_call and "strong trend" in r.reason
 
 
 def test_cooldown_blocks_immediate_re_entry():
@@ -186,19 +194,34 @@ async def test_model_skip_is_recorded_and_places_nothing():
     assert execution.trades == []
 
 
-async def test_counter_trend_proposal_is_rejected_not_repaired():
-    """The validator may only reject. The model's original numbers stay in the log."""
+async def test_fading_a_strong_trend_is_rejected_not_repaired():
+    """The validator may only reject. The model's original numbers stay in the log unmodified —
+    repairing them would put a trade nobody proposed into the audit trail."""
     llm = FakeLlm(data=EntryDecision(action="ENTRY", side="short", entry_min=PRICE - 50,
                                      entry_max=PRICE + 50, stop_loss=PRICE * 1.01,
                                      take_profit=PRICE * 0.98, reasoning="fade it"))
     execution = FakeExecution()
-    state = FakeState(triggers=[trigger()])  # regime is uptrend
+    state = FakeState(regime={"label": "strong_uptrend", "adx": 45.0, "emaStack": "20>50>200"},
+                      triggers=[trigger()])
     result = await _engine(llm, execution).decide(state, open_position=None, account=_account())
 
     assert result["outcome"] == engine_mod.REJECTED
-    assert "counter-trend" in result["reason"]
+    assert "strong trend" in result["reason"]
     assert execution.trades == []
     assert result["llmDecision"]["side"] == "short"  # stored as proposed, unrepaired
+
+
+async def test_short_in_a_weak_uptrend_is_allowed_through():
+    """Regression against the over-constraint: a weak trend must not veto the model's judgement."""
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="short", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 1.01,
+                                     take_profit=PRICE * 0.97, reasoning="range top"))
+    execution = FakeExecution()
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account())
+
+    assert result["outcome"] == engine_mod.EXECUTED
+    assert execution.trades[0]["side"] == "short"
 
 
 async def test_valid_entry_executes_with_a_deterministically_sized_quantity():

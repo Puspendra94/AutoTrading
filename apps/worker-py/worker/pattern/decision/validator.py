@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..features.regime import BEARISH_REGIMES, BULLISH_REGIMES
+from ..features.regime import STRONG_DOWNTREND, STRONG_UPTREND
 from .prompts import MIN_RISK_REWARD
 from .schemas import EntryDecision
 from .sizing import validate_risk_reward
@@ -62,12 +62,16 @@ def validate_entry(
     if entry_min > entry_max:
         return ValidationResult(False, f"entry_min {entry_min:.2f} exceeds entry_max {entry_max:.2f}.")
 
-    # --- Trend alignment. The gate already filters on this, but the model can still propose the
-    # opposite side, and counter-trend entries are the single rule the operator was firmest about.
-    if side == "long" and regime_label in BEARISH_REGIMES:
-        return ValidationResult(False, f"Long proposed in a {regime_label} regime — counter-trend.")
-    if side == "short" and regime_label in BULLISH_REGIMES:
-        return ValidationResult(False, f"Short proposed in a {regime_label} regime — counter-trend.")
+    # --- Trend alignment, but only against a STRONG trend.
+    #
+    # This used to reject any entry opposing the regime at all, which — combined with the same
+    # rule in the gate — meant nothing could ever trade outside a confirmed trend. Fading a weak
+    # trend or a range is a judgement call and belongs to the model; fading a STRONG one is the
+    # narrow case worth refusing deterministically.
+    if side == "long" and regime_label == STRONG_DOWNTREND:
+        return ValidationResult(False, f"Long proposed in a {regime_label} — fading a strong trend.")
+    if side == "short" and regime_label == STRONG_UPTREND:
+        return ValidationResult(False, f"Short proposed in a {regime_label} — fading a strong trend.")
 
     # --- Fillability. Deliberately checked against the CURRENT price rather than the bar close:
     # by the time the order goes out this is the price we would actually pay.

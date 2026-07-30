@@ -21,7 +21,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..features.regime import BEARISH_REGIMES, BULLISH_REGIMES
+from ..features.regime import (
+    BEARISH_REGIMES, BULLISH_REGIMES, STRONG_DOWNTREND, STRONG_UPTREND,
+)
 
 # Bars to wait after a position closes before entering again on the same ticker. Stops the
 # system re-entering the same failed setup on the very next bar.
@@ -35,6 +37,9 @@ REVERSAL_TRIGGERS = frozenset({
 
 ENTRY = "entry"
 EXIT = "exit"
+
+LONG = "long"
+SHORT = "short"
 
 
 @dataclass(frozen=True)
@@ -112,24 +117,37 @@ def evaluate_gate(
             f"Cooldown: {bars_since_last_close} of {COOLDOWN_BARS} bars since the last close.",
         )
 
-    bias = state.bias  # 'long' | 'short' | 'none' from the regime
-    if bias == "none":
-        return GateResult(
-            False, "",
-            f"Regime is {regime_label} — no directional bias, triggers ignored: "
-            + ", ".join(t["name"] for t in state.triggers),
-        )
+    # A directional read — bullish or bearish — is what earns the call. The regime travels in the
+    # state pack as CONTEXT for the model to weigh, it is not a veto here.
+    #
+    # It was a veto, and that was a mistake: requiring ADX >= 25 plus an aligned EMA stack on top
+    # of the trigger meant a ranging market produced signals that could never be acted on, so the
+    # system drew markers for setups it had already decided to ignore and never traded at all.
+    # Judging the setup is the model's job; this gate only decides whether the question is worth
+    # asking.
+    directional = [t for t in state.triggers if t["side"] in (LONG, SHORT)]
+    if not directional:
+        return GateResult(False, "", "No directional trigger on this bar.")
 
-    aligned = [t for t in state.triggers if t["side"] == bias]
-    if not aligned:
+    # The one deterministic refusal kept: do not fade a STRONG trend. A weak trend or a range is
+    # a judgement call and goes to the model; standing in front of a strong one is not.
+    allowed = [t for t in directional if not _fights_strong_trend(t, regime_label)]
+    if not allowed:
         return GateResult(
             False, "",
-            f"Triggers oppose the {regime_label} regime — not trading against the trend.",
+            f"Every trigger fades a {regime_label} — not standing in front of a strong trend.",
         )
 
     return GateResult(
         True, ENTRY,
-        f"{regime_label} with {len(aligned)} aligned trigger(s): "
-        + ", ".join(t["name"] for t in aligned),
-        tuple(aligned),
+        f"{regime_label} with {len(allowed)} directional trigger(s): "
+        + ", ".join(t["name"] for t in allowed),
+        tuple(allowed),
+    )
+
+
+def _fights_strong_trend(trigger: dict, regime_label: str) -> bool:
+    return (
+        (trigger["side"] == LONG and regime_label == STRONG_DOWNTREND)
+        or (trigger["side"] == SHORT and regime_label == STRONG_UPTREND)
     )

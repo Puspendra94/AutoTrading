@@ -159,9 +159,16 @@ def test_valid_entry_passes():
     assert v.ok, v.reason
 
 
-def test_counter_trend_entry_is_rejected():
+def test_fading_a_strong_trend_is_rejected():
     v = validate_entry(_entry(), current_price=PRICE, regime_label="strong_downtrend")
-    assert not v.ok and "counter-trend" in v.reason
+    assert not v.ok and "fading a strong trend" in v.reason
+
+
+def test_entry_against_a_WEAK_trend_is_allowed():
+    """Only STRONG trends are off limits. Fading a weak trend or trading a range edge is a
+    judgement call that belongs to the model, not a deterministic refusal."""
+    assert validate_entry(_entry(), current_price=PRICE, regime_label="downtrend").ok
+    assert validate_entry(_entry(), current_price=PRICE, regime_label="range").ok
 
 
 def test_entry_outside_its_own_range_is_rejected():

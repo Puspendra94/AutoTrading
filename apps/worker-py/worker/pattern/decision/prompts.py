@@ -113,8 +113,14 @@ RECENT LOSING TRADES (context only — do not over-fit to these; a setup that fa
 still be valid)
 {_failures_block(failures or [])}
 
+HOW TO USE THE REGIME
+  A trending regime is a reason to prefer trades in its direction, not a requirement. In a RANGE
+  the edges are tradeable in both directions — fading resistance and buying support are valid
+  setups when the level is well tested. Judge the setup on the levels and structure in front of
+  you. The only forbidden trade is fading a STRONG trend.
+
 HARD CONSTRAINTS — a decision breaking any of these is rejected and the trade is skipped:
-  1. Trade only WITH the regime: long in an uptrend, short in a downtrend. Never counter-trend.
+  1. Never trade against a strong_uptrend or strong_downtrend.
   2. The stop must be between {MIN_STOP_PCT * 100:.2f}% and {MAX_STOP_PCT * 100:.2f}% from entry,
      and at least 0.5 ATR away.
   3. Reward:risk must be at least {MIN_RISK_REWARD}:1 against the stop.
