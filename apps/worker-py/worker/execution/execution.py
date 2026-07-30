@@ -76,9 +76,15 @@ class ExecutionService:
     def _placer_for(self, market_type: Optional[str]) -> OrderPlacer:
         return self.futures_orders if (market_type or "").lower() == FUTURES else self.orders
 
-    async def execute_trade_signal(self, ticker_id: str, side: str, price: float, strategy_id: Optional[str] = None) -> dict:
-        # 1. Unbypassable risk gate (may raise RiskGateHalt on daily-loss breach).
-        risk = await evaluate_order_risk_gate(self.risk_store, OrderIntent(ticker_id, side, price, strategy_id))
+    async def execute_trade_signal(self, ticker_id: str, side: str, price: float,
+                                   strategy_id: Optional[str] = None,
+                                   requested_quantity: Optional[float] = None) -> dict:
+        # 1. Unbypassable risk gate (may raise RiskGateHalt on daily-loss breach). A
+        # requested_quantity replaces only the gate's SIZING step — every policy check still runs.
+        risk = await evaluate_order_risk_gate(
+            self.risk_store,
+            OrderIntent(ticker_id, side, price, strategy_id, requested_quantity=requested_quantity),
+        )
         if not risk["approved"]:
             return {"status": "REJECTED", "reason": risk.get("reason")}
 

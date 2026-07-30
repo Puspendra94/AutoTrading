@@ -80,13 +80,18 @@ class PgRiskGateStore:
     async def get_today_tracker(self, provider_id: str, today: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT realized_pl, unrealized_pl, limit_breached FROM daily_loss_tracking "
-                "WHERE provider_id = $1 AND tracking_date = $2",
+                "SELECT realized_pl, unrealized_pl, limit_breached, capital_under_management_base "
+                "FROM daily_loss_tracking WHERE provider_id = $1 AND tracking_date = $2",
                 provider_id, _as_date(today),
             )
         if not row:
             return None
-        return {"realizedPl": row["realized_pl"], "unrealizedPl": row["unrealized_pl"], "limitBreached": row["limit_breached"]}
+        # cumBase is the balance snapshotted when today's row was created — the day-START balance.
+        # The pattern brain's daily risk budget is a percentage of THAT, not of the balance right
+        # now, which drifts with every open position's mark price.
+        return {"realizedPl": row["realized_pl"], "unrealizedPl": row["unrealized_pl"],
+                "limitBreached": row["limit_breached"],
+                "cumBase": row["capital_under_management_base"]}
 
     async def get_latest_balance(self, provider_id: str) -> Optional[dict]:
         async with self.pool.acquire() as conn:

@@ -21,3 +21,4 @@ export * from './alert.entity';
 export * from './llm-cost-log.entity';
 export * from './ai-lesson-learned.entity';
 export * from './pattern-signal.entity';
+export * from './pattern-decision.entity';

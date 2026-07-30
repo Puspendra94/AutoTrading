@@ -59,7 +59,20 @@ def build_live_executor(pool):
         from ..pattern.executor import PatternExecutor
 
         log.warning("TRADING_BRAIN=pattern — the generated-strategy engine is NOT driving trading.")
-        return PatternExecutor(execution, pool, publish_positions)
+
+        decisions = None
+        if config.pattern_decisions_enabled:
+            from ..llm.service import LlmService
+            from ..pattern.decision.engine import DecisionEngine
+            from ..pattern.store import PatternSignalStore
+
+            decisions = DecisionEngine(LlmService(), execution, PatternSignalStore(pool), pool)
+            log.warning("PATTERN DECISIONS ENABLED — this process can now open and close positions.")
+        else:
+            log.info("Pattern decision loop is OFF (PATTERN_DECISIONS_ENABLED=false); "
+                     "features are recorded but nothing trades.")
+
+        return PatternExecutor(execution, pool, publish_positions, decisions=decisions)
 
     from ..llm.service import LlmService
 

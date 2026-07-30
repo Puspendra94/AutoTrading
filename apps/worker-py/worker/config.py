@@ -150,6 +150,11 @@ class Config:
     # Bars loaded per evaluation. Must comfortably exceed the indicator warm-up (EMA200 + margin
     # = 260) or the engine never goes warm and never emits a trigger.
     pattern_candle_limit: int = int(os.getenv("PATTERN_CANDLE_LIMIT", "500"))
+    # The decision loop (gate -> LLM -> validate -> size -> order). OFF by default even under
+    # TRADING_BRAIN=pattern, so the feature engine can be watched producing triggers for as long
+    # as you like before anything is allowed to spend money or open a position. Turning this on
+    # is the deliberate step from "observing" to "trading".
+    pattern_decisions_enabled: bool = os.getenv("PATTERN_DECISIONS_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
     # Phase 4b: live SHORT execution on the futures venue. Off by default — a short strategy stays
     # flat (HOLD) until this is explicitly enabled, so shorting can never happen by surprise. When

@@ -136,6 +136,22 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       </aside>
     </div>
 
+    <!-- Decision feed: what the brain did on each evaluated bar, and why. -->
+    <section id="decisionsWrap" hidden class="card px-5 py-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="text-brand" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+          <span class="eyebrow">Decisions</span>
+          <span id="decisionSummary" class="text-[0.7rem] text-dim"></span>
+        </div>
+        <label class="flex items-center gap-1.5 text-[0.7rem] font-semibold text-muted">
+          <input type="checkbox" id="showSkips" class="accent-[var(--color-brand)]" />
+          Show free skips
+        </label>
+      </div>
+      <div id="decisionsBody"><p class="text-sm text-muted">No decisions recorded yet.</p></div>
+    </section>
+
     <!-- Active Alpha band -->
     <section id="alphaWrap" hidden class="card px-5 py-4">
       <div class="mb-3 flex items-center gap-2">
@@ -282,6 +298,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         chartEmpty.hidden = bars.length > 0;
         loadSignals(interval);  // overlay the engine's triggers on this timeframe
         loadPatternState();     // refresh the Market Read panel + S/R lines
+        loadDecisions();        // refresh the decision feed
         if (bars.length) { updatePriceHeader(lastBar!.close); renderMarketStats(); }
         else chartEmpty.querySelector('p')!.textContent = 'No candles yet — backfilling from Binance archive…';
       } catch {
@@ -429,6 +446,113 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       }
     }
 
+    // --- Decision feed. Every evaluated bar produces one row, including the free skips, so this
+    // is also how you tell whether the gate is too tight to ever trade.
+    const decisionsWrap = $('decisionsWrap'), decisionsBody = $('decisionsBody');
+    const showSkips = $('showSkips') as HTMLInputElement;
+
+    const OUTCOME_META: Record<string, { label: string; cls: string }> = {
+      executed:           { label: 'ENTERED',  cls: 'badge badge-brand' },
+      exit_executed:      { label: 'EXITED',   cls: 'badge badge-bear' },
+      exit_held:          { label: 'HELD',     cls: 'badge badge-muted' },
+      skipped_by_model:   { label: 'SKIP',     cls: 'badge badge-muted' },
+      skipped_no_trigger: { label: 'NO SETUP', cls: 'badge badge-muted' },
+      rejected:           { label: 'REJECTED', cls: 'badge badge-warn' },
+      error:              { label: 'ERROR',    cls: 'badge badge-warn' },
+    };
+
+    type Decision = {
+      id: string; barTime: number; outcome: string; reason: string; triggers: string[];
+      llmDecision: any; sizing: any; stopPrice: number | null; takeProfit: number | null;
+      model: string | null; costUsd: number; tokens: number;
+    };
+
+    // Cost is 0 for any model the backend has no price for (DeepSeek), so fall back to tokens
+    // rather than showing a confident "$0.0000" that reads as "this was free".
+    function usageLabel(d: Decision): string {
+      if (d.costUsd) return `<span class="ml-auto text-[0.7rem] text-dim tabular">$${d.costUsd.toFixed(4)}</span>`;
+      if (d.tokens) return `<span class="ml-auto text-[0.7rem] text-dim tabular">${d.tokens} tok</span>`;
+      return '';
+    }
+
+    function decisionRow(d: Decision): string {
+      const meta = OUTCOME_META[d.outcome] ?? { label: d.outcome.toUpperCase(), cls: 'badge badge-muted' };
+      const when = new Date(d.barTime * 1000).toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+      const side = d.llmDecision?.side ? ` ${String(d.llmDecision.side).toUpperCase()}` : '';
+      const triggers = d.triggers?.length
+        ? `<span class="text-[0.7rem] text-dim">${d.triggers.join(' · ').replace(/_/g, ' ')}</span>` : '';
+
+      // Show the money only when there is money: a skip has no sizing.
+      const s = d.sizing;
+      const numbers = s?.approved
+        ? `<div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[0.7rem] text-muted tabular">
+             <span>qty <b class="text-fg">${s.quantity}</b></span>
+             <span>notional <b class="text-fg">${Number(s.notional).toFixed(2)}</b></span>
+             <span>stop <b class="text-fg">${Number(d.stopPrice ?? s.stopPrice).toFixed(2)}</b> (${(Number(s.stopPct) * 100).toFixed(2)}%)</span>
+             ${d.takeProfit ? `<span>target <b class="text-fg">${Number(d.takeProfit).toFixed(2)}</b></span>` : ''}
+             <span>risking <b class="text-fg">${Number(s.riskUsd).toFixed(2)}</b> of ${Number(s.riskBudgetUsd).toFixed(2)}</span>
+           </div>` : '';
+
+      return `
+        <div class="border-b border-border py-2.5 last:border-b-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="${meta.cls}">${meta.label}${side}</span>
+            <span class="text-[0.7rem] text-dim tabular">${when}</span>
+            ${triggers}
+            ${usageLabel(d)}
+          </div>
+          <p class="mt-1 text-sm text-muted">${escapeHtml(d.reason || '')}</p>
+          ${numbers}
+        </div>`;
+    }
+
+    function escapeHtml(s: string): string {
+      return s.replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+      ));
+    }
+
+    async function loadDecisions() {
+      if (!tickerId) return;
+      try {
+        const [feed, summary] = await Promise.all([
+          apiGet<{ decisions: Decision[] }>(`/pattern/ticker/${tickerId}/decisions?limit=40&includeSkips=${showSkips.checked}`),
+          apiGet<{ evaluated: number; byOutcome: Record<string, number>; totalCostUsd: number; totalTokens: number }>(`/pattern/ticker/${tickerId}/decisions/summary?hours=24`),
+        ]);
+
+        const rows = feed.decisions || [];
+        decisionsWrap.hidden = rows.length === 0 && (summary?.evaluated ?? 0) === 0;
+
+        if (summary?.evaluated) {
+          const traded = (summary.byOutcome.executed ?? 0);
+          const asked = summary.evaluated - (summary.byOutcome.skipped_no_trigger ?? 0);
+          const usage = summary.totalCostUsd
+            ? `$${summary.totalCostUsd.toFixed(4)}`
+            : `${summary.totalTokens.toLocaleString()} tok`;
+          $('decisionSummary').textContent =
+            `24h · ${summary.evaluated} bars · ${asked} asked · ${traded} traded · ${usage}`;
+        } else {
+          $('decisionSummary').textContent = '';
+        }
+
+        // "Nothing to show" and "nothing happened" are different states. With the skips hidden,
+        // a quiet market legitimately produces an empty list while the engine is working fine —
+        // say which one it is rather than implying the brain is idle.
+        const quietButWorking = rows.length === 0 && (summary?.evaluated ?? 0) > 0;
+        decisionsBody.innerHTML = rows.length
+          ? rows.map(decisionRow).join('')
+          : quietButWorking
+            ? `<p class="text-sm text-muted">${summary.evaluated} bar(s) evaluated, none met the criteria to consult the model — tick <b>Show free skips</b> to see why each was passed over.</p>`
+            : '<p class="text-sm text-muted">No decisions recorded yet.</p>';
+      } catch {
+        decisionsWrap.hidden = true;
+      }
+    }
+
+    showSkips.addEventListener('change', loadDecisions);
+
     // Fold a live 1m candle into the current timeframe's bucket.
     function applyLiveTick(candle: any) {
       if (!series) return;
@@ -495,6 +619,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       if (tid !== tickerId) return;
       loadSignals(currentInterval);
       loadPatternState();
+      loadDecisions();
     });
 
     // ---------- Timeframe tabs ----------

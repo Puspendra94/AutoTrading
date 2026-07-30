@@ -25,6 +25,14 @@ def interval_ms(interval: str) -> int:
     return int(m.group(1)) * _UNIT_MS[m.group(2).lower()]
 
 
+def _bars_between(opened_at, closed_at, bar_ms: int = 900_000) -> int:
+    """Approximate bars held, for the failure summary. Approximate is fine — it is context for a
+    prompt, not an accounting figure."""
+    if not opened_at or not closed_at:
+        return 0
+    return max(int((closed_at - opened_at).total_seconds() * 1000 / bar_ms), 0)
+
+
 class PatternSignalStore:
     def __init__(self, pool) -> None:
         self.pool = pool
@@ -102,6 +110,81 @@ class PatternSignalStore:
             }
             for r in rows
         ]
+
+    async def save_decision(self, decision: dict) -> None:
+        """Persist one bar's decision. Upsert on (ticker, interval, bar) so re-processing a bar
+        after a restart corrects the row rather than duplicating it.
+
+        Every jsonb value is passed as a dict — db.py registers an encoder=json.dumps codec, so
+        pre-serialising here would store a JSON string inside the column.
+        """
+        bar_time = datetime.fromtimestamp(decision["barTimeMs"] / 1000.0, tz=timezone.utc)
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO pattern_decisions
+                    (ticker_id, interval, bar_time, outcome, reason, gate, state_pack,
+                     llm_decision, validation, sizing, position_id, stop_price, take_profit,
+                     model, cost_usd, input_tokens, output_tokens)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                ON CONFLICT (ticker_id, interval, bar_time) DO UPDATE SET
+                    outcome = EXCLUDED.outcome, reason = EXCLUDED.reason, gate = EXCLUDED.gate,
+                    state_pack = EXCLUDED.state_pack, llm_decision = EXCLUDED.llm_decision,
+                    validation = EXCLUDED.validation, sizing = EXCLUDED.sizing,
+                    position_id = EXCLUDED.position_id, stop_price = EXCLUDED.stop_price,
+                    take_profit = EXCLUDED.take_profit, model = EXCLUDED.model,
+                    cost_usd = EXCLUDED.cost_usd, input_tokens = EXCLUDED.input_tokens,
+                    output_tokens = EXCLUDED.output_tokens
+                """,
+                decision["tickerId"], decision["interval"], bar_time,
+                decision["outcome"], decision.get("reason") or "",
+                decision.get("gate"), decision.get("statePack"), decision.get("llmDecision"),
+                decision.get("validation"), decision.get("sizing"),
+                decision.get("positionId"), decision.get("stopPrice"), decision.get("takeProfit"),
+                decision.get("model"), float(decision.get("costUsd") or 0.0),
+                int(decision.get("inputTokens") or 0), int(decision.get("outputTokens") or 0),
+            )
+
+    async def recent_failures(self, ticker_id: str, limit: int = 5) -> list[dict]:
+        """The last few LOSING trades, compressed to what the prompt can use.
+
+        Deliberately short. The operator's concern was that a couple of unlucky trades in one
+        setup would teach the model to avoid that setup permanently, so it sees a handful of
+        recent facts rather than an accumulating case against every pattern.
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT p.side, p.realized_pl, p.entry_price, p.opened_at, p.closed_at,
+                       d.reason, d.gate, d.state_pack -> 'regime' ->> 'label' AS regime,
+                       d.sizing ->> 'riskUsd' AS risk_usd
+                FROM positions p
+                LEFT JOIN pattern_decisions d ON d.position_id = p.id
+                WHERE p.ticker_id = $1 AND p.status = 'closed' AND p.realized_pl < 0
+                  AND p.strategy_id IS NULL
+                ORDER BY p.closed_at DESC NULLS LAST
+                LIMIT $2
+                """,
+                ticker_id, limit,
+            )
+
+        failures = []
+        for r in rows:
+            risk = float(r["risk_usd"]) if r["risk_usd"] else 0.0
+            realized = float(r["realized_pl"] or 0.0)
+            gate = r["gate"] or {}
+            triggers = gate.get("triggers") if isinstance(gate, dict) else None
+            failures.append({
+                "side": r["side"],
+                "regime": r["regime"] or "unknown",
+                "trigger": (triggers or ["unknown"])[0],
+                # Expressed in R (multiples of what the trade risked) rather than dollars, so the
+                # number means the same thing across different account sizes.
+                "rMultiple": (realized / risk) if risk > 0 else 0.0,
+                "barsHeld": _bars_between(r["opened_at"], r["closed_at"]),
+                "exitReason": r["reason"] or "unknown",
+            })
+        return failures
 
     async def latest_state_pack(self, ticker_id: str) -> dict | None:
         """The most recently stored feature state — what the UI's regime/indicator strip reads."""

@@ -119,14 +119,20 @@ class PgExecutionStore:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT p.id, p.side, p.entry_price, p.current_price, p.quantity, t.provider_id
+                SELECT p.id, p.side, p.entry_price, p.current_price, p.quantity, p.strategy_id,
+                       p.opened_at, t.provider_id
                 FROM positions p LEFT JOIN tickers t ON t.id = p.ticker_id
                 WHERE p.ticker_id = $1 AND p.status = 'open'
                 """,
                 ticker_id,
             )
+        # strategyId is what distinguishes the two brains' positions: the strategy engine always
+        # stamps one, the pattern brain never does. Without it a caller cannot tell whose position
+        # it is looking at, and would manage the other engine's trade.
         return [{"id": str(r["id"]), "side": r["side"], "entryPrice": r["entry_price"],
                  "currentPrice": r["current_price"], "quantity": r["quantity"],
+                 "strategyId": str(r["strategy_id"]) if r["strategy_id"] else None,
+                 "openedAt": r["opened_at"],
                  "providerId": str(r["provider_id"]) if r["provider_id"] else None} for r in rows]
 
     async def find_open_positions_by_provider(self, provider_id: str) -> list[dict]:

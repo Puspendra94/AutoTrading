@@ -40,6 +40,16 @@ class OrderIntent:
     side: str  # 'long' | 'short'
     price: float
     strategy_id: Optional[str] = None
+    # Quantity computed by the caller's own sizing model. Set by the PATTERN brain, which sizes
+    # from an explicit risk budget (pattern/decision/sizing.py) rather than from the allocation
+    # ceiling and probation multiplier this gate applies to strategy-brain orders.
+    #
+    # This is not a way around the gate: every check below — kill switch, trading enabled,
+    # schedule, daily-loss breach, concurrent positions — still runs. It only replaces step 4,
+    # the sizing step. Without it, a pattern order (which has no strategy_id) would fall into
+    # _is_strategy_still_in_probation, come back True, and be silently cut to probationSizePct
+    # (25%) — quietly overriding a position that was deliberately sized against a risk budget.
+    requested_quantity: Optional[float] = None
 
 
 def _num(v: Any, default: float = 0.0) -> float:
@@ -189,6 +199,15 @@ async def evaluate_order_risk_gate(store: RiskGateStore, intent: OrderIntent, no
     if active_positions_count >= max_concurrent:
         return {"approved": False, "allowedQuantity": 0, "isProbation": False,
                 "reason": f"Max concurrent positions limit reached ({risk_limit['maxConcurrentPositionsPerTicker']} max per ticker)."}
+
+    # 4a. Caller-sized order (pattern brain). Every policy check above has already run; this only
+    # substitutes the sizing model. Probation does not apply — it measures a generated strategy's
+    # track record since promotion, and there is no strategy here to have one.
+    if intent.requested_quantity is not None:
+        if intent.requested_quantity <= 0:
+            return {"approved": False, "allowedQuantity": 0, "isProbation": False,
+                    "reason": "Requested quantity is zero or negative."}
+        return {"approved": True, "allowedQuantity": intent.requested_quantity, "isProbation": False}
 
     # 4. Position sizing (Section 5.3 & 6) — allocation ceiling × probation multiplier.
     # Allocation snapshots are computed from the live balance by the rebalance job, so in paper mode
