@@ -1,15 +1,25 @@
-version: "3.9"
-
-# Pure infra stack — tools only (Postgres/TimescaleDB, Redis).
-# No application code is built or run from this file. The backend and
-# frontend projects are separate, built later (by hand or by an LLM
-# following the tech spec), and simply connect to these containers using
-# the connection details below.
+# Infra: Postgres/TimescaleDB + Redis. Everything the apps depend on but do not implement.
 #
-# Note: the timescale/timescaledb image auto-enables the timescaledb
-# extension on the default database on first boot — no init script needed
-# for that. The Algo_Trading schema itself is created by the backend
-# project's first migration (see the tech spec, Section 14), not here.
+# Bring this up FIRST — it creates the `algo_trading` network that the root docker-compose.yml
+# (backend, frontend, worker) joins as an external network.
+#
+#   cd infra && cp .env.example .env && $EDITOR .env
+#   docker compose up -d
+#
+# Deliberately NO `name:` here. The compose project name comes from this directory ("infra"),
+# which is what keeps the existing `infra_postgres_data` volume attached. Setting a project name
+# would silently point Postgres at a NEW empty volume and the candle history would appear to
+# vanish.
+#
+# This file is written to be safe on a public host, which is a change from how it used to read:
+#   * Ports bind to 127.0.0.1 by default. The apps reach these by SERVICE NAME over the shared
+#     network, so nothing needs to be internet-reachable; the loopback publish is for local
+#     tooling and SSH tunnels.
+#   * POSTGRES_PASSWORD is required, not defaulted. `${VAR:?}` makes compose refuse to start
+#     rather than fall back to something guessable — an open Postgres with postgres/postgres is
+#     found and compromised within hours.
+#   * Redis takes a password when one is set, and stays open when it is not, so local
+#     development is unchanged while a deployment is authenticated.
 
 services:
   postgres:
@@ -18,48 +28,74 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # NOTE: this only applies when the data volume is FIRST created. Changing it later does not
+      # change the password of an existing database — that needs an ALTER USER.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/.env}
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    # Defaults suit a tiny dev box and are poor once ohlcv_data holds millions of rows (BTCUSDT
+    # 1m since 2017 is ~4.7M). These suit a 2 GB host; raise them if you size up.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
+      - -c
+      - maintenance_work_mem=128MB
     ports:
-      # Deliberately NOT 5432 — that's your existing Postgres instance used
-      # by other projects. This project gets its own port so both can run
-      # at once.
-      - "${POSTGRES_PORT:-5433}:5432"
+      # Deliberately NOT 5432 — that is the pre-existing Postgres used by other projects.
+      - "${BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 30s
+    networks: [algo_trading]
 
   redis:
     image: redis:7-alpine
     container_name: algo_trading_redis
     restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    # `:+` expands to nothing when REDIS_PASSWORD is unset, so this is an unauthenticated Redis
+    # locally and an authenticated one in deployment — from a single file. The `$$` reaches the
+    # container's shell, so the password itself never appears in the rendered command.
+    command: ["sh", "-c", "exec redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}"]
     ports:
-      # Matches the port you already had this running on standalone.
-      - "${REDIS_PORT:-55000}:6379"
+      - "${BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-55000}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$$REDIS_PASSWORD\"} ping | grep -q PONG"]
+      interval: 10s
       timeout: 5s
       retries: 10
+    networks: [algo_trading]
 
-  # --- Optional dev-convenience service. Remove if not needed. ---
+  # Opt-in: `docker compose --profile tools up -d`. It has no authentication of its own, so it
+  # stays off unless you deliberately want it.
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: algo_trading_redis_commander
     restart: unless-stopped
+    profiles: ["tools"]
     environment:
-      REDIS_HOSTS: local:redis:6379
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-}
     ports:
-      - "${REDIS_COMMANDER_PORT:-8081}:8081"
-    depends_on:
-      - redis
+      - "${BIND_ADDRESS:-127.0.0.1}:${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on: [redis]
+    networks: [algo_trading]
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  # Named explicitly so the root compose can join it as external. This is why infra comes up
+  # first: the network must exist before the apps can attach.
+  algo_trading:
+    name: algo_trading

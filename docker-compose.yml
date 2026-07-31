@@ -1,17 +1,19 @@
-# Project-level stack: the three apps only. Database and Redis are NOT defined here — the
-# apps connect to an external Postgres/Timescale + Redis using credentials taken from env
-# (each service's .env, with the host overridden to reach the host machine). Run the DB/Redis
-# however you like (e.g. infra/docker-compose.yml, or a managed instance).
+# Application stack: backend, frontend, worker.
 #
-#   docker compose up            # builds & starts backend + frontend + worker-py
+# Bring infra/docker-compose.yml up FIRST — this stack joins the `algo_trading` network that one
+# creates. It is declared `external`, so starting these out of order fails with a clear error
+# instead of leaving two stacks unable to see each other.
 #
-# Networking model:
-#   * Inside the compose network the apps talk to each other by service name on their fixed
-#     internal ports (frontend -> http://backend:3009). No published port is used for that.
-#   * Published host ports are set to 0, so Docker picks a random free host port (see them with
-#     `docker compose ps`). Only the frontend needs to be reached from a browser; it proxies
-#     /api and /socket.io to the backend internally, so the backend's random port is optional.
-#   * When you run an app individually (npm run dev, etc.) it uses its own port directly.
+#   cd infra && docker compose up -d      # postgres + redis
+#   cd ..    && docker compose up -d --build
+#
+# Compose owns the WIRING (hosts, ports, credentials, trading switches) from the root .env, so a
+# fresh host is configured from one file per stack. Each app's own .env is still read when
+# present, for anything not listed here; values under `environment:` always win — which is what
+# stops a stale .env copied from a laptop from quietly changing what a deployed worker does.
+#
+# Note the ports: inside this network Postgres is 5432 and Redis 6379 — NOT the 5433/55000 that
+# infra publishes on the host. Those are loopback-only, for tooling and SSH tunnels.
 
 services:
   backend:
@@ -23,19 +25,28 @@ services:
       - path: ./apps/backend/.env
         required: false
     environment:
-      # DB/Redis are external. The app .env uses localhost (for `npm run dev`); inside a
-      # container that must instead point at the host — so override just the *host* here.
-      # Distinct var names (COMPOSE_*) so they don't collide with DATABASE_HOST=localhost
-      # in .env; set them if your DB/Redis live somewhere other than the host machine.
-      DATABASE_HOST: ${COMPOSE_DB_HOST:-host.docker.internal}
-      REDIS_HOST: ${COMPOSE_REDIS_HOST:-host.docker.internal}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${POSTGRES_USER:-postgres}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?must match infra/.env}
+      DATABASE_NAME: ${POSTGRES_DB:-postgres}
+      DATABASE_SCHEMA: ${DATABASE_SCHEMA:-Algo_Trading}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       PORT: 3009
-      # Shared secret guarding /internal/jobs/* — must match worker-py's value below.
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-change-me-internal-secret}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # lets host.docker.internal resolve on Linux too
-    ports:
-      - "0:3009"   # random published host port (optional external/debug access)
+      # The worker owns the stream and execution. The backend must not also run them, or every
+      # order would be placed twice.
+      LIVE_STREAM_SOURCE: redis
+      LIVE_EXECUTION_SOURCE: worker
+      # The only two the backend's own config validation requires (configuration.ts:144).
+      JWT_SECRET: ${JWT_SECRET:?set a long random JWT_SECRET in .env}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      LLM_MODELS: ${LLM_MODELS:-deepseek:deepseek-v4-flash}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    # No published port: the frontend proxies to it over this network. Exposing the API directly
+    # would only widen the attack surface.
+    networks: [algo_trading]
 
   frontend:
     build:
@@ -44,12 +55,16 @@ services:
     restart: unless-stopped
     environment:
       PORT: 4321
-      # Internal, compose-network address of the backend — never the published port.
       BACKEND_INTERNAL_URL: http://backend:3009
-    depends_on:
-      - backend
+    depends_on: [backend]
     ports:
-      - "0:4321"   # random published host port — this is the one you open in a browser
+      # Loopback by DEFAULT. This app has a login form and no TLS, so publishing it straight to
+      # the internet would put the password on the wire in cleartext. Reach it with:
+      #   ssh -L 4321:127.0.0.1:4321 user@host   then open http://localhost:4321
+      # To expose it properly put a TLS terminator in front (Caddy obtains certificates
+      # automatically) rather than setting BIND_ADDRESS=0.0.0.0.
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-4321}:4321"
+    networks: [algo_trading]
 
   worker-py:
     build:
@@ -60,19 +75,38 @@ services:
       - path: ./apps/worker-py/.env
         required: false
     environment:
-      DATABASE_HOST: ${COMPOSE_DB_HOST:-host.docker.internal}
-      DATABASE_PORT: ${DATABASE_PORT:-5433}
-      DATABASE_USER: ${DATABASE_USER:-postgres}
-      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-postgres}
-      DATABASE_NAME: ${DATABASE_NAME:-postgres}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${POSTGRES_USER:-postgres}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?must match infra/.env}
+      DATABASE_NAME: ${POSTGRES_DB:-postgres}
       DATABASE_SCHEMA: ${DATABASE_SCHEMA:-Algo_Trading}
-      REDIS_HOST: ${COMPOSE_REDIS_HOST:-host.docker.internal}
-      REDIS_PORT: ${REDIS_PORT:-55000}
-      # Trigger the backend's internal job endpoints over the compose network.
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       BACKEND_URL: http://backend:3009
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-change-me-internal-secret}
-    depends_on:
-      - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # No published port — the worker has no HTTP surface; it only talks to the DB + backend.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      # --- What this process actually does. Set explicitly, never inherited from an app .env,
+      # because these are the switches that decide whether it trades.
+      TRADING_BRAIN: ${TRADING_BRAIN:-pattern}
+      PATTERN_DECISIONS_ENABLED: ${PATTERN_DECISIONS_ENABLED:-false}
+      PATTERN_INTERVAL: ${PATTERN_INTERVAL:-15m}
+      LIVE_STREAM_ENABLED: "true"
+      WORKER_OWNS_EXECUTION: "true"
+      # Strategy-brain machinery stays off under the pattern brain.
+      GENERATION_SOURCE: "off"
+      HYBRID_EXIT_AI: "false"
+      SUPERVISOR_ENABLED: "false"
+      LLM_MODELS: ${LLM_MODELS:-deepseek:deepseek-v4-flash}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env}
+      # First boot re-fetches the full candle history from data.binance.vision, so an empty
+      # database is the expected starting point — no dump/restore needed.
+      BACKFILL_ON_START: ${BACKFILL_ON_START:-true}
+    # No ports: the worker has no HTTP surface. It talks to the DB, Redis and Binance.
+    networks: [algo_trading]
+
+networks:
+  # Created by infra/docker-compose.yml.
+  algo_trading:
+    name: algo_trading
+    external: true

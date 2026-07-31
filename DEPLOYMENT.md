@@ -2,18 +2,22 @@
 
 Two stacks, brought up in order:
 
-| File | Runs |
-|---|---|
-| `docker-compose.infra.yml` | Postgres/TimescaleDB, Redis |
-| `docker-compose.apps.yml` | backend, frontend, worker |
+| File | Runs | Env |
+|---|---|---|
+| `infra/docker-compose.yml` | Postgres/TimescaleDB, Redis | `infra/.env` |
+| `docker-compose.yml` (root) | backend, frontend, worker | `.env` |
 
 Infra first — it creates the `algo_trading` network the app stack joins. The app stack declares
 that network as `external`, so starting it out of order fails with a clear error rather than two
 stacks quietly not seeing each other.
 
-Both are separate from `infra/docker-compose.yml`, which stays as the local-development stack
-(publishes on `0.0.0.0` with default credentials — fine behind a laptop's NAT, unusable on a
-public host).
+The same two files serve local development and deployment. What differs is only what is in the
+two `.env` files: leave `REDIS_PASSWORD` empty locally and Redis runs unauthenticated exactly as
+it always has; set it on a host and Redis requires it. `BIND_ADDRESS` defaults to `127.0.0.1` in
+both cases, because nothing here needs to be reachable from the internet.
+
+**`POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `REDIS_PASSWORD` must match between the
+two `.env` files** — that is how the apps authenticate to the services.
 
 ---
 
@@ -35,12 +39,12 @@ US regions are not.
 ## Step 1 — infra
 
 ```bash
-cd deploy
+cd infra
 cp .env.example .env
 $EDITOR .env            # fill in every REQUIRED value — openssl rand -base64 32
 
-docker compose -f docker-compose.infra.yml up -d
-docker compose -f docker-compose.infra.yml ps      # both should read (healthy)
+docker compose up -d
+docker compose ps       # both should read (healthy)
 ```
 
 Compose refuses to start if a required secret is missing. That is deliberate: a public host must
@@ -58,8 +62,12 @@ ssh -L 5433:127.0.0.1:5433 user@host     # then psql to localhost:5433
 ## Step 2 — apps
 
 ```bash
-docker compose -f docker-compose.apps.yml up -d --build
-docker compose -f docker-compose.apps.yml logs -f worker-py
+cd ..                   # repo root
+cp .env.example .env
+$EDITOR .env            # DB/Redis credentials must MATCH infra/.env
+
+docker compose up -d --build
+docker compose logs -f worker-py
 ```
 
 The first build compiles the TA-Lib C library from source, so allow a few minutes. The image
@@ -93,7 +101,7 @@ record decisions without opening a single position. Watch a few bars land, then:
 
 ```bash
 $EDITOR .env            # PATTERN_DECISIONS_ENABLED=true
-docker compose -f docker-compose.apps.yml up -d worker-py
+docker compose up -d worker-py
 ```
 
 Nothing in the container reloads `.env` — it needs a restart, which the line above does.
