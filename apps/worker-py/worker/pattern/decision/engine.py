@@ -39,8 +39,21 @@ ERROR = "error"
 
 # Token budgets. These must cover a reasoning model's hidden thinking AND the emitted JSON —
 # see the note at the entry call site.
-ENTRY_MAX_TOKENS = 3072
-EXIT_MAX_TOKENS = 2048
+#
+# Measured on deepseek-v4-flash against a real entry prompt, 12 calls per budget:
+#
+#     budget   valid JSON   reasoning tokens (min/median/max)
+#      3072       0/12       3072 / 3072 / 3072   (every call truncated mid-think)
+#      6144       6/12       2463 / 5775 / 6144
+#     10240      12/12       2474 / 5266 / 8697
+#
+# The median barely moves with the budget — the model thinks for ~5k tokens regardless — so the
+# extra headroom costs little and only buys tail safety. 3072 was not "usually enough": it was a
+# hard truncation on every single call, which is why the chain always exhausted.
+ENTRY_MAX_TOKENS = 12288
+# The exit prompt is much smaller (median ~1k reasoning) but was measured spending 2913 once when
+# given room, so 2048 had real tail risk. Same reasoning: headroom is nearly free here.
+EXIT_MAX_TOKENS = 4096
 
 
 def _is_synthetic(response: dict) -> bool:
@@ -96,10 +109,11 @@ class DecisionEngine:
         pack = state.to_state_pack()
         prompt = build_entry_prompt(pack, account, list(result.triggers), failures)
 
-        # DeepSeek v4-flash is a REASONING model: measured against this prompt it spent 1024
-        # completion tokens entirely on reasoning and had none left to emit the JSON, so the first
-        # attempt failed the length limit and only the retry succeeded — three calls billed for one
-        # decision. The budget has to cover thinking AND the answer.
+        # DeepSeek v4-flash is a REASONING model and reasoning is billed as completion tokens, so
+        # the budget has to cover the thinking AND the answer. Under-budgeting does not degrade
+        # gracefully: the model burns the whole allowance on hidden reasoning, emits no JSON, and
+        # every retry does the same thing — three calls billed for a decision that never arrives.
+        # See the measurements next to ENTRY_MAX_TOKENS.
         response = await self.llm.generate_structured_completion(prompt, EntryDecision, max_tokens=ENTRY_MAX_TOKENS)
         if _is_synthetic(response):
             return self._record(state, ERROR, gate=result,

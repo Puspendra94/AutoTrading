@@ -44,6 +44,13 @@ services:
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
       LLM_MODELS: ${LLM_MODELS:-deepseek:deepseek-v4-flash}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Only read by 'bedrock:' entries in LLM_MODELS. Left unset the entries fail on
+      # construction, which silently costs you the whole fallback tail of the chain.
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_BEDROCK_API_KEY: ${AWS_BEDROCK_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     # No published port: the frontend proxies to it over this network. Exposing the API directly
     # would only widen the attack surface.
     networks: [algo_trading]
@@ -99,6 +106,13 @@ services:
       SUPERVISOR_ENABLED: "false"
       LLM_MODELS: ${LLM_MODELS:-deepseek:deepseek-v4-flash}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env}
+      # Only read by 'bedrock:' entries in LLM_MODELS. Left unset the entries fail on
+      # construction, which silently costs you the whole fallback tail of the chain.
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_BEDROCK_API_KEY: ${AWS_BEDROCK_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       # First boot re-fetches the full candle history from data.binance.vision, so an empty
       # database is the expected starting point — no dump/restore needed.
       BACKFILL_ON_START: ${BACKFILL_ON_START:-true}
