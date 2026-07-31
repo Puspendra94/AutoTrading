@@ -1,0 +1,95 @@
+# Deployment infra: Postgres/TimescaleDB + Redis.
+#
+# Separate from infra/docker-compose.yml, which stays as-is for local development. That one
+# publishes on 0.0.0.0 with default credentials — harmless behind a laptop's NAT, fatal on a
+# public host: an open Postgres with postgres/postgres is found and compromised within hours.
+#
+# Differences that matter here:
+#   * Ports bind to 127.0.0.1 only. The apps reach these by SERVICE NAME over the shared
+#     network, so nothing needs to be publicly reachable. The loopback binding exists purely so
+#     you can `psql` through an SSH tunnel.
+#   * Passwords are required, not defaulted. `${VAR:?message}` makes compose refuse to start
+#     rather than quietly fall back to something guessable.
+#   * Redis requires a password. It has none by default and is a well-known way in.
+#   * redis-commander is behind a profile, so it does not run unless explicitly asked for.
+#
+# Bring this up FIRST — it creates the network the service stack joins.
+#
+#   cd deploy && cp .env.example .env && edit .env
+#   docker compose -f docker-compose.infra.yml up -d
+
+name: algo-trading-infra
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: algo_trading_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in deploy/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    # Defaults are tuned for a tiny dev box and are poor once ohlcv_data holds millions of rows
+    # (BTCUSDT 1m since 2017 is ~4.7M). These suit a 2 GB host; raise both if you size up.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - maintenance_work_mem=128MB
+    ports:
+      # 127.0.0.1 ONLY — reachable through an SSH tunnel, never from the internet.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [algo_trading]
+
+  redis:
+    image: redis:7-alpine
+    container_name: algo_trading_redis
+    restart: unless-stopped
+    # appendonly keeps the pub/sub-adjacent state across restarts; requirepass closes the
+    # default no-auth hole.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set a strong REDIS_PASSWORD in deploy/.env}"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-55000}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [algo_trading]
+
+  # Opt-in only: `docker compose --profile tools up -d redis-commander`. It has no auth of its
+  # own, so it stays off a public host unless you are tunnelling to it deliberately.
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: algo_trading_redis_commander
+    restart: unless-stopped
+    profiles: ["tools"]
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on: [redis]
+    networks: [algo_trading]
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  # Named explicitly so the service stack can join it as an external network. This is why infra
+  # comes up first: the network has to exist before the services can attach to it.
+  algo_trading:
+    name: algo_trading

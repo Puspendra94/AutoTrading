@@ -9,6 +9,9 @@ function createClient(): Redis {
   return new Redis({
     host: config.redis.host,
     port: config.redis.port,
+    // undefined (not '') when unset: ioredis sends AUTH for any defined value, and an empty
+    // password is rejected by a server that has no requirepass configured.
+    password: config.redis.password || undefined,
     lazyConnect: false,
     retryStrategy: (times) => Math.min(times * 200, 5000),
   });

@@ -21,6 +21,9 @@ class Config:
 
     redis_host: str = os.getenv("REDIS_HOST", "localhost")
     redis_port: int = int(os.getenv("REDIS_PORT", "55000"))
+    # Empty = no AUTH, which is how local dev runs. A deployed Redis sets requirepass (it has no
+    # authentication by default), so this must be set there or every publish fails with NOAUTH.
+    redis_password: str = os.getenv("REDIS_PASSWORD", "")
 
     # Backend API — the worker triggers the (former Node-worker) jobs via its guarded
     # /internal/jobs/* endpoints. In Docker this is the compose service name; locally it's

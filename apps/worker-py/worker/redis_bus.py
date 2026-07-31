@@ -36,6 +36,9 @@ def get_redis() -> redis.Redis:
         _client = redis.Redis(
             host=config.redis_host,
             port=config.redis_port,
+            # None (not "") when unset: redis-py sends an AUTH command for any non-None value,
+            # and an empty-string password fails against a server with no requirepass.
+            password=config.redis_password or None,
             decode_responses=True,
         )
     return _client

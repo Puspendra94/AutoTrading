@@ -43,6 +43,8 @@ export interface AppConfig {
   readonly redis: {
     readonly host: string;
     readonly port: number;
+    // Empty in local dev. A deployed Redis sets requirepass — it has no auth by default.
+    readonly password: string;
   };
 
   readonly auth: {
@@ -169,6 +171,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     redis: Object.freeze({
       host: str(env, 'REDIS_HOST', 'localhost'),
       port: int(env, 'REDIS_PORT', 55000),
+      password: str(env, 'REDIS_PASSWORD', ''),
     }),
 
     auth: Object.freeze({
