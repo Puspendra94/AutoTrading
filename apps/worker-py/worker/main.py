@@ -39,6 +39,37 @@ async def _daily_backfill() -> None:
     log.info("Scheduled archive gap-fill done: %s", results)
 
 
+# Seconds to wait between startup-backfill attempts. Sized for the cold-boot race: the backend
+# owns the migrations and compose cannot express a dependency across the two stacks, so on a
+# fresh host this process can reach the database before `tickers` exists.
+_BACKFILL_RETRY_DELAYS = (5, 15, 30, 60, 120)
+
+
+async def _startup_backfill() -> None:
+    """Gap-fill on startup, retrying the cold-boot race before giving up.
+
+    This used to log the failure and carry on. That was the worst of both worlds: the process
+    stayed up looking healthy while the history was never fetched, and because it never exited
+    non-zero, `restart: unless-stopped` never retried it either — so a single unlucky boot left
+    the worker permanently running on an empty candle table. Exhausting the retries now raises,
+    which both surfaces the problem and lets the restart policy have another go.
+    """
+    log.info("Running startup archive gap-fill…")
+    for attempt, delay in enumerate((*_BACKFILL_RETRY_DELAYS, None), start=1):
+        try:
+            results = await backfill_all()
+            log.info("Startup backfill complete: %s", results)
+            return
+        except Exception:  # noqa: BLE001
+            if delay is None:
+                log.exception("Startup backfill failed after %d attempts — no history was fetched", attempt)
+                raise
+            log.warning(
+                "Startup backfill attempt %d failed; retrying in %ds", attempt, delay, exc_info=True
+            )
+            await asyncio.sleep(delay)
+
+
 async def main() -> None:
     log.info("Python Data+AI worker starting (sole background scheduler).")
 
@@ -56,12 +87,7 @@ async def main() -> None:
 
     # Backfill missing data on every startup (cheap — resumes from the last stored month).
     if config.backfill_on_start:
-        log.info("Running startup archive gap-fill…")
-        try:
-            results = await backfill_all()
-            log.info("Startup backfill complete: %s", results)
-        except Exception:  # noqa: BLE001
-            log.exception("Startup backfill failed")
+        await _startup_backfill()
 
     scheduler = AsyncIOScheduler(timezone="UTC")
 
