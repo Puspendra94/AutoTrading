@@ -104,12 +104,17 @@ async def _last_stored_month(ticker_id: str) -> tuple[int, int] | None:
     return (ts.year, ts.month)
 
 
+# USD-M futures archive ("um"), not spot — the series has to be the instrument that is actually
+# traded. Verified live: futures monthly data begins 2020-01; 2019-12 and earlier return 404.
+_ARCHIVE_PREFIX = "data/futures/um"
+
+
 def _monthly_url(symbol: str, interval: str, y: int, m: int) -> str:
-    return f"{config.binance_vision_base}/data/spot/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{y:04d}-{m:02d}.zip"
+    return f"{config.binance_vision_base}/{_ARCHIVE_PREFIX}/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{y:04d}-{m:02d}.zip"
 
 
 def _daily_url(symbol: str, interval: str, d: date) -> str:
-    return f"{config.binance_vision_base}/data/spot/daily/klines/{symbol}/{interval}/{symbol}-{interval}-{d.isoformat()}.zip"
+    return f"{config.binance_vision_base}/{_ARCHIVE_PREFIX}/daily/klines/{symbol}/{interval}/{symbol}-{interval}-{d.isoformat()}.zip"
 
 
 async def _fetch_zip_rows(client: httpx.AsyncClient, url: str) -> list[tuple] | None:

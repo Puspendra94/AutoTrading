@@ -34,12 +34,20 @@ class Config:
     #                     so the worker no longer blocks on or depends on the backend.
     job_dispatch: str = os.getenv("JOB_DISPATCH", "http").lower()
 
-    # data.binance.vision public archive (no auth). Spot monthly/daily kline zips.
+    # --- Market data venue: USD-M FUTURES, not spot.
+    #
+    # This has to match the venue orders are placed on. Deciding on spot prices while filling on
+    # futures leaves the two separated by the basis, so what the chart shows and what a live fill
+    # costs are quietly different numbers — the kind of gap that only surfaces with real money.
+    #
+    # data.binance.vision public archive (no auth). Monthly/daily kline zips.
     binance_vision_base: str = os.getenv("BINANCE_VISION_BASE", "https://data.binance.vision")
-    binance_api_base: str = os.getenv("BINANCE_API_BASE", "https://api.binance.com")
-    # Live kline WebSocket (public, unauthenticated). Phase 1: the worker owns this stream,
-    # writes final candles to ohlcv_data, and publishes every tick to Redis for the backend.
-    binance_ws_base: str = os.getenv("BINANCE_WS_BASE", "wss://stream.binance.com:9443")
+    # fapi, not api: the futures REST host. Note the PATH also differs (/fapi/v1 vs /api/v3), so
+    # this host is only interchangeable with a client that knows it is talking to futures.
+    binance_api_base: str = os.getenv("BINANCE_API_BASE", "https://fapi.binance.com")
+    # Live kline WebSocket (public, unauthenticated). fstream is the futures counterpart of
+    # stream.binance.com and takes the same /stream?streams=<symbol>@kline_<interval> form.
+    binance_ws_base: str = os.getenv("BINANCE_WS_BASE", "wss://fstream.binance.com")
     # Master switch for the live-ingestion pipeline. Keep this OFF while the backend still
     # streams in-process (LIVE_STREAM_SOURCE=internal) so the same candle isn't ingested
     # twice; flip both together at cutover (worker on, backend -> redis).
@@ -55,7 +63,9 @@ class Config:
         i.strip() for i in os.getenv("BACKFILL_INTERVALS", os.getenv("BASE_INTERVAL", "1m")).split(",") if i.strip()
     )
     # Binance spot BTCUSDT history starts 2017-08. Override to shrink for testing.
-    backfill_start: str = os.getenv("BACKFILL_START", "2017-08")
+    # 2020-01, not 2017-08: the USD-M futures archive begins in January 2020 (2019-12 returns 404).
+    # Spot goes back to 2017-08, but that history is a different instrument and must not be mixed in.
+    backfill_start: str = os.getenv("BACKFILL_START", "2020-01")
     # Run a gap-fill on every startup (cheap — resumes from the last stored month).
     backfill_on_start: bool = os.getenv("BACKFILL_ON_START", "true").lower() in ("1", "true", "yes", "on")
 

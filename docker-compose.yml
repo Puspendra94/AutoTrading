@@ -75,6 +75,15 @@ services:
       REDIS_PORT: 6379
       # Reaches the backend's internal job endpoints over this network.
       BACKEND_URL: http://backend:3009
+      # --- Market data venue. Pinned here, not left to a .env, because these must match the venue
+      # orders are placed on: a stale app .env still carrying the spot endpoints would silently
+      # feed the strategy prices from a different instrument than it trades. Defaults are futures;
+      # override in the root .env only if you genuinely mean to change venue.
+      BINANCE_WS_BASE: ${BINANCE_WS_BASE:-wss://fstream.binance.com}
+      BINANCE_API_BASE: ${BINANCE_API_BASE:-https://fapi.binance.com}
+      BINANCE_VISION_BASE: ${BINANCE_VISION_BASE:-https://data.binance.vision}
+      # The USD-M futures archive starts here; 2019-12 and earlier return 404.
+      BACKFILL_START: ${BACKFILL_START:-2020-01}
     depends_on: [backend]
     networks: [algo_trading]
     # No published port — the worker has no HTTP surface. It talks to Postgres, Redis and Binance.

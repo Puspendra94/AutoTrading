@@ -35,6 +35,9 @@ const MAINNET_REST = 'https://api.binance.com';
 const TESTNET_REST = 'https://testnet.binance.vision';
 const MAINNET_WS = 'wss://stream.binance.com:9443';
 const TESTNET_WS = 'wss://stream.testnet.binance.vision';
+// Public market data is read from USD-M futures, the venue this system trades. Kept separate from
+// the constants above, which still describe the Spot connector used for account/order calls.
+const FUTURES_MAINNET_REST = 'https://fapi.binance.com';
 
 /**
  * Thin wrapper around @binance/connector. Public market-data methods never require
@@ -62,19 +65,33 @@ export class BinanceAdapter {
 
   /** Public klines — no credentials required. Always reads from mainnet: real market
    * data should reflect the real market regardless of whether the connected account
-   * is paper/live or testnet/mainnet. */
+   * is paper/live or testnet/mainnet.
+   *
+   * Fetched from USD-M FUTURES, matching the venue orders are placed on. Deciding on spot
+   * prices while filling on futures leaves the two separated by the basis.
+   *
+   * This deliberately does NOT go through the Spot connector: that client builds `/api/v3/...`
+   * paths, so merely pointing its baseURL at fapi.binance.com would 404. The futures klines
+   * response has the same positional shape, so only the request differs.
+   */
   async getPublicKlines(
     symbol: string,
     interval: string,
     limit = 500,
     opts: { startTime?: number; endTime?: number } = {},
   ): Promise<RawCandle[]> {
-    const client = this.client(undefined, false);
-    const query: Record<string, number> = { limit };
-    if (opts.startTime != null) query.startTime = opts.startTime;
-    if (opts.endTime != null) query.endTime = opts.endTime;
-    const res = await client.klines(symbol, interval, query);
-    return (res.data as any[]).map((raw) => ({
+    const params = new URLSearchParams({ symbol: symbol.toUpperCase(), interval, limit: String(limit) });
+    if (opts.startTime != null) params.set('startTime', String(opts.startTime));
+    if (opts.endTime != null) params.set('endTime', String(opts.endTime));
+
+    const res = await fetch(`${FUTURES_MAINNET_REST}/fapi/v1/klines?${params.toString()}`);
+    if (!res.ok) {
+      // Thrown, never swallowed: the caller marks the ticker FAILED and writes a data-quality
+      // flag. Returning [] here would look like "no candles yet" and hide a broken venue.
+      throw new Error(`Binance futures klines ${res.status} ${res.statusText} for ${symbol} ${interval}`);
+    }
+    const rows = (await res.json()) as any[];
+    return rows.map((raw) => ({
       timestamp: new Date(raw[0]),
       open: parseFloat(raw[1]),
       high: parseFloat(raw[2]),
