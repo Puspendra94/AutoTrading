@@ -1,0 +1,15 @@
+# The build context is sent to the daemon in full before any COPY runs, so the local virtualenv
+# (hundreds of MB, and built for the host's Python and CPU) would be uploaded on every build even
+# though the Dockerfile never copies it. Excluding it is the difference between a fast rebuild and
+# a slow one.
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+*.egg-info
+
+# Secrets stay out of the image. The stack supplies them at runtime via env_file, which reads the
+# file from the host — so excluding it here does not remove any setting.
+.env
+.env.local

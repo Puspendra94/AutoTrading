@@ -1,15 +1,17 @@
-version: "3.9"
-
-# Pure infra stack — tools only (Postgres/TimescaleDB, Redis).
-# No application code is built or run from this file. The backend and
-# frontend projects are separate, built later (by hand or by an LLM
-# following the tech spec), and simply connect to these containers using
-# the connection details below.
+# Infra stack — Postgres/TimescaleDB and Redis only. No application code is built or run here.
 #
-# Note: the timescale/timescaledb image auto-enables the timescaledb
-# extension on the default database on first boot — no init script needed
-# for that. The Algo_Trading schema itself is created by the backend
-# project's first migration (see the tech spec, Section 14), not here.
+# This file is deliberately separate from the app stack and is meant to be started ONCE and then
+# left alone. Redeploying the apps (`docker compose up -d --build` at the repo root) never touches
+# these containers, so the database is not restarted — and cannot be recreated — as a side effect
+# of shipping a code change.
+#
+#   docker compose -f infra/docker-compose.yml up -d      # start, then leave running
+#
+# Note: `docker compose down` does NOT delete named volumes; only `down -v` does. The data lives in
+# the postgres_data / redis_data volumes below and survives an ordinary stop/start either way.
+#
+# The timescaledb image auto-enables the extension on the default database on first boot. The
+# Algo_Trading schema itself is created by the backend's first migration, not here.
 
 services:
   postgres:
@@ -21,12 +23,17 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
     ports:
-      # Deliberately NOT 5432 — that's your existing Postgres instance used
-      # by other projects. This project gets its own port so both can run
-      # at once.
-      - "${POSTGRES_PORT:-5433}:5432"
+      # Deliberately NOT 5432 — that's the existing Postgres used by other projects; this one gets
+      # its own port so both can run at once.
+      #
+      # Bound to loopback by default. The apps do NOT use this published port — they reach Postgres
+      # by service name on the shared network below. This mapping exists only for tooling (psql,
+      # DBeaver), reached over an SSH tunnel on a remote host:
+      #   ssh -L 5433:127.0.0.1:5433 user@host
+      - "${BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks: [algo_trading]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
@@ -38,17 +45,21 @@ services:
     container_name: algo_trading_redis
     restart: unless-stopped
     ports:
-      # Matches the port you already had this running on standalone.
-      - "${REDIS_PORT:-55000}:6379"
+      # Same story as Postgres: loopback-only, for tooling. Redis runs WITHOUT a password, matching
+      # how the app code expects it in this branch — the apps here have no REDIS_PASSWORD support,
+      # so enabling `requirepass` would break them rather than secure anything. That is safe only
+      # because this port never leaves the machine; do not change the bind address to 0.0.0.0.
+      - "${BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-55000}:6379"
     volumes:
       - redis_data:/data
+    networks: [algo_trading]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # --- Optional dev-convenience service. Remove if not needed. ---
+  # --- Optional dev-convenience UI. Loopback-only; tunnel to it if you want it on a remote host.
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: algo_trading_redis_commander
@@ -56,9 +67,17 @@ services:
     environment:
       REDIS_HOSTS: local:redis:6379
     ports:
-      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+      - "${BIND_ADDRESS:-127.0.0.1}:${REDIS_COMMANDER_PORT:-8081}:8081"
     depends_on:
       - redis
+    networks: [algo_trading]
+
+networks:
+  # Created by this stack; the app stack joins it as `external`. That is what lets the apps address
+  # `postgres:5432` and `redis:6379` directly instead of going out through the host — which in turn
+  # is what allows the published ports above to stay on loopback.
+  algo_trading:
+    name: algo_trading
 
 volumes:
   postgres_data:

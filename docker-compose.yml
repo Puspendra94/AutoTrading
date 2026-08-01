@@ -1,17 +1,21 @@
-# Project-level stack: the three apps only. Database and Redis are NOT defined here — the
-# apps connect to an external Postgres/Timescale + Redis using credentials taken from env
-# (each service's .env, with the host overridden to reach the host machine). Run the DB/Redis
-# however you like (e.g. infra/docker-compose.yml, or a managed instance).
+# Application stack: backend, frontend, worker. This is the only stack you redeploy.
 #
-#   docker compose up            # builds & starts backend + frontend + worker-py
+#   docker compose -f infra/docker-compose.yml up -d    # ONCE — Postgres + Redis
+#   docker compose up -d --build                        # every code change
 #
-# Networking model:
-#   * Inside the compose network the apps talk to each other by service name on their fixed
-#     internal ports (frontend -> http://backend:3009). No published port is used for that.
-#   * Published host ports are set to 0, so Docker picks a random free host port (see them with
-#     `docker compose ps`). Only the frontend needs to be reached from a browser; it proxies
-#     /api and /socket.io to the backend internally, so the backend's random port is optional.
-#   * When you run an app individually (npm run dev, etc.) it uses its own port directly.
+# The infra stack is separate on purpose: rebuilding the apps never stops, recreates or otherwise
+# touches the database container, so shipping a code change cannot cost you the data.
+#
+# CONFIGURATION MODEL — this is a dev-parity deployment, not a hardened production one.
+# Every real setting (API keys, trading switches, risk limits) comes from each app's own .env via
+# `env_file`, exactly as it does when you run the apps directly on your machine. The `environment:`
+# block below overrides ONLY the DB/Redis wiring, because those are the sole values that must
+# differ inside a container: the app .env files say localhost:5433 / localhost:55000, which is
+# correct for `npm run start` on the host and wrong for a container. Note that `environment:`
+# always wins over `env_file:` — anything pinned below cannot be changed from a .env.
+#
+# Nothing here requires a secret to be set before the stack will boot, and Redis runs without a
+# password, matching the app code in this branch.
 
 services:
   backend:
@@ -23,19 +27,19 @@ services:
       - path: ./apps/backend/.env
         required: false
     environment:
-      # DB/Redis are external. The app .env uses localhost (for `npm run dev`); inside a
-      # container that must instead point at the host — so override just the *host* here.
-      # Distinct var names (COMPOSE_*) so they don't collide with DATABASE_HOST=localhost
-      # in .env; set them if your DB/Redis live somewhere other than the host machine.
-      DATABASE_HOST: ${COMPOSE_DB_HOST:-host.docker.internal}
-      REDIS_HOST: ${COMPOSE_REDIS_HOST:-host.docker.internal}
+      # Service names on the shared network — NOT the host's published 5433/55000.
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       PORT: 3009
-      # Shared secret guarding /internal/jobs/* — must match worker-py's value below.
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-change-me-internal-secret}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # lets host.docker.internal resolve on Linux too
-    ports:
-      - "0:3009"   # random published host port (optional external/debug access)
+      # Pinned rather than left to .env: the worker owns the kline stream and order placement. If a
+      # stale .env let the backend run them too, every order would be placed twice. Same values the
+      # app .env already carries — pinned so they cannot silently drift.
+      LIVE_STREAM_SOURCE: redis
+      LIVE_EXECUTION_SOURCE: worker
+    networks: [algo_trading]
+    # No published port: the frontend proxies /api and /socket.io to it over this network.
 
   frontend:
     build:
@@ -44,12 +48,17 @@ services:
     restart: unless-stopped
     environment:
       PORT: 4321
-      # Internal, compose-network address of the backend — never the published port.
+      # Internal compose address of the backend. The browser never sees this — server.mjs proxies
+      # /api to it, and the built bundle calls the same-origin /api because PUBLIC_API_URL is left
+      # unset at build time (apps/frontend/.dockerignore keeps .env out of the build context).
       BACKEND_INTERNAL_URL: http://backend:3009
-    depends_on:
-      - backend
+    depends_on: [backend]
     ports:
-      - "0:4321"   # random published host port — this is the one you open in a browser
+      # Loopback by default. The app has a login form and serves it over plain HTTP, so publishing
+      # it on a public interface would put the password on the wire in cleartext. Reach it with:
+      #   ssh -L 4321:127.0.0.1:4321 user@host    then open http://localhost:4321
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-4321}:4321"
+    networks: [algo_trading]
 
   worker-py:
     build:
@@ -60,19 +69,20 @@ services:
       - path: ./apps/worker-py/.env
         required: false
     environment:
-      DATABASE_HOST: ${COMPOSE_DB_HOST:-host.docker.internal}
-      DATABASE_PORT: ${DATABASE_PORT:-5433}
-      DATABASE_USER: ${DATABASE_USER:-postgres}
-      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-postgres}
-      DATABASE_NAME: ${DATABASE_NAME:-postgres}
-      DATABASE_SCHEMA: ${DATABASE_SCHEMA:-Algo_Trading}
-      REDIS_HOST: ${COMPOSE_REDIS_HOST:-host.docker.internal}
-      REDIS_PORT: ${REDIS_PORT:-55000}
-      # Trigger the backend's internal job endpoints over the compose network.
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Reaches the backend's internal job endpoints over this network.
       BACKEND_URL: http://backend:3009
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-change-me-internal-secret}
-    depends_on:
-      - backend
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # No published port — the worker has no HTTP surface; it only talks to the DB + backend.
+    depends_on: [backend]
+    networks: [algo_trading]
+    # No published port — the worker has no HTTP surface. It talks to Postgres, Redis and Binance.
+
+networks:
+  # Created by infra/docker-compose.yml. Declared external so bringing this stack up before the
+  # infra stack fails with a clear error, rather than silently creating a second network on which
+  # Postgres and Redis do not exist.
+  algo_trading:
+    name: algo_trading
+    external: true
