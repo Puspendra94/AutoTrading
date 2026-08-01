@@ -98,6 +98,20 @@ class ExecutionService:
         is_futures = (ticker.get("marketType") or "").lower() == FUTURES
         leverage = 1
 
+        # A SHORT is a SELL-to-open, which only the futures venue accepts. Refuse it on spot
+        # instead of simulating a fill: a paper record of a trade the exchange would have rejected
+        # is worse than no trade at all, because it silently flatters measured performance and the
+        # gap only surfaces on the first live order. Tickers are created on futures now, so this
+        # should never fire — it exists to make a misconfiguration loud rather than profitable.
+        if side == SHORT and not is_futures:
+            return {
+                "status": "REJECTED",
+                "reason": (
+                    f"Cannot open a short on a '{ticker.get('marketType') or 'spot'}' ticker — "
+                    "selling to open requires the futures venue."
+                ),
+            }
+
         fill_price = price
         fill_quantity = risk["allowedQuantity"]
         provider_order_id = f"SIM_{int(time.time() * 1000)}"

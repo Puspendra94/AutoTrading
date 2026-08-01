@@ -20,6 +20,10 @@ import httpx
 from .config import config
 from .db import get_pool
 
+# Mirrors DEFAULT_MARKET_TYPE in the backend's market-type.entity.ts. Any ticker this module
+# creates must trade on the same venue the backend would have put it on.
+DEFAULT_MARKET_TYPE = "futures"
+
 log = logging.getLogger("worker.backfill")
 
 # Binance switched archive kline timestamps from milliseconds to microseconds in 2025.
@@ -65,14 +69,17 @@ async def resolve_ticker_id(symbol: str, interval: str, create: bool = True) -> 
             log.warning("No provider row exists yet — cannot create ticker %s@%s for backfill.", symbol, interval)
             return None
 
+        # Futures, not spot — see DEFAULT_MARKET_TYPE on the backend. A short is a SELL-to-open
+        # that only the futures venue accepts, so a spot ticker silently makes half this system's
+        # signals unexecutable.
         mt = await conn.fetchrow(
-            "SELECT id FROM market_types WHERE provider_id = $1 AND name = 'spot' LIMIT 1",
-            provider["id"],
+            "SELECT id FROM market_types WHERE provider_id = $1 AND name = $2 LIMIT 1",
+            provider["id"], DEFAULT_MARKET_TYPE,
         )
         if not mt:
             mt = await conn.fetchrow(
-                "INSERT INTO market_types (provider_id, name) VALUES ($1, 'spot') RETURNING id",
-                provider["id"],
+                "INSERT INTO market_types (provider_id, name) VALUES ($1, $2) RETURNING id",
+                provider["id"], DEFAULT_MARKET_TYPE,
             )
         new = await conn.fetchrow(
             """INSERT INTO tickers (provider_id, market_type_id, symbol, interval, status, onboarding_stage)

@@ -5,7 +5,7 @@ import { Ticker, TickerStatus, OnboardingStage } from '../../entities/ticker.ent
 import { OhlcvData } from '../../entities/ohlcv-data.entity';
 import { DataQualityFlag, FlagType } from '../../entities/data-quality-flag.entity';
 import { Provider } from '../../entities/provider.entity';
-import { MarketType } from '../../entities/market-type.entity';
+import { MarketType, DEFAULT_MARKET_TYPE } from '../../entities/market-type.entity';
 import { BinanceAdapter } from '../provider/adapters/binance.adapter';
 
 @Injectable()
@@ -43,9 +43,11 @@ export class MarketDataService {
     const provider = await this.providerRepo.findOne({ where: { id: providerId } });
     if (!provider) throw new NotFoundException('Provider not found');
 
-    let marketType = await this.marketTypeRepo.findOne({ where: { providerId, name: 'spot' } });
+    let marketType = await this.marketTypeRepo.findOne({
+      where: { providerId, name: DEFAULT_MARKET_TYPE },
+    });
     if (!marketType) {
-      marketType = this.marketTypeRepo.create({ providerId, name: 'spot' });
+      marketType = this.marketTypeRepo.create({ providerId, name: DEFAULT_MARKET_TYPE });
       await this.marketTypeRepo.save(marketType);
     }
 

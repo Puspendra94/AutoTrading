@@ -5,7 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { User } from '../../entities/user.entity';
 import { Provider, ProviderType, ProviderStatus, TradingMode } from '../../entities/provider.entity';
-import { MarketType } from '../../entities/market-type.entity';
+import { MarketType, DEFAULT_MARKET_TYPE } from '../../entities/market-type.entity';
 import { Ticker, TickerStatus, OnboardingStage } from '../../entities/ticker.entity';
 import { MarketDataService } from './market-data.service';
 
@@ -43,7 +43,7 @@ export class MarketDataSeedService {
 
     if (!ticker) {
       const provider = await this.ensureSystemProvider();
-      const marketType = await this.ensureSpotMarketType(provider.id);
+      const marketType = await this.ensureMarketType(provider.id);
       ticker = this.tickerRepo.create({
         providerId: provider.id,
         marketTypeId: marketType.id,
@@ -97,10 +97,21 @@ export class MarketDataSeedService {
     return provider;
   }
 
-  private async ensureSpotMarketType(providerId: string): Promise<MarketType> {
-    let marketType = await this.marketTypeRepo.findOne({ where: { providerId, name: 'spot' } });
+  /**
+   * The venue the seeded ticker trades on.
+   *
+   * This used to hardcode 'spot', which combined badly with migration ordering: main.ts runs
+   * migrations BEFORE this seed, and AddFuturesSupport seeds `futures` by selecting rows that
+   * already have `spot`. On a fresh database market_types is still empty at that point, so it
+   * inserted nothing and the install silently ended up spot-only — with no way to short.
+   * Creating the futures type here removes that dependency entirely.
+   */
+  private async ensureMarketType(providerId: string): Promise<MarketType> {
+    let marketType = await this.marketTypeRepo.findOne({
+      where: { providerId, name: DEFAULT_MARKET_TYPE },
+    });
     if (!marketType) {
-      marketType = this.marketTypeRepo.create({ providerId, name: 'spot' });
+      marketType = this.marketTypeRepo.create({ providerId, name: DEFAULT_MARKET_TYPE });
       await this.marketTypeRepo.save(marketType);
     }
     return marketType;
