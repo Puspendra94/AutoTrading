@@ -45,6 +45,12 @@ def _patterns_block(patterns: dict) -> str:
     lines = []
     for p in chart:
         extra = f", neckline {p['neckline']:.2f}" if p.get("neckline") is not None else ""
+        if p.get("strength") is not None:
+            extra += (
+                f", strength {p['strength']:.2f}"
+                f" ({p.get('prominenceAtr', 0):.2f} ATR tall,"
+                f" completed {p.get('barsSinceCompletion', 0)} bars ago)"
+            )
         lines.append(f"    - {p['name']} ({p['direction']}) at {p.get('level', 0):.2f}{extra}")
     for p in candle:
         lines.append(f"    - {p['name']} ({p['direction']}, {p['barsAgo']} bars ago)")
@@ -118,6 +124,15 @@ HOW TO USE THE REGIME
   the edges are tradeable in both directions — fading resistance and buying support are valid
   setups when the level is well tested. Judge the setup on the levels and structure in front of
   you. The only forbidden trade is fading a STRONG trend.
+
+WHEN PATTERNS DISAGREE
+  Chart patterns are detected independently — a double top is read off the highs while an inverse
+  head & shoulders is read off the lows — so a bullish and a bearish one completing on the same bar
+  is normal and expected. It is NOT by itself a reason to skip.
+  Each carries `strength` (0-1), blending how tall the shape is in ATR with how recently it
+  completed. Resolve a disagreement by taking the strongest pattern's side. Treat a difference of
+  less than 0.15 as a genuine tie and fall back to the levels and structure to break it. Skip only
+  when the levels are equally unhelpful — not merely because more than one pattern fired.
 
 HARD CONSTRAINTS — a decision breaking any of these is rejected and the trade is skipped:
   1. Never trade against a strong_uptrend or strong_downtrend.

@@ -109,14 +109,28 @@ def detect_triggers(
                       "detail": f"close {close:.2f} left the range below {range_low:.2f}"})
 
     # --- A directional chart pattern completing.
+    #
+    # Several of these can fire on one bar pointing opposite ways — the shapes are matched against
+    # different pivots, so a double top (highs) and an inverse head & shoulders (lows) can both be
+    # real at once. The `strength` carried through here is what lets the decision layer prefer one
+    # instead of throwing the bar away as contradictory.
     for pattern in chart_patterns:
         if pattern["direction"] == "neutral":
             continue  # a symmetrical triangle says nothing until an edge breaks
+        strength = pattern.get("strength")
+        detail = f"{pattern['name']} ({pattern['direction']})"
+        if strength is not None:
+            detail += (
+                f", strength {strength:.2f}"
+                f" [{pattern.get('prominenceAtr', 0):.2f} ATR tall,"
+                f" completed {pattern.get('barsSinceCompletion', 0)} bars ago]"
+            )
         found.append({
             "name": "pattern_complete",
             "side": LONG if pattern["direction"] == "bullish" else SHORT,
             "price": pattern.get("level", close),
-            "detail": f"{pattern['name']} ({pattern['direction']})",
+            "detail": detail,
+            "strength": strength,
         })
 
     # --- Regime flip: the market changed character on this bar. Matters most when a position is
