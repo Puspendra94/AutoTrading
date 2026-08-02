@@ -40,7 +40,16 @@ DAILY_RISK_PCT = 0.02          # rule 1: lose no more than 2% of the day-start b
 MAX_STOP_PCT = 0.02            # rule 2: the stop may not exceed 2% from entry
 MIN_STOP_PCT = 0.003           # absolute floor, so a hair-tight stop cannot explode the size
 MIN_STOP_ATR = 0.5             # ...and at least half an ATR, so the stop clears normal noise
-MAX_MARGIN_PCT = 0.50          # never commit more than half the balance to one position
+# Never commit more than this share of the balance to one position.
+#
+# 60%, raised from 50% so that 5x becomes reachable on a very small account: holding the $63.50
+# exchange minimum at 5x needs $12.70 of margin, which did not fit inside 50% of a $23 balance
+# ($11.50) but does inside 60% ($13.80). The ladder then picks 5x instead of 10x, which is the
+# safer end — lower leverage means liquidation sits further from the stop.
+#
+# Note this constant does double duty: it also caps the notional of a NORMALLY sized trade, so a
+# well-funded account now commits up to 60% rather than 50% to a single position.
+MAX_MARGIN_PCT = 0.60
 
 # Each trade risks this share of what is LEFT of today's budget, rather than a fixed slice of it.
 #
