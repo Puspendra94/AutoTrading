@@ -374,21 +374,59 @@ export class ExecutionService {
    * exchange), so a paper selection ignores the network filter; a live selection matches the
    * exact network the order hit. `source` mirrors trade_mode for the panel's paper/live badge.
    */
-  async getTradesForView(mode: TradeMode, network: TradeNetwork | undefined, limit = 100) {
-    const where: Record<string, unknown> = { tradeMode: mode };
-    if (mode === TradeMode.LIVE && network) where.network = network;
-
+  async getTradesForView(
+    mode: TradeMode,
+    network: TradeNetwork | undefined,
+    limit = 100,
+    offset = 0,
+  ) {
     const positions = await this.positionRepo.find({
-      where,
+      where: this.tradeViewWhere(mode, network),
       relations: ['ticker', 'strategy'],
       order: { openedAt: 'DESC' },
       take: limit,
+      skip: offset,
     });
 
     return positions.map((p) => ({
       ...p,
       source: p.tradeMode === TradeMode.LIVE ? 'live' : 'paper',
     }));
+  }
+
+  /**
+   * Totals over EVERY trade in the view, not just the page currently on screen.
+   *
+   * The dashboard's Live Trades list is paginated, so the header strip can no longer be summed
+   * from the rows the browser happens to hold — that would silently turn "realized P/L" into
+   * "realized P/L of the last 10 trades" and get quietly worse as history grows. This is
+   * deliberately a separate, cheap query so paging the list can never move those numbers.
+   */
+  async getTradesSummary(mode: TradeMode, network: TradeNetwork | undefined) {
+    const positions = await this.positionRepo.find({
+      where: this.tradeViewWhere(mode, network),
+      select: ['status', 'realizedPl', 'unrealizedPl'],
+    });
+
+    const open = positions.filter((p) => p.status === PositionStatus.OPEN);
+    const closed = positions.filter((p) => p.status === PositionStatus.CLOSED);
+    const sum = (rows: typeof positions, field: 'realizedPl' | 'unrealizedPl') =>
+      Number(rows.reduce((s, p) => s + Number(p[field] || 0), 0).toFixed(2));
+
+    return {
+      openCount: open.length,
+      closedCount: closed.length,
+      totalCount: positions.length,
+      unrealizedPl: sum(open, 'unrealizedPl'),
+      realizedPl: sum(closed, 'realizedPl'),
+    };
+  }
+
+  /** One definition of "which trades this view shows", shared by the page and its totals. */
+  private tradeViewWhere(mode: TradeMode, network: TradeNetwork | undefined) {
+    const where: Record<string, unknown> = { tradeMode: mode };
+    if (mode === TradeMode.LIVE && network) where.network = network;
+    return where;
   }
 
   /** Base asset from a spot symbol (BTCUSDT -> BTC), stripping the common quote assets. */

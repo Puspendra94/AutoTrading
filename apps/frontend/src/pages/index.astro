@@ -101,7 +101,10 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             </span>
             <span class="flex items-center gap-1.5 text-[0.65rem] font-semibold tracking-wide text-brand"><span class="live-dot"></span> LIVE</span>
           </div>
-          <div id="positionsList" class="flex flex-col" aria-live="polite">
+          <!-- Capped height + its own scroller: the list only grows over time, and without this it
+               eventually pushes everything below it off the screen. Older trades are fetched a
+               page at a time as you reach the bottom. -->
+          <div id="positionsList" class="flex max-h-[26rem] flex-col overflow-y-auto" aria-live="polite">
             <p class="p-4 text-sm text-muted">Loading positions…</p>
           </div>
         </section>
@@ -120,9 +123,10 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             <div class="flex flex-col gap-0.5"><span class="eyebrow">EMA Stack</span><span id="readStack" class="tabular text-sm font-bold">—</span></div>
             <div class="col-span-2 flex flex-col gap-0.5"><span class="eyebrow">Nearest Support / Resistance</span><span id="readLevels" class="tabular text-sm font-bold">—</span></div>
             <div class="col-span-2 flex flex-col gap-1"><span class="eyebrow">Patterns</span><span id="readPatterns" class="text-sm font-semibold text-muted">—</span></div>
-            <!-- Markers are SIGNALS, not trades. This says why the latest one did or did not
-                 become a position, so an idle system is never a mystery. -->
-            <div class="col-span-2 flex flex-col gap-1 border-t border-border pt-3"><span class="eyebrow">Last decision</span><span id="readGate" class="text-sm font-semibold text-muted">—</span></div>
+            <!-- "Last decision" used to be mirrored here. It now lives only in the Decisions feed
+                 below the chart: this panel is the deterministic feature-engine read, and mixing
+                 the model's verdict into it duplicated the same sentence in two places (and cost
+                 an extra request per refresh to fetch it). -->
           </div>
         </section>
 
@@ -145,6 +149,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         <div class="flex items-center gap-2">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="text-brand" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
           <span class="eyebrow">Decisions</span>
+          <span class="text-[0.65rem] font-semibold text-dim">latest 5</span>
           <span id="decisionSummary" class="text-[0.7rem] text-dim"></span>
         </div>
         <label class="flex items-center gap-1.5 text-[0.7rem] font-semibold text-muted">
@@ -493,6 +498,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
 
     // --- Decision feed. Every evaluated bar produces one row, including the free skips, so this
     // is also how you tell whether the gate is too tight to ever trade.
+    //
+    // Only the newest few are listed: the feed answers "what did it decide and how many attempts
+    // did it take", which the last handful covers. The 24h totals in the header come from the
+    // summary endpoint, so shortening the list loses no information.
+    const DECISION_FEED_LIMIT = 5;
     const decisionsWrap = $('decisionsWrap'), decisionsBody = $('decisionsBody');
     const showSkips = $('showSkips') as HTMLInputElement;
 
@@ -563,7 +573,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       if (!tickerId) return;
       try {
         const [feed, summary] = await Promise.all([
-          apiGet<{ decisions: Decision[] }>(`/pattern/ticker/${tickerId}/decisions?limit=40&includeSkips=${showSkips.checked}`),
+          // Only the newest few. The value here is "what did it decide, and how many attempts did
+          // it take" — that is answered by the last handful of rows, while the full history was
+          // re-fetched and re-rendered on every refresh for no benefit. The 24h counters below
+          // still come from the summary endpoint, so nothing is lost by not listing every bar.
+          apiGet<{ decisions: Decision[] }>(`/pattern/ticker/${tickerId}/decisions?limit=${DECISION_FEED_LIMIT}&includeSkips=${showSkips.checked}`),
           apiGet<{ evaluated: number; byOutcome: Record<string, number>; totalCostUsd: number; totalTokens: number }>(`/pattern/ticker/${tickerId}/decisions/summary?hours=24`),
         ]);
 
@@ -586,14 +600,6 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
         // a quiet market legitimately produces an empty list while the engine is working fine —
         // say which one it is rather than implying the brain is idle.
         const quietButWorking = rows.length === 0 && (summary?.evaluated ?? 0) > 0;
-        // Mirror the newest decision into the Market Read panel. The chart shows signals; this is
-        // what actually happened to the most recent one.
-        const latest = await apiGet<{ decisions: Decision[] }>(`/pattern/ticker/${tickerId}/decisions?limit=1&includeSkips=true`);
-        const newest = latest.decisions?.[0];
-        if (newest) {
-          const meta = OUTCOME_META[newest.outcome] ?? { label: newest.outcome.toUpperCase(), cls: '' };
-          $('readGate').textContent = `${meta.label} — ${newest.reason}`;
-        }
 
         decisionsBody.innerHTML = rows.length
           ? rows.map(decisionRow).join('')
@@ -724,12 +730,12 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     function renderTrades() {
       const open = tradesCache.filter((p) => p.status === 'open');
       const unreal = open.reduce((s, p) => s + Number(p.unrealizedPl || 0), 0);
-      const real = tradesCache.filter((p) => p.status === 'closed').reduce((s, p) => s + Number(p.realizedPl || 0), 0);
-      mOpen.textContent = String(open.length);
-      mUnrealized.textContent = fmtMoney(unreal);
-      mUnrealized.className = `tabular text-[0.95rem] font-bold ${unreal >= 0 ? 'text-brand' : 'text-bear'}`;
-      mRealized.textContent = fmtMoney(real);
-      mRealized.className = `tabular text-[0.95rem] font-bold ${real >= 0 ? 'text-brand' : 'text-bear'}`;
+      // The strip above the chart (open count, unrealized, realized) is NOT summed here any more —
+      // loadTradesSummary() owns it. This function only ever sees the page currently loaded, so
+      // summing it would have quietly redefined those totals as "of the visible rows".
+      //
+      // `unreal` above is still local, and safe: positions are ordered newest-first and an open
+      // one is by definition the newest, so every open position is on the first page.
 
       // Keep the paper bar's live fields (equity + unrealized) moving on every WS tick, not just
       // on the ~4s/15s summary poll — the open position's mark-to-market updates in real time.
@@ -820,16 +826,97 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       loadPaperSummary();
     }
 
+    // --- Paginated trade list.
+    //
+    // One page is fetched at a time and appended when you scroll near the bottom. A refresh
+    // deliberately re-fetches however many are already on screen rather than snapping back to a
+    // single page — otherwise the periodic 20s poll would yank the list out from under you every
+    // time you scrolled back through history.
+    const TRADES_PAGE_SIZE = 10;
+    let tradesExhausted = false;   // the server returned a short page: nothing older remains
+    let tradesLoading = false;     // guards against the scroll handler firing a second fetch
+
+    function tradesQuery(limit: number, offset: number): string {
+      const net = activeMode === 'live' ? `&network=${activeNetwork}` : '';
+      return `mode=${activeMode}${net}&limit=${limit}&offset=${offset}`;
+    }
+
     async function loadTrades() {
+      if (tradesLoading) return;
+      tradesLoading = true;
       try {
-        const q = `mode=${activeMode}${activeMode === 'live' ? `&network=${activeNetwork}` : ''}`;
-        tradesCache = await apiGet<Position[]>(`/execution/trades?${q}`);
+        // Keep whatever is already on screen, so a background refresh never collapses the list.
+        const keep = Math.max(tradesCache.length, TRADES_PAGE_SIZE);
+        const page = await apiGet<Position[]>(`/execution/trades?${tradesQuery(keep, 0)}`);
+        tradesCache = page;
+        tradesExhausted = page.length < keep;
         renderTrades();
       } catch {
         positionsList.innerHTML = `<p class="p-4 text-sm text-muted">Failed to load trades.</p>`;
+      } finally {
+        tradesLoading = false;
       }
     }
-    setInterval(loadTrades, 20000); // pick up newly-opened/closed trades without a page reload
+
+    async function loadMoreTrades() {
+      if (tradesLoading || tradesExhausted) return;
+      tradesLoading = true;
+      try {
+        const page = await apiGet<Position[]>(
+          `/execution/trades?${tradesQuery(TRADES_PAGE_SIZE, tradesCache.length)}`,
+        );
+        if (page.length < TRADES_PAGE_SIZE) tradesExhausted = true;
+        if (page.length) {
+          // De-duplicate by id: a trade closing between two pages shifts the ordering, which can
+          // otherwise hand back a row that is already rendered.
+          const seen = new Set(tradesCache.map((p) => p.id));
+          tradesCache = tradesCache.concat(page.filter((p) => !seen.has(p.id)));
+          renderTrades();
+        }
+      } catch {
+        /* leave what is already rendered; the next scroll or refresh retries */
+      } finally {
+        tradesLoading = false;
+      }
+    }
+
+    // Load the next page slightly BEFORE the end so the list feels continuous.
+    positionsList.addEventListener('scroll', () => {
+      const nearBottom =
+        positionsList.scrollTop + positionsList.clientHeight >= positionsList.scrollHeight - 120;
+      if (nearBottom) loadMoreTrades();
+    });
+
+    // Totals for the strip above the chart come from their own endpoint, NOT from the rows held
+    // in memory — paging the list must never change what "realized P/L" or "open positions" mean.
+    async function loadTradesSummary() {
+      try {
+        const net = activeMode === 'live' ? `&network=${activeNetwork}` : '';
+        const s = await apiGet<{ openCount: number; unrealizedPl: number; realizedPl: number }>(
+          `/execution/trades/summary?mode=${activeMode}${net}`,
+        );
+        mOpen.textContent = String(s.openCount);
+        mUnrealized.textContent = fmtMoney(s.unrealizedPl);
+        mUnrealized.className = `tabular text-[0.95rem] font-bold ${s.unrealizedPl >= 0 ? 'text-brand' : 'text-bear'}`;
+        mRealized.textContent = fmtMoney(s.realizedPl);
+        mRealized.className = `tabular text-[0.95rem] font-bold ${s.realizedPl >= 0 ? 'text-brand' : 'text-bear'}`;
+      } catch {
+        /* leave the last known values rather than flashing placeholders */
+      }
+    }
+
+    /** Refresh the list in place, keeping however much is already scrolled into view. */
+    function refreshTradesView() { loadTrades(); loadTradesSummary(); }
+
+    /** Switching mode or network is a different set of trades entirely — start from page 1. */
+    function resetTradesView() {
+      tradesCache = [];
+      tradesExhausted = false;
+      positionsList.scrollTop = 0;
+      refreshTradesView();
+    }
+
+    setInterval(refreshTradesView, 20000); // pick up newly opened/closed trades without a reload
 
     // Manual close: the "Close" button on an OPEN position card exits it right now at the live
     // price (falling back to the position's last mark if no tick has arrived yet). Same paper/live
@@ -845,7 +932,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       btn.disabled = true; btn.textContent = 'Closing…';
       try {
         await apiPost(`/execution/positions/${id}/close`, { exitPrice });
-        await Promise.all([loadTrades(), loadPaperSummary()]);
+        await Promise.all([loadTrades(), loadTradesSummary(), loadPaperSummary()]);
       } catch (err) {
         alert(err instanceof ApiError ? err.message : 'Failed to close position');
         btn.disabled = false; btn.textContent = 'Close';
@@ -884,7 +971,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       testTradeBtn.disabled = true;
       try {
         await apiPost('/execution/test-trade', { tickerId, price: lastPrice });
-        await Promise.all([loadTrades(), loadPaperSummary()]);
+        await Promise.all([loadTrades(), loadTradesSummary(), loadPaperSummary()]);
       } catch (e) {
         alert(e instanceof ApiError ? e.message : 'Test trade failed');
       } finally {
@@ -1054,7 +1141,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       activeMode = p?.tradingMode || 'paper';
       if (p && p.useTestnet !== undefined) activeNetwork = p.useTestnet ? 'testnet' : 'mainnet';
       paintTradesLabel();
-      loadTrades();
+      // Reset rather than refresh: applyProvider can switch mode/network under us, which changes
+      // which trades the list is showing.
+      resetTradesView();
       loadPaperSummary();
       const connected = !!p && !!p.hasCredentials;
       if (!connected) { paintMode('paper', true); mBalance.textContent = '—'; return; }
@@ -1064,9 +1153,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     async function switchMode(mode: 'paper' | 'live') {
       if (!boundProvider?.hasCredentials || mode === boundProvider.tradingMode) return;
       paintMode(mode, false);
-      activeMode = mode; paintTradesLabel(); loadTrades(); loadPaperSummary();
+      activeMode = mode; paintTradesLabel(); resetTradesView(); loadPaperSummary();
       try { const u = await apiPatch<Provider>(`/providers/${boundProvider.id}/trading-mode`, { tradingMode: mode }); boundProvider.tradingMode = u.tradingMode; }
-      catch { paintMode(boundProvider.tradingMode, false); activeMode = boundProvider.tradingMode; paintTradesLabel(); loadTrades(); loadPaperSummary(); }
+      catch { paintMode(boundProvider.tradingMode, false); activeMode = boundProvider.tradingMode; paintTradesLabel(); resetTradesView(); loadPaperSummary(); }
     }
     modePaper.addEventListener('click', () => switchMode('paper'));
     modeLive.addEventListener('click', () => switchMode('live'));
@@ -1075,7 +1164,7 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
     // re-fetch so the dashboard's BALANCE and the Live Trades feed reflect the network just
     // switched to, matching the Profile page (which already reloads on this event).
     window.addEventListener('network-changed', (e: any) => {
-      if (e.detail?.useTestnet !== undefined) { activeNetwork = e.detail.useTestnet ? 'testnet' : 'mainnet'; paintTradesLabel(); loadTrades(); loadPaperSummary(); }
+      if (e.detail?.useTestnet !== undefined) { activeNetwork = e.detail.useTestnet ? 'testnet' : 'mainnet'; paintTradesLabel(); resetTradesView(); loadPaperSummary(); }
       loadProvider();
     });
     async function loadProvider() {

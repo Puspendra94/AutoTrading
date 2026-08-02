@@ -29,11 +29,30 @@ export class RiskExecutionController {
   // The Live Trades feed: open + closed trades matching the active Mode + Network, newest
   // first. `mode` defaults to paper; `network` is only applied for live (paper is
   // network-agnostic). Drives the dashboard's Live Trades panel.
+  // Paginated: the dashboard loads a page at a time and appends as you scroll, so a long history
+  // never has to be shipped or rendered in full. Totals come from `trades/summary` instead, which
+  // is what keeps the header strip honest when only one page is on screen.
   @Get('trades')
-  async getTrades(@Query('mode') mode?: string, @Query('network') network?: string) {
+  async getTrades(
+    @Query('mode') mode?: string,
+    @Query('network') network?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
     const tradeMode = mode === 'live' ? TradeMode.LIVE : TradeMode.PAPER;
     const tradeNetwork = network === 'mainnet' ? TradeNetwork.MAINNET : network === 'testnet' ? TradeNetwork.TESTNET : undefined;
-    return this.executionService.getTradesForView(tradeMode, tradeNetwork);
+    // Clamped: a hand-typed limit=100000 would defeat the point of paginating at all.
+    const take = Math.min(Math.max(Number(limit) || 100, 1), 200);
+    const skip = Math.max(Number(offset) || 0, 0);
+    return this.executionService.getTradesForView(tradeMode, tradeNetwork, take, skip);
+  }
+
+  // Totals across the WHOLE view, independent of which page the list is showing.
+  @Get('trades/summary')
+  async getTradesSummary(@Query('mode') mode?: string, @Query('network') network?: string) {
+    const tradeMode = mode === 'live' ? TradeMode.LIVE : TradeMode.PAPER;
+    const tradeNetwork = network === 'mainnet' ? TradeNetwork.MAINNET : network === 'testnet' ? TradeNetwork.TESTNET : undefined;
+    return this.executionService.getTradesSummary(tradeMode, tradeNetwork);
   }
 
   // Simulated paper-trading performance (equity, ROI, realized/unrealized P/L, available balance,
