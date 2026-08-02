@@ -166,6 +166,7 @@ class DecisionEngine:
         exec_result = await self.execution.execute_trade_signal(
             state.ticker_id, decision.side, state.close, None,
             requested_quantity=sizing.quantity,
+            requested_leverage=sizing.leverage,
         )
         if exec_result.get("status") == "REJECTED":
             return self._record(state, REJECTED, gate=result,

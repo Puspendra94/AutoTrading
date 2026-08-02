@@ -78,7 +78,8 @@ class ExecutionService:
 
     async def execute_trade_signal(self, ticker_id: str, side: str, price: float,
                                    strategy_id: Optional[str] = None,
-                                   requested_quantity: Optional[float] = None) -> dict:
+                                   requested_quantity: Optional[float] = None,
+                                   requested_leverage: int = 1) -> dict:
         # 1. Unbypassable risk gate (may raise RiskGateHalt on daily-loss breach). A
         # requested_quantity replaces only the gate's SIZING step — every policy check still runs.
         risk = await evaluate_order_risk_gate(
@@ -93,10 +94,13 @@ class ExecutionService:
             raise ExecutionError("Invalid ticker")
         provider = await self.store.get_provider(ticker["providerId"])
 
-        # Phase 4b: futures tickers route to the futures venue and carry leverage. 1x default keeps a
-        # futures long economically identical to spot until leverage is deliberately turned up later.
+        # Futures tickers route to the futures venue and carry leverage. The caller (the pattern
+        # brain's sizing) decides it: 1x unless the exchange's minimum order size is out of reach
+        # at 1x, in which case the smallest bucket that fits the margin cap is used. Leverage never
+        # enlarges a position here — it only makes the floor affordable — so a stop-out costs the
+        # same dollars either way. Spot cannot borrow, so it is pinned to 1x.
         is_futures = (ticker.get("marketType") or "").lower() == FUTURES
-        leverage = 1
+        leverage = max(1, int(requested_leverage)) if is_futures else 1
 
         # A SHORT is a SELL-to-open, which only the futures venue accepts. Refuse it on spot
         # instead of simulating a fill: a paper record of a trade the exchange would have rejected

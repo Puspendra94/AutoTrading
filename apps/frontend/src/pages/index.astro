@@ -199,6 +199,9 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       unrealizedPl: number; realizedPl: number; isProbation: boolean;
       openedAt: string; closedAt?: string | null;
       tradeMode: 'paper' | 'live'; network: 'testnet' | 'mainnet' | null;
+      // 1 unless the exchange's minimum order size was out of reach at 1x. Invested capital is
+      // notional / leverage, which is why both are shown together on the card.
+      leverage?: number;
     };
     type Provider = { id: string; type: string; tradingMode: 'paper' | 'live'; useTestnet?: boolean; hasCredentials?: boolean; tradableBalance: number | null; currency: string | null };
     type Strategy = { id: string; version: number; status: string; executionMode: string; parametersJson: any };
@@ -793,7 +796,11 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             </div>
             ${protectionRow(p, isOpen)}
             <div class="mt-0.5 flex items-center justify-between text-[0.7rem] text-dim">
-              <span class="tabular">Size ${fmt(Number(p.quantity), 6)}</span>
+              <span class="tabular">Size ${fmt(Number(p.quantity), 6)} · Invested <span class="text-fg">$${fmt(notional / Math.max(1, Number(p.leverage) || 1))}</span>${
+                (Number(p.leverage) || 1) > 1
+                  ? ` <span class="rounded bg-amber-500/15 px-1 py-0.5 font-semibold text-amber-400" title="Margin borrowed to reach the exchange's minimum order size. It does not increase what a stop-out costs — only the capital locked up.">${Number(p.leverage)}x</span>`
+                  : ''
+              }</span>
               <span class="flex items-center gap-2">
                 <span>${isOpen ? `<span class="text-brand">OPEN</span> · ` : ''}${ago}</span>
                 ${isOpen ? `<button type="button" data-close="${esc(p.id)}" class="close-pos rounded border border-bear/40 px-2 py-0.5 text-[0.65rem] font-semibold text-bear transition-colors hover:bg-bear/10 disabled:opacity-40" title="Close this paper position now at the live price">Close</button>` : ''}

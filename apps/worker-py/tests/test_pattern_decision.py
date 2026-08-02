@@ -139,8 +139,10 @@ class FakeExecution:
     def __init__(self):
         self.trades, self.closes = [], []
 
-    async def execute_trade_signal(self, ticker_id, side, price, strategy_id, requested_quantity=None):
-        self.trades.append({"side": side, "price": price, "qty": requested_quantity})
+    async def execute_trade_signal(self, ticker_id, side, price, strategy_id,
+                                   requested_quantity=None, requested_leverage=1):
+        self.trades.append({"side": side, "price": price, "qty": requested_quantity,
+                            "leverage": requested_leverage})
         return {"status": "EXECUTED", "positionId": "new-pos"}
 
     async def close_position(self, position_id, price):
@@ -242,7 +244,12 @@ async def test_valid_entry_executes_with_a_deterministically_sized_quantity():
     assert result["sizing"]["riskUsd"] <= result["sizing"]["riskBudgetUsd"] + 1e-9
 
 
-async def test_tiny_account_is_rejected_before_any_order():
+async def test_small_account_trades_the_floor_on_borrowed_margin():
+    """A $100 account cannot buy 0.001 BTC outright; leverage makes the floor reachable.
+
+    This asserted a rejection before leverage bucketing existed. The trade must still be the
+    exchange MINIMUM — leverage may make a position affordable, never larger.
+    """
     llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
                                      entry_max=PRICE + 50, stop_loss=PRICE * 0.99,
                                      take_profit=PRICE * 1.02, reasoning="x"))
@@ -250,6 +257,22 @@ async def test_tiny_account_is_rejected_before_any_order():
     result = await _engine(llm, execution).decide(
         FakeState(triggers=[trigger()]), open_position=None,
         account=_account(day_start_balance=100.0, free_balance=100.0))
+
+    assert result["outcome"] == engine_mod.EXECUTED
+    assert len(execution.trades) == 1
+    assert execution.trades[0]["leverage"] > 1
+    assert result["sizing"]["minSizeForced"] is True
+
+
+async def test_account_too_small_for_the_daily_cap_places_no_order():
+    """Below the point where a floor-sized loss fits the 2% day, nothing is sent."""
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 0.99,
+                                     take_profit=PRICE * 1.02, reasoning="x"))
+    execution = FakeExecution()
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None,
+        account=_account(day_start_balance=23.0, free_balance=23.0))
 
     assert result["outcome"] == engine_mod.REJECTED
     assert execution.trades == []

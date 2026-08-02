@@ -1,7 +1,8 @@
 """Sizing and guardrail tests — the money-critical half of the pattern brain.
 
 These encode the two rules agreed with the operator:
-  1. the day may lose at most 2% of its starting balance, split across 4 trades;
+  1. the day may lose at most 2% of its starting balance — a DAILY cap, with no limit on how
+     many trades it takes to reach it;
   2. the stop may not sit more than 2% from entry.
 """
 import pytest
@@ -9,8 +10,9 @@ import pytest
 from worker.exchange_info import SymbolFilters
 from worker.pattern.decision.schemas import EntryDecision
 from worker.pattern.decision.sizing import (
-    DAILY_RISK_PCT, MAX_NOTIONAL_PCT, MAX_STOP_PCT, MIN_STOP_PCT, TRADES_PER_DAY,
-    clamp_stop_pct, size_position, take_profit_for, validate_risk_reward,
+    DAILY_RISK_PCT, LEVERAGE_BUCKETS, MAX_MARGIN_PCT, MAX_STOP_PCT, MIN_STOP_PCT,
+    RISK_FRACTION_OF_REMAINING, clamp_stop_pct, pick_leverage, size_position,
+    take_profit_for, validate_risk_reward,
 )
 from worker.pattern.decision.validator import validate_entry
 
@@ -33,11 +35,12 @@ def _size(**overrides):
 
 
 # --------------------------------------------------------------------------- budget
-def test_risk_per_trade_is_the_daily_budget_split_four_ways():
+def test_risk_per_trade_is_a_share_of_what_remains():
+    """The only rule is the 2% DAILY cap; there is no trades-per-day constant."""
     r = _size()
     assert r.approved
-    assert r.risk_budget_usd == pytest.approx(BALANCE * DAILY_RISK_PCT / TRADES_PER_DAY)
-    assert r.risk_budget_usd == pytest.approx(50.0)  # 2% of 10k = 200, split 4 ways
+    assert r.risk_budget_usd == pytest.approx(BALANCE * DAILY_RISK_PCT * RISK_FRACTION_OF_REMAINING)
+    assert r.risk_budget_usd == pytest.approx(200.0 / 3)  # a third of 2% of 10k
 
 
 def test_actual_risk_never_exceeds_the_budget():
@@ -46,20 +49,68 @@ def test_actual_risk_never_exceeds_the_budget():
     assert r.risk_usd <= r.risk_budget_usd + 1e-9
 
 
-def test_four_losing_trades_exhaust_the_day():
-    per_trade = BALANCE * DAILY_RISK_PCT / TRADES_PER_DAY
-    assert _size(realized_loss_today=per_trade * 3).approved
+def test_losses_shrink_the_next_trade_without_a_trade_count():
+    """Each loss shrinks the next position; the day ends on the 2% cap, not on a tally."""
+    sizes = []
+    lost = 0.0
+    for _ in range(6):
+        r = _size(realized_loss_today=lost)
+        assert r.approved, "a fresh-ish budget must still allow a trade"
+        sizes.append(r.risk_budget_usd)
+        lost += r.risk_usd
+    assert sizes == sorted(sizes, reverse=True), "risk per trade must taper as the day is spent"
+    assert len(sizes) == 6, "no fixed trade count may cut the day short"
 
+
+def test_day_stops_only_when_the_two_percent_is_gone():
     spent = _size(realized_loss_today=BALANCE * DAILY_RISK_PCT)
     assert not spent.approved
     assert "budget exhausted" in spent.reason
 
 
 def test_partial_budget_shrinks_the_last_trade():
-    """With only $2 left, the trade may risk $2 — not the usual $5."""
+    """With only $2 of the day's allowance left, the trade may risk a third of it."""
     r = _size(realized_loss_today=BALANCE * DAILY_RISK_PCT - 2.0)
     assert r.approved
-    assert r.risk_budget_usd == pytest.approx(2.0)
+    assert r.risk_budget_usd == pytest.approx(2.0 * RISK_FRACTION_OF_REMAINING)
+
+
+# --------------------------------------------------------------------------- leverage
+def test_large_balance_never_borrows():
+    """Leverage exists to reach the exchange floor, never to enlarge a position."""
+    r = _size()
+    assert r.approved
+    assert r.leverage == 1
+    assert r.min_size_forced is False
+    assert r.margin_usd == pytest.approx(r.notional)
+
+
+def test_small_balance_reaches_the_floor_on_leverage():
+    """$75 cannot afford 0.001 BTC outright, but can at 2x — and the loss still fits the day."""
+    r = _size(day_start_balance=75.0, free_balance=75.0)
+    assert r.approved, r.reason
+    assert r.min_size_forced is True
+    assert r.leverage > 1
+    assert r.quantity == pytest.approx(BTC.min_qty)
+    # Borrowing frees margin; it does not change what a stop-out costs.
+    assert r.risk_usd == pytest.approx(r.notional * r.stop_pct)
+    assert r.margin_usd == pytest.approx(r.notional / r.leverage)
+    assert r.margin_usd <= MAX_MARGIN_PCT * 75.0 + 1e-9
+
+
+def test_floor_trade_is_refused_when_it_would_breach_the_daily_cap():
+    """The guardrail is the operator's own 2% rule, not a separate invented ceiling."""
+    r = _size(day_start_balance=23.0, free_balance=23.0)
+    assert not r.approved
+    assert "left of today's" in r.reason
+
+
+def test_leverage_keeps_the_stop_clear_of_liquidation():
+    """A bucket whose liquidation sits near the stop must never be chosen."""
+    # A 2% stop needs liquidation >= 6% away, so 20x (5%) must be rejected outright.
+    assert pick_leverage(notional=1000.0, stop_pct=0.02, balance=10.0) is None
+    lev = pick_leverage(notional=100.0, stop_pct=0.02, balance=50.0)
+    assert lev in LEVERAGE_BUCKETS and (1.0 / lev) >= 0.02 * 3.0
 
 
 # --------------------------------------------------------------------------- stop clamping
@@ -99,7 +150,7 @@ def test_notional_is_capped_and_under_risks_rather_than_over_risks():
     """A tight stop wants a huge notional; the cap binds and the trade risks LESS than budget."""
     r = _size(requested_stop_price=PRICE * (1 - 0.004))
     assert r.approved
-    assert r.notional <= MAX_NOTIONAL_PCT * BALANCE + 1e-6
+    assert r.notional <= MAX_MARGIN_PCT * BALANCE + 1e-6
     assert r.risk_usd < r.risk_budget_usd  # capped -> under-risked, the safe direction
 
 
@@ -116,12 +167,25 @@ def test_rounding_is_down_never_up():
 
 
 # --------------------------------------------------------------------------- account floor
-def test_tiny_account_is_rejected_with_the_arithmetic_explained():
-    """The real constraint: BTCUSDT futures cannot trade below 0.001 BTC / 50 USDT."""
+def test_modest_account_reaches_the_floor_instead_of_being_locked_out():
+    """$100 cannot buy 0.001 BTC outright, but 2x margin fits and the risk stays inside the day.
+
+    This used to be a rejection. Leverage is what turned "cannot trade at all" into "can trade
+    the exchange minimum", which is the whole point of the bucket selection.
+    """
     r = _size(day_start_balance=100.0, free_balance=100.0)
+    assert r.approved, r.reason
+    assert r.min_size_forced is True
+    assert r.leverage == 2
+    assert r.margin_usd == pytest.approx(r.notional / 2)
+    assert r.risk_usd <= r.remaining_today_usd
+
+
+def test_account_too_small_even_for_leverage_is_refused_clearly():
+    """Below the point where a floor-sized loss fits the daily cap, no leverage can rescue it."""
+    r = _size(day_start_balance=23.0, free_balance=23.0)
     assert not r.approved
-    assert "below the exchange minimum" in r.reason
-    assert "fund the account" in r.reason
+    assert "smallest order this exchange accepts" in r.reason
 
 
 def test_short_sizing_mirrors_long():
