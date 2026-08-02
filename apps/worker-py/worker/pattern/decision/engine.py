@@ -16,7 +16,7 @@ Safety properties this module is responsible for:
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ...llm.service import LlmPurpose, LlmUnavailableError
 from ..features.state import FeatureState
@@ -78,6 +78,7 @@ class DecisionEngine:
         account: dict,
         bars_since_last_close: Optional[int] = None,
         failures: Optional[list[dict]] = None,
+        price_now: Optional[Callable[[], Optional[float]]] = None,
     ) -> dict:
         """Run one bar through the loop and return the recorded decision."""
         result = gate_mod.evaluate_gate(
@@ -92,8 +93,8 @@ class DecisionEngine:
 
         try:
             if result.kind == gate_mod.EXIT:
-                return await self._decide_exit(state, open_position, result)
-            return await self._decide_entry(state, account, result, failures or [])
+                return await self._decide_exit(state, open_position, result, price_now)
+            return await self._decide_entry(state, account, result, failures or [], price_now)
         except LlmUnavailableError as err:
             # Every model failed AND no fallback fits the schema. Refusing is the point.
             log.warning("LLM unavailable for %s — skipping the bar: %s", state.ticker_id, err)
@@ -104,7 +105,8 @@ class DecisionEngine:
 
     # ------------------------------------------------------------------ entry
     async def _decide_entry(
-        self, state: FeatureState, account: dict, result: gate_mod.GateResult, failures: list[dict]
+        self, state: FeatureState, account: dict, result: gate_mod.GateResult, failures: list[dict],
+        price_now: Optional[Callable[[], Optional[float]]] = None,
     ) -> dict:
         pack = state.to_state_pack()
         prompt = build_entry_prompt(pack, account, list(result.triggers), failures)
@@ -126,9 +128,21 @@ class DecisionEngine:
             return self._record(state, SKIPPED_BY_MODEL, gate=result,
                                 reason=decision.reasoning, llm=decision.model_dump(), response=response)
 
+        # --- Re-read the price BEFORE validating. The bar close was the live price when this
+        # decision started, but the LLM call above takes ~45s (measured), and everything below —
+        # the fillability check, the sizing, the paper fill — is about the price we would actually
+        # trade at, not the one that triggered the setup.
+        #
+        # This is what makes the "setup moved on" guard below able to fire at all. Passing
+        # state.close compared the bar close against an entry range the model built AROUND that
+        # same close, so the check could essentially never reject anything.
+        #
+        # Features deliberately keep using state.close: indicators must come from the closed bar.
+        entry_price = self._price_or(price_now, state.close, state.ticker_id)
+
         # --- Guardrails. Reject-only: the model's numbers are stored exactly as proposed.
         verdict = validate_entry(
-            decision, current_price=state.close, regime_label=state.regime["label"],
+            decision, current_price=entry_price, regime_label=state.regime["label"],
             min_rr=MIN_RISK_REWARD,
         )
         if not verdict.ok:
@@ -141,7 +155,7 @@ class DecisionEngine:
         atr_pct = (pack["indicators"].get("atrPct") or 0.0) / 100.0
         sizing = size_position(
             side=decision.side,
-            entry_price=state.close,
+            entry_price=entry_price,
             requested_stop_price=float(decision.stop_loss),
             atr_pct=atr_pct,
             day_start_balance=account["dayStartBalance"],
@@ -159,12 +173,12 @@ class DecisionEngine:
         # was approved on.
         target = float(decision.take_profit)
         if sizing.clamped:
-            ok, _, _ = validate_risk_reward(decision.side, state.close, sizing.stop_price, target, MIN_RISK_REWARD)
+            ok, _, _ = validate_risk_reward(decision.side, entry_price, sizing.stop_price, target, MIN_RISK_REWARD)
             if not ok:
-                target = take_profit_for(decision.side, state.close, sizing.stop_price, MIN_RISK_REWARD)
+                target = take_profit_for(decision.side, entry_price, sizing.stop_price, MIN_RISK_REWARD)
 
         exec_result = await self.execution.execute_trade_signal(
-            state.ticker_id, decision.side, state.close, None,
+            state.ticker_id, decision.side, entry_price, None,
             requested_quantity=sizing.quantity,
             requested_leverage=sizing.leverage,
         )
@@ -182,14 +196,14 @@ class DecisionEngine:
             try:
                 await self.store.set_protective_levels(
                     position_id, stop_loss=sizing.stop_price, take_profit=target,
-                    entry_price=state.close,
+                    entry_price=entry_price,
                 )
             except Exception:  # noqa: BLE001
                 # An unprotected position is the one failure here that must be loud. Flatten it
                 # rather than leave it open with no stop.
                 log.exception("Could not set protective levels on %s — closing it immediately.", position_id)
                 try:
-                    await self.execution.close_position(position_id, state.close)
+                    await self.execution.close_position(position_id, entry_price)
                 except Exception:  # noqa: BLE001
                     log.exception("Emergency close of unprotected position %s FAILED.", position_id)
                 return self._record(state, ERROR, gate=result,
@@ -199,7 +213,7 @@ class DecisionEngine:
 
         log.warning(
             "ENTRY %s %s qty=%s @ %.2f | stop %.2f (%.2f%%) target %.2f | risking %.2f of %.2f USD",
-            decision.side, state.ticker_id, sizing.quantity, state.close,
+            decision.side, state.ticker_id, sizing.quantity, entry_price,
             sizing.stop_price, sizing.stop_pct * 100, target, sizing.risk_usd, sizing.risk_budget_usd,
         )
         return self._record(
@@ -211,7 +225,8 @@ class DecisionEngine:
 
     # ------------------------------------------------------------------ exit
     async def _decide_exit(
-        self, state: FeatureState, position: dict, result: gate_mod.GateResult
+        self, state: FeatureState, position: dict, result: gate_mod.GateResult,
+        price_now: Optional[Callable[[], Optional[float]]] = None,
     ) -> dict:
         pack = state.to_state_pack()
         prompt = build_exit_prompt(pack, position, list(result.triggers))
@@ -237,14 +252,36 @@ class DecisionEngine:
                 await self.store.record_exit_reason(position["id"], f"AI: {decision.reasoning}")
             except Exception:  # noqa: BLE001 — annotation is not worth blocking the exit
                 log.warning("Could not record the exit reason", exc_info=True)
-        await self.execution.close_position(position["id"], state.close)
+        # Same reasoning as the entry path: close at the price we would really get, not the bar
+        # close from before the LLM call. The deterministic ladder already exits on live ticks —
+        # only this AI-driven exit was filling against a stale number.
+        exit_price = self._price_or(price_now, state.close, state.ticker_id)
+        await self.execution.close_position(position["id"], exit_price)
         log.warning("EXIT %s position %s @ %.2f: %s",
-                    position.get("side"), position["id"], state.close, decision.reasoning)
+                    position.get("side"), position["id"], exit_price, decision.reasoning)
         return self._record(state, EXIT_EXECUTED, gate=result, reason=decision.reasoning,
                             llm=decision.model_dump(), response=response,
                             position_id=position["id"])
 
     # ------------------------------------------------------------------ helpers
+    @staticmethod
+    def _price_or(price_now: Optional[Callable[[], Optional[float]]],
+                  fallback: float, ticker_id: str) -> float:
+        """The price we would actually trade at now, falling back to the bar close.
+
+        Never raises: a stale price still trades, whereas an exception here would lose the
+        decision entirely — the worse of the two failures.
+        """
+        if price_now is None:
+            return fallback
+        try:
+            live = price_now()
+        except Exception:  # noqa: BLE001
+            log.warning("Could not read the live price for %s; using the bar close",
+                        ticker_id, exc_info=True)
+            return fallback
+        return float(live) if live and live > 0 else fallback
+
     async def _log_cost(self, state: FeatureState, response: dict) -> None:
         try:
             await self.llm.log_cost(self.pool, state.ticker_id, None, LlmPurpose.LIVE_DECISION, response)

@@ -316,3 +316,74 @@ async def test_unavailable_llm_on_an_exit_holds_rather_than_closing():
 
     assert result["outcome"] == engine_mod.EXIT_HELD
     assert execution.closes == []
+
+
+# --------------------------------------------------------------------------- stale price
+async def test_entry_is_refused_when_price_left_the_range_during_the_llm_call():
+    """The 'setup moved on' guard must fire on the price at ORDER time, not the bar close.
+
+    Previously the engine passed state.close into the validator — the same number the model built
+    its entry range around — so the check compared a price against a range centred on itself and
+    could never reject. The measured ~45s LLM latency is exactly when price runs away.
+    """
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 0.99,
+                                     take_profit=PRICE * 1.02, reasoning="x"))
+    execution = FakeExecution()
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account(),
+        price_now=lambda: PRICE + 400,   # ran well past entry_max while the model was thinking
+    )
+
+    assert result["outcome"] == engine_mod.REJECTED
+    assert "moved on" in result["reason"]
+    assert execution.trades == [], "nothing may be sent once the setup has moved on"
+
+
+async def test_fill_uses_the_live_price_not_the_bar_close():
+    """A paper fill at the stale close flatters every result; fill where we would really trade."""
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 200,
+                                     entry_max=PRICE + 200, stop_loss=PRICE * 0.99,
+                                     take_profit=PRICE * 1.02, reasoning="x"))
+    execution = FakeExecution()
+    moved = PRICE + 120   # still inside the range, so the trade proceeds
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account(),
+        price_now=lambda: moved,
+    )
+
+    assert result["outcome"] == engine_mod.EXECUTED
+    assert execution.trades[0]["price"] == pytest.approx(moved)
+
+
+async def test_bar_close_is_used_when_no_live_price_is_available():
+    """A missing tick must not lose the decision — fall back, never raise."""
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 0.99,
+                                     take_profit=PRICE * 1.02, reasoning="x"))
+    execution = FakeExecution()
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account(),
+        price_now=lambda: None,
+    )
+
+    assert result["outcome"] == engine_mod.EXECUTED
+    assert execution.trades[0]["price"] == pytest.approx(PRICE)
+
+
+async def test_a_broken_price_source_still_trades_on_the_bar_close():
+    """An exception reading the price must degrade, not discard the decision."""
+    def boom():
+        raise RuntimeError("tick cache unavailable")
+
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 0.99,
+                                     take_profit=PRICE * 1.02, reasoning="x"))
+    execution = FakeExecution()
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account(),
+        price_now=boom,
+    )
+
+    assert result["outcome"] == engine_mod.EXECUTED
+    assert execution.trades[0]["price"] == pytest.approx(PRICE)

@@ -63,8 +63,14 @@ class PatternExecutor:
         # Latest ATR per ticker, refreshed on each candle close. The tick loop needs it to size
         # the trailing stop but must not recompute indicators 60 times a bar to get it.
         self._atr_by_ticker: dict[str, float] = {}
+        # Latest traded price per ticker, refreshed on every tick. The decision loop reads this
+        # AFTER the LLM answers: the bar close is ~45s stale by then, and the fill, the sizing and
+        # the fillability guard all care about the price we would actually get.
+        self._last_price: dict[str, float] = {}
 
     async def on_tick(self, ticker_id: str, close: float) -> None:
+        if close and close > 0:
+            self._last_price[ticker_id] = float(close)
         # Mark first, then run the ladder. Deliberately NOT calling execution.enforce_hard_exits:
         # those are the provider-level percentage caps the strategy brain relies on, and running
         # both would mean two exit systems acting on one position.
@@ -124,6 +130,8 @@ class PatternExecutor:
     async def on_final_candle(self, ticker_id: str, close: float) -> None:
         """Evaluate features when a new COMPLETE bar of the decision interval has closed, then
         put that bar through the decision loop."""
+        if close and close > 0:
+            self._last_price[ticker_id] = float(close)
         state = await self.evaluate(ticker_id)
         if state is None:
             return
@@ -176,6 +184,7 @@ class PatternExecutor:
 
         decision = await self.decisions.decide(
             state, open_position=open_position, account=account, failures=failures,
+            price_now=lambda: self._last_price.get(state.ticker_id),
         )
         await self._persist(decision)
 
