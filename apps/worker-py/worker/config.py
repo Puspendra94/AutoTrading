@@ -45,9 +45,19 @@ class Config:
     # fapi, not api: the futures REST host. Note the PATH also differs (/fapi/v1 vs /api/v3), so
     # this host is only interchangeable with a client that knows it is talking to futures.
     binance_api_base: str = os.getenv("BINANCE_API_BASE", "https://fapi.binance.com")
-    # Live kline WebSocket (public, unauthenticated). fstream is the futures counterpart of
-    # stream.binance.com and takes the same /stream?streams=<symbol>@kline_<interval> form.
-    binance_ws_base: str = os.getenv("BINANCE_WS_BASE", "wss://fstream.binance.com")
+    # Live kline WebSocket (public, unauthenticated).
+    #
+    # The `/market` segment is REQUIRED and is not decoration. Binance's 2026-03-06 futures
+    # WebSocket upgrade split the endpoint into three routed paths — /public (high-frequency
+    # data), /market (regular market data, which is where klines live) and /private (user data)
+    # — and retired the legacy wss://fstream.binance.com/ws and /stream on 2026-04-23.
+    #
+    # The failure mode is vicious: the legacy URL still completes the TLS handshake, still
+    # returns a valid 101 upgrade, and still ACKs a SUBSCRIBE with {"result":null} — it simply
+    # never pushes a frame. Nothing errors, nothing reconnects, and the engine just stops being
+    # driven. Verified directly: /market/stream and /market/ws deliver klines; the bare /stream
+    # and /public/stream do not.
+    binance_ws_base: str = os.getenv("BINANCE_WS_BASE", "wss://fstream.binance.com/market")
     # Master switch for the live-ingestion pipeline. Keep this OFF while the backend still
     # streams in-process (LIVE_STREAM_SOURCE=internal) so the same candle isn't ingested
     # twice; flip both together at cutover (worker on, backend -> redis).

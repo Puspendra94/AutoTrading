@@ -79,7 +79,10 @@ services:
       # orders are placed on: a stale app .env still carrying the spot endpoints would silently
       # feed the strategy prices from a different instrument than it trades. Defaults are futures;
       # override in the root .env only if you genuinely mean to change venue.
-      BINANCE_WS_BASE: ${BINANCE_WS_BASE:-wss://fstream.binance.com}
+      # /market is required — klines moved there in Binance's 2026-03-06 futures WS split, and
+      # the legacy /stream was retired on 2026-04-23. The old URL still connects and ACKs the
+      # subscribe, then silently never sends a frame.
+      BINANCE_WS_BASE: ${BINANCE_WS_BASE:-wss://fstream.binance.com/market}
       BINANCE_API_BASE: ${BINANCE_API_BASE:-https://fapi.binance.com}
       BINANCE_VISION_BASE: ${BINANCE_VISION_BASE:-https://data.binance.vision}
       # The USD-M futures archive starts here; 2019-12 and earlier return 404.
