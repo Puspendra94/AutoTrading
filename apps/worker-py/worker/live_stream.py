@@ -55,15 +55,26 @@ async def _upsert_final_candle(ticker_id: str, k: dict) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO ohlcv_data (ticker_id, timestamp, open, high, low, close, volume)
-            VALUES ($1, to_timestamp($2 / 1000.0), $3, $4, $5, $6, $7)
+            INSERT INTO ohlcv_data (ticker_id, timestamp, open, high, low, close, volume,
+                                    quote_volume, trades, taker_buy_base, taker_buy_quote)
+            VALUES ($1, to_timestamp($2 / 1000.0), $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (ticker_id, timestamp) DO UPDATE
               SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                  close = EXCLUDED.close, volume = EXCLUDED.volume
+                  close = EXCLUDED.close, volume = EXCLUDED.volume,
+                  quote_volume = EXCLUDED.quote_volume, trades = EXCLUDED.trades,
+                  taker_buy_base = EXCLUDED.taker_buy_base,
+                  taker_buy_quote = EXCLUDED.taker_buy_quote
             """,
             ticker_id,
             int(k["t"]),
             float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["v"]),
+            # The websocket kline carries the same flow fields as the archive CSV, under single
+            # letters: q = quote volume, n = trade count, V = taker buy base, Q = taker buy quote.
+            # Written here as well as in the backfill so a live bar and a historical bar of the
+            # same minute are indistinguishable — otherwise every feature built on flow would
+            # silently stop working at the point history ends and live data begins.
+            float(k.get("q") or 0.0), int(k.get("n") or 0),
+            float(k.get("V") or 0.0), float(k.get("Q") or 0.0),
         )
 
 

@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import json
 import logging
 import math
@@ -89,6 +90,9 @@ def bucket_ms(interval: str) -> int:
     return n * {"m": 60, "h": 3600, "d": 86400, "w": 604800}[unit] * 1000
 
 
+_FLOW_FIELDS = ("quote_volume", "trades", "taker_buy_base", "taker_buy_quote")
+
+
 def rollup(bars_1m: list[dict], interval: str) -> list[dict]:
     """Aggregate 1m bars into `interval` bars.
 
@@ -108,12 +112,21 @@ def rollup(bars_1m: list[dict], interval: str) -> list[dict]:
                 out.append(cur)
             cur = {"timestamp": key, "open": b["open"], "high": b["high"],
                    "low": b["low"], "close": b["close"], "volume": b["volume"]}
+            for fld in _FLOW_FIELDS:
+                cur[fld] = b.get(fld)
             cur_key = key
         else:
             cur["high"] = max(cur["high"], b["high"])
             cur["low"] = min(cur["low"], b["low"])
             cur["close"] = b["close"]
             cur["volume"] += b["volume"]
+            # Additive, so they sum like volume. Summing the components and dividing at the end
+            # is not the same as averaging per-minute ratios — the latter would weight a thin
+            # minute the same as a heavy one. A None anywhere in the bucket poisons the whole
+            # bar rather than being treated as zero.
+            for fld in _FLOW_FIELDS:
+                a, b_val = cur.get(fld), b.get(fld)
+                cur[fld] = None if (a is None or b_val is None) else a + b_val
     if cur is not None:
         # Keep the last bucket only if the 1m data actually covers it to the end.
         if bars_1m[-1]["timestamp"] >= cur_key + step - MINUTE_MS:
@@ -121,24 +134,47 @@ def rollup(bars_1m: list[dict], interval: str) -> list[dict]:
     return out
 
 
+def _opt(v):
+    """Numeric or None — never a substituted zero. See the note in the flow-columns migration."""
+    return None if v is None else float(v)
+
+
 async def load_1m(symbol: str, start: datetime, end: datetime) -> list[dict]:
     """Every stored 1m bar in [start, end), as plain dicts with int-ms timestamps."""
     from ..db import get_pool
 
     pool = await get_pool()
+    out: list[dict] = []
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT o.timestamp, o.open, o.high, o.low, o.close, o.volume
-            FROM ohlcv_data o JOIN tickers t ON t.id = o.ticker_id
-            WHERE t.symbol = $1 AND o.timestamp >= $2 AND o.timestamp < $3
-            ORDER BY o.timestamp ASC
-            """,
-            symbol, start, end,
-        )
-    return [{"timestamp": int(r["timestamp"].timestamp() * 1000), "open": float(r["open"]),
-             "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"]),
-             "volume": float(r["volume"])} for r in rows]
+        # STREAMED through a server-side cursor, not conn.fetch(). fetch() buffers every Record
+        # in memory and the comprehension over it then builds a second full copy — at six years
+        # of 1m bars (~3.2M rows) that peak is a couple of gigabytes and the process is OOM-killed
+        # mid-load, which looks exactly like a silent crash. A cursor holds one chunk at a time,
+        # so peak memory is the output list alone.
+        async with conn.transaction():
+            async for r in conn.cursor(
+                """
+                SELECT o.timestamp, o.open, o.high, o.low, o.close, o.volume,
+                       o.quote_volume, o.trades, o.taker_buy_base, o.taker_buy_quote
+                FROM ohlcv_data o JOIN tickers t ON t.id = o.ticker_id
+                WHERE t.symbol = $1 AND o.timestamp >= $2 AND o.timestamp < $3
+                ORDER BY o.timestamp ASC
+                """,
+                symbol, start, end, prefetch=50_000,
+            ):
+                out.append({
+                    "timestamp": int(r["timestamp"].timestamp() * 1000), "open": float(r["open"]),
+                    "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"]),
+                    "volume": float(r["volume"]),
+                    # None, not 0.0, when the row predates the flow columns. A zero
+                    # taker_buy_base would read as 100% aggressive selling — a strong signal,
+                    # entirely fabricated.
+                    "quote_volume": _opt(r["quote_volume"]),
+                    "trades": _opt(r["trades"]),
+                    "taker_buy_base": _opt(r["taker_buy_base"]),
+                    "taker_buy_quote": _opt(r["taker_buy_quote"]),
+                })
+    return out
 
 
 # --------------------------------------------------------------------------- ladder
@@ -345,7 +381,10 @@ def replay(
     candle_limit = candle_limit or config.pattern_candle_limit
     bars = rollup(bars_1m, interval)
     step = bucket_ms(interval)
-    index_1m = {b["timestamp"]: i for i, b in enumerate(bars_1m)}
+    # A sorted timestamp array + bisect, NOT a {timestamp: index} dict. At six years of 1m bars
+    # that dict is 3.2M entries and a few hundred MB of pure lookup overhead, for a lookup that a
+    # binary search over an array the caller already needs does just as well.
+    times_1m = [b["timestamp"] for b in bars_1m]
 
     result = ReplayResult(
         symbol=symbol, interval=interval, mode=mode,
@@ -369,13 +408,13 @@ def replay(
     rng = random.Random(seed)
     for i, ctx, trig in approved:
         result.observations.append(
-            _measure(bars, bars_1m, index_1m, atr_by_bar, i, ctx, trig["side"], trig["name"],
+            _measure(bars, bars_1m, times_1m, atr_by_bar, i, ctx, trig["side"], trig["name"],
                      "signal", interval, step))
         if mode == "signals":
             # The same bar taken the OTHER way. A trigger with a real edge should beat its own
             # inverse; one that does not is telling you the bar, not the direction, was selected.
             result.observations.append(
-                _measure(bars, bars_1m, index_1m, atr_by_bar, i, ctx, _flip(trig["side"]),
+                _measure(bars, bars_1m, times_1m, atr_by_bar, i, ctx, _flip(trig["side"]),
                          trig["name"], "inverse", interval, step))
 
     # --- Pass 3: a random-bar, random-side baseline. Without it there is nothing to say whether
@@ -386,7 +425,7 @@ def replay(
             atr_pct = atr_by_bar[i] / bars[i]["close"]
             ctx = {"regime": "n/a", "adx": float("nan"), "atr_pct": atr_pct, "close": bars[i]["close"]}
             result.observations.append(
-                _measure(bars, bars_1m, index_1m, atr_by_bar, i, ctx, rng.choice([LONG, SHORT]),
+                _measure(bars, bars_1m, times_1m, atr_by_bar, i, ctx, rng.choice([LONG, SHORT]),
                          "random", "random", interval, step))
     return result
 
@@ -408,7 +447,13 @@ def _skip_key(reason: str) -> str:
     return _SKIP_NUMBERS.sub("#", reason).split("(")[0].strip()[:60] or "no reason given"
 
 
-def _measure(bars, bars_1m, index_1m, atr_by_bar, i, ctx, side, trigger, cohort, interval, step,
+def _index_at(times_1m: list[int], ms: int) -> Optional[int]:
+    """Position of the 1m bar opening exactly at `ms`, or None. Binary search over sorted times."""
+    k = bisect.bisect_left(times_1m, ms)
+    return k if k < len(times_1m) and times_1m[k] == ms else None
+
+
+def _measure(bars, bars_1m, times_1m, atr_by_bar, i, ctx, side, trigger, cohort, interval, step,
              levels: Optional[tuple[float, float]] = None) -> Observation:
     close = ctx["close"]
     obs = Observation(
@@ -423,7 +468,7 @@ def _measure(bars, bars_1m, index_1m, atr_by_bar, i, ctx, side, trigger, cohort,
 
     # The ladder starts on the bar AFTER the decision bar closes.
     entry_ms = bars[i]["timestamp"] + step
-    start = index_1m.get(entry_ms)
+    start = _index_at(times_1m, entry_ms)
     if start is None:
         return obs
     # `levels` lets a caller substitute a stop/target the MODEL chose. Left None everywhere in the

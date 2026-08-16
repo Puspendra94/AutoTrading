@@ -132,7 +132,15 @@ async def _fetch_zip_rows(client: httpx.AsyncClient, url: str) -> list[tuple] | 
             for r in reader:
                 if not r or r[0] in ("open_time", "openTime"):  # some files carry a header
                     continue
-                rows.append((_to_utc(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])))
+                # Every field Binance publishes, not just OHLCV. Columns 7-10 (quote volume,
+                # trade count, taker-buy base/quote) were downloaded and discarded on every
+                # backfill; taker_buy_base in particular is order-flow imbalance, which is the
+                # one input here that is not another function of price. Column 6 is close_time
+                # (derivable from open_time + interval) and 11 is Binance's unused "ignore".
+                rows.append((
+                    _to_utc(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]),
+                    float(r[7]), int(float(r[8])), float(r[9]), float(r[10]),
+                ))
     return rows
 
 
@@ -147,13 +155,26 @@ async def _insert_rows(ticker_id: str, rows: list[tuple]) -> int:
         # until the COPY + INSERT complete, then is cleaned up on commit.
         async with conn.transaction():
             await conn.execute(
-                "CREATE TEMP TABLE _stage (ts timestamptz, o numeric, h numeric, l numeric, c numeric, v numeric) ON COMMIT DROP"
+                "CREATE TEMP TABLE _stage (ts timestamptz, o numeric, h numeric, l numeric, "
+                "c numeric, v numeric, qv numeric, n integer, tbb numeric, tbq numeric) ON COMMIT DROP"
             )
-            await conn.copy_records_to_table("_stage", records=rows, columns=["ts", "o", "h", "l", "c", "v"])
+            await conn.copy_records_to_table(
+                "_stage", records=rows,
+                columns=["ts", "o", "h", "l", "c", "v", "qv", "n", "tbb", "tbq"],
+            )
+            # DO UPDATE, not DO NOTHING, for the flow columns specifically: the 3.6M rows already
+            # stored predate them and carry NULL. DO NOTHING would skip those rows forever, so a
+            # re-backfill could never populate the history — the one thing this change exists to
+            # make possible. Price/volume are left alone, since a stored bar is already correct.
             result = await conn.execute(
-                """INSERT INTO ohlcv_data (ticker_id, timestamp, open, high, low, close, volume)
-                   SELECT $1, ts, o, h, l, c, v FROM _stage
-                   ON CONFLICT (ticker_id, timestamp) DO NOTHING""",
+                """INSERT INTO ohlcv_data (ticker_id, timestamp, open, high, low, close, volume,
+                                           quote_volume, trades, taker_buy_base, taker_buy_quote)
+                   SELECT $1, ts, o, h, l, c, v, qv, n, tbb, tbq FROM _stage
+                   ON CONFLICT (ticker_id, timestamp) DO UPDATE
+                     SET quote_volume    = COALESCE(EXCLUDED.quote_volume, ohlcv_data.quote_volume),
+                         trades          = COALESCE(EXCLUDED.trades, ohlcv_data.trades),
+                         taker_buy_base  = COALESCE(EXCLUDED.taker_buy_base, ohlcv_data.taker_buy_base),
+                         taker_buy_quote = COALESCE(EXCLUDED.taker_buy_quote, ohlcv_data.taker_buy_quote)""",
                 ticker_id,
             )
     # result like "INSERT 0 <n>"
@@ -163,9 +184,16 @@ async def _insert_rows(ticker_id: str, rows: list[tuple]) -> int:
         return 0
 
 
-async def backfill_symbol_interval(symbol: str, interval: str) -> dict:
+async def backfill_symbol_interval(symbol: str, interval: str, *, from_start: bool = False) -> dict:
     """Backfill one symbol/interval's full history. Monthly zips cover everything up to
-    last month; the current month is filled from daily zips."""
+    last month; the current month is filled from daily zips.
+
+    `from_start=True` ignores the resume point and re-imports everything from
+    `config.backfill_start`. Needed after a schema change that adds a column: the normal resume
+    logic starts at the newest stored month, so rows already present would keep their NULLs
+    forever. The upsert only fills columns that are NULL, so a full re-run is idempotent for
+    price and additive for anything new.
+    """
     ticker_id = await resolve_ticker_id(symbol, interval)
     if not ticker_id:
         return {"symbol": symbol, "interval": interval, "skipped": True, "reason": "no ticker/provider"}
@@ -174,7 +202,7 @@ async def backfill_symbol_interval(symbol: str, interval: str) -> dict:
 
     # Resume from the last stored month (re-importing that month is cheap and idempotent,
     # and covers any candles that landed after the previous run stopped mid-month).
-    resume = await _last_stored_month(ticker_id)
+    resume = None if from_start else await _last_stored_month(ticker_id)
     start = f"{resume[0]:04d}-{resume[1]:02d}" if resume else config.backfill_start
 
     inserted = 0

@@ -35,14 +35,24 @@ async def get_candles(ticker_id: str, interval: str = "1m", limit: int = 500) ->
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
-            SELECT bucket AS timestamp, open, high, low, close, volume FROM (
+            SELECT bucket AS timestamp, open, high, low, close, volume,
+                   quote_volume, trades, taker_buy_base, taker_buy_quote FROM (
               SELECT
                 time_bucket(INTERVAL '{bucket}', timestamp) AS bucket,
                 first(open, timestamp)  AS open,
                 max(high)               AS high,
                 min(low)                AS low,
                 last(close, timestamp)  AS close,
-                sum(volume)             AS volume
+                sum(volume)             AS volume,
+                -- Flow columns are additive, so they roll up by SUM like volume. taker_buy_base
+                -- summed over the bucket, divided by the bucket's volume, is the imbalance for
+                -- the aggregated bar — which is why these have to be carried through the roll-up
+                -- rather than computed per-minute and averaged (an average of ratios is not the
+                -- ratio of the sums, and would quietly weight a thin minute like a heavy one).
+                sum(quote_volume)       AS quote_volume,
+                sum(trades)             AS trades,
+                sum(taker_buy_base)     AS taker_buy_base,
+                sum(taker_buy_quote)    AS taker_buy_quote
               FROM ohlcv_data
               WHERE ticker_id = $1
               GROUP BY bucket

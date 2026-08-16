@@ -238,8 +238,8 @@ def test_forward_returns_are_signed_by_the_traded_side():
     bars = [{"timestamp": k * step, "close": 100.0 - k, "open": 100.0, "high": 100.0,
              "low": 100.0, "volume": 1.0} for k in range(200)]
     ctx = {"regime": "downtrend", "adx": 30.0, "atr_pct": 0.01, "close": bars[10]["close"]}
-    short = _measure(bars, [], {}, [0.0] * 200, 10, ctx, SHORT, "t", "signal", "15m", step)
-    long_ = _measure(bars, [], {}, [0.0] * 200, 10, ctx, LONG, "t", "signal", "15m", step)
+    short = _measure(bars, [], [], [0.0] * 200, 10, ctx, SHORT, "t", "signal", "15m", step)
+    long_ = _measure(bars, [], [], [0.0] * 200, 10, ctx, LONG, "t", "signal", "15m", step)
     assert short.forward[FORWARD_HORIZONS[0]] > 0
     assert long_.forward[FORWARD_HORIZONS[0]] < 0
 
@@ -332,3 +332,41 @@ def test_verdict_separates_profitability_from_directional_edge():
     text = _verdict(sig, inv, _stats(mean=-0.5))
     assert "Real directional edge" in text
     assert "smaller than the fees" in text
+
+
+def test_index_at_finds_exact_bar_or_nothing():
+    """Bisect replaced a {timestamp: index} dict that cost hundreds of MB at six years of 1m
+    bars. It must behave identically: an exact hit or None, never a nearest-neighbour match."""
+    from worker.pattern.replay import _index_at
+    times = [0, MIN, 2 * MIN, 5 * MIN]
+    assert _index_at(times, 0) == 0
+    assert _index_at(times, 2 * MIN) == 2
+    assert _index_at(times, 5 * MIN) == 3
+    assert _index_at(times, 3 * MIN) is None      # gap — must not snap to a neighbour
+    assert _index_at(times, 99 * MIN) is None     # past the end
+    assert _index_at([], 0) is None
+
+
+def test_rollup_carries_and_sums_the_flow_columns():
+    """The flow columns have to survive aggregation or every feature built on them is NaN above
+    1m — which is every timeframe the system actually trades."""
+    raw = [{"timestamp": i * MIN, "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5.0,
+            "quote_volume": 50.0, "trades": 3, "taker_buy_base": 2.0, "taker_buy_quote": 20.0}
+           for i in range(3)]
+    [bar] = rollup(raw, "3m")
+    assert bar["volume"] == 15.0
+    assert bar["taker_buy_base"] == 6.0        # summed, not averaged
+    assert bar["trades"] == 9
+    assert bar["quote_volume"] == 150.0
+
+
+def test_a_missing_flow_value_poisons_the_bucket_rather_than_counting_as_zero():
+    """A bucket straddling the point where history ends must not report partial flow as if it
+    were the whole bar's — that would understate buy share and invent a selling signal."""
+    raw = [{"timestamp": i * MIN, "open": 10, "high": 11, "low": 9, "close": 10, "volume": 5.0,
+            "quote_volume": None, "trades": None,
+            "taker_buy_base": (2.0 if i == 0 else None), "taker_buy_quote": None}
+           for i in range(3)]
+    [bar] = rollup(raw, "3m")
+    assert bar["taker_buy_base"] is None
+    assert bar["volume"] == 15.0               # price/volume still aggregate normally
