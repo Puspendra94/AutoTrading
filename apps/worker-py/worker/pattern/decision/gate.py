@@ -7,8 +7,8 @@ it, most bars resolve for free and DeepSeek is only asked where something actual
 The rules, in the operator's own terms:
 
   * Flat, no trigger        -> no call. Nothing to decide.
-  * Flat, trigger fired     -> call, provided the regime permits that side and we are not in a
-                               post-trade cooldown.
+  * Flat, trigger fired     -> call, unless we are in a post-trade cooldown or the trend is
+                               already extended (ADX >= 40), which is refused outright.
   * In position, aligned    -> no call. A bullish break while already long tells us nothing.
   * In position, conflicted -> call. A regime flip or reversal pattern against an open position
                                is exactly the moment worth paying for.
@@ -18,12 +18,11 @@ out is as important as knowing why it entered — a gate that is too tight is in
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
-from ..features.regime import (
-    BEARISH_REGIMES, BULLISH_REGIMES, STRONG_DOWNTREND, STRONG_UPTREND,
-)
+from ..features.regime import ADX_STRONG, BEARISH_REGIMES, BULLISH_REGIMES
 
 # Bars to wait after a position closes before entering again on the same ticker. Stops the
 # system re-entering the same failed setup on the very next bar.
@@ -129,25 +128,33 @@ def evaluate_gate(
     if not directional:
         return GateResult(False, "", "No directional trigger on this bar.")
 
-    # The one deterministic refusal kept: do not fade a STRONG trend. A weak trend or a range is
-    # a judgement call and goes to the model; standing in front of a strong one is not.
-    allowed = [t for t in directional if not _fights_strong_trend(t, regime_label)]
-    if not allowed:
+    # The one deterministic refusal: no NEW ENTRY while the trend is extended, in either
+    # direction. Fading a strong trend was always refused; joining one is now refused too.
+    #
+    # The first paper week is unambiguous about why. Five entries were taken with ADX 43-51, every
+    # one of them ALIGNED with the trend (the fade was already blocked), and all five stopped out
+    # for -137.41 — 54% of the total loss from 13% of the trades. Entering a move that is already
+    # this extended means buying near its exhaustion point, where the first ordinary pullback takes
+    # out the stop. Both sides of a strong trend are refused because both were losing bets: fading
+    # it stands in front of the move, joining it arrives too late.
+    #
+    # This is checked on ADX directly rather than on the regime label. `strong_uptrend` also
+    # requires an aligned EMA stack and slope, so a high-ADX bar with a mixed stack is labelled
+    # `range` and would otherwise slip through the exact filter it should be caught by.
+    #
+    # Note this gates ENTRIES only. An open position is handled far above, and must always be able
+    # to reach the model for an exit no matter what ADX is doing.
+    adx = state.regime.get("adx")
+    if adx is not None and not math.isnan(adx) and adx >= ADX_STRONG:
         return GateResult(
             False, "",
-            f"Every trigger fades a {regime_label} — not standing in front of a strong trend.",
+            f"ADX {adx:.1f} — the trend is already extended (>= {ADX_STRONG:.0f}); "
+            "not opening into it or against it.",
         )
 
     return GateResult(
         True, ENTRY,
-        f"{regime_label} with {len(allowed)} directional trigger(s): "
-        + ", ".join(t["name"] for t in allowed),
-        tuple(allowed),
-    )
-
-
-def _fights_strong_trend(trigger: dict, regime_label: str) -> bool:
-    return (
-        (trigger["side"] == LONG and regime_label == STRONG_DOWNTREND)
-        or (trigger["side"] == SHORT and regime_label == STRONG_UPTREND)
+        f"{regime_label} with {len(directional)} directional trigger(s): "
+        + ", ".join(t["name"] for t in directional),
+        tuple(directional),
     )

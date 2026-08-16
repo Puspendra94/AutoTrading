@@ -76,12 +76,37 @@ def test_trigger_against_a_weak_trend_still_reaches_the_model():
     assert evaluate_gate(state, None).should_call
 
 
-def test_fading_a_strong_trend_is_refused_before_paying():
-    """The one deterministic refusal kept: do not stand in front of a strong trend."""
+def test_fading_an_extended_trend_is_refused_before_paying():
+    """The deterministic refusal: do not stand in front of a trend that is already extended."""
     state = FakeState(regime={"label": "strong_uptrend", "adx": 45.0, "emaStack": "20>50>200"},
                       triggers=[trigger(side="short")], bias="long")
     r = evaluate_gate(state, None)
-    assert not r.should_call and "strong trend" in r.reason
+    assert not r.should_call and "extended" in r.reason
+
+
+def test_joining_an_extended_trend_is_refused_too():
+    """The costly half of the first paper week: five ALIGNED entries at ADX 43-51, all five
+    stopped out, -137.41 between them. Arriving late to a move is as bad as fighting it."""
+    state = FakeState(regime={"label": "strong_uptrend", "adx": 45.0, "emaStack": "20>50>200"},
+                      triggers=[trigger(side="long")], bias="long")
+    r = evaluate_gate(state, None)
+    assert not r.should_call and "extended" in r.reason
+
+
+def test_high_adx_without_an_aligned_stack_is_refused_as_well():
+    """Checked on ADX, not on the label: a high-ADX bar with a mixed EMA stack is labelled
+    'range' and would otherwise walk straight through the filter meant to catch it."""
+    state = FakeState(regime={"label": "range", "adx": 44.0, "emaStack": "mixed"},
+                      triggers=[trigger(side="long")])
+    assert not evaluate_gate(state, None).should_call
+
+
+def test_an_extended_trend_never_blocks_an_EXIT():
+    """Entries only. A position already open must always be able to reach the model."""
+    state = FakeState(regime={"label": "strong_uptrend", "adx": 48.0, "emaStack": "20>50>200"},
+                      triggers=[trigger(side="long", name="regime_flip")])
+    r = evaluate_gate(state, {"side": "short", "lifecycle": "open"})
+    assert r.should_call and r.kind == "exit"
 
 
 def test_cooldown_blocks_immediate_re_entry():
@@ -138,6 +163,7 @@ class FakeLlm:
 class FakeExecution:
     def __init__(self):
         self.trades, self.closes = [], []
+        self.synced_stops = []
 
     async def execute_trade_signal(self, ticker_id, side, price, strategy_id,
                                    requested_quantity=None, requested_leverage=1):
@@ -148,6 +174,28 @@ class FakeExecution:
     async def close_position(self, position_id, price):
         self.closes.append((position_id, price))
         return {"positionId": position_id, "realizedPl": 0}
+
+    async def sync_protective_stop(self, position_id, stop_price):
+        self.synced_stops.append((position_id, stop_price))
+        return None
+
+
+class FakeProtectiveStore:
+    """Minimal store for the entry path's protective-levels + exchange-stop wiring."""
+
+    def __init__(self, raises=False):
+        self.levels, self.raises = [], raises
+
+    async def set_protective_levels(self, position_id, *, stop_loss, take_profit, entry_price):
+        if self.raises:
+            raise RuntimeError("db down")
+        self.levels.append({"id": position_id, "stop": stop_loss, "target": take_profit})
+
+    async def save_decision(self, *a, **kw):
+        return None
+
+    async def recent_failures(self, *a, **kw):
+        return []
 
 
 def _account(**kw):
@@ -196,21 +244,33 @@ async def test_model_skip_is_recorded_and_places_nothing():
     assert execution.trades == []
 
 
-async def test_fading_a_strong_trend_is_rejected_not_repaired():
+async def test_a_bad_proposal_is_rejected_not_repaired():
     """The validator may only reject. The model's original numbers stay in the log unmodified —
     repairing them would put a trade nobody proposed into the audit trail."""
+    # Take-profit on the wrong side of entry for a short: reward:risk cannot be met.
     llm = FakeLlm(data=EntryDecision(action="ENTRY", side="short", entry_min=PRICE - 50,
                                      entry_max=PRICE + 50, stop_loss=PRICE * 1.01,
-                                     take_profit=PRICE * 0.98, reasoning="fade it"))
+                                     take_profit=PRICE * 1.02, reasoning="fade it"))
     execution = FakeExecution()
-    state = FakeState(regime={"label": "strong_uptrend", "adx": 45.0, "emaStack": "20>50>200"},
-                      triggers=[trigger()])
-    result = await _engine(llm, execution).decide(state, open_position=None, account=_account())
+    result = await _engine(llm, execution).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account())
 
     assert result["outcome"] == engine_mod.REJECTED
-    assert "strong trend" in result["reason"]
     assert execution.trades == []
-    assert result["llmDecision"]["side"] == "short"  # stored as proposed, unrepaired
+    assert result["llmDecision"]["takeProfit" if "takeProfit" in result["llmDecision"] else "take_profit"] \
+        == pytest.approx(PRICE * 1.02)  # stored as proposed, unrepaired
+
+
+async def test_the_validator_still_refuses_a_fade_as_defence_in_depth():
+    """The gate now stops every entry at ADX >= 40, so this validator rule is unreachable through
+    the normal path — it stays as a second line, and is tested directly rather than deleted."""
+    from worker.pattern.decision.validator import validate_entry
+
+    decision = EntryDecision(action="ENTRY", side="short", entry_min=PRICE - 50,
+                             entry_max=PRICE + 50, stop_loss=PRICE * 1.01,
+                             take_profit=PRICE * 0.97, reasoning="fade it")
+    verdict = validate_entry(decision, current_price=PRICE, regime_label="strong_uptrend")
+    assert not verdict.ok and "strong trend" in verdict.reason
 
 
 async def test_short_in_a_weak_uptrend_is_allowed_through():
@@ -224,6 +284,37 @@ async def test_short_in_a_weak_uptrend_is_allowed_through():
 
     assert result["outcome"] == engine_mod.EXECUTED
     assert execution.trades[0]["side"] == "short"
+
+
+async def test_a_new_entry_rests_its_stop_on_the_exchange():
+    """The stop must survive this process dying, so it is handed to the exchange as well as the
+    DB row. A no-op in paper mode, but the call has to be made for live mode to ever work."""
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 0.985,
+                                     take_profit=PRICE * 1.04, reasoning="support holds"))
+    execution, store = FakeExecution(), FakeProtectiveStore()
+    engine = DecisionEngine(llm, execution, store=store, pool=None)
+    result = await engine.decide(FakeState(triggers=[trigger()]), open_position=None, account=_account())
+
+    assert result["outcome"] == engine_mod.EXECUTED
+    assert len(store.levels) == 1
+    # The SIZED stop, not the model's proposal — those differ whenever the floor clamps it.
+    assert execution.synced_stops == [("new-pos", store.levels[0]["stop"])]
+
+
+async def test_no_exchange_stop_is_placed_for_a_position_that_was_just_flattened():
+    """If the levels cannot be written the position is closed; nothing should then rest a stop
+    against a position that no longer exists."""
+    llm = FakeLlm(data=EntryDecision(action="ENTRY", side="long", entry_min=PRICE - 50,
+                                     entry_max=PRICE + 50, stop_loss=PRICE * 0.985,
+                                     take_profit=PRICE * 1.04, reasoning="support holds"))
+    execution, store = FakeExecution(), FakeProtectiveStore(raises=True)
+    result = await DecisionEngine(llm, execution, store=store, pool=None).decide(
+        FakeState(triggers=[trigger()]), open_position=None, account=_account())
+
+    assert result["outcome"] == engine_mod.ERROR
+    assert execution.closes == [("new-pos", PRICE)]
+    assert execution.synced_stops == []
 
 
 async def test_valid_entry_executes_with_a_deterministically_sized_quantity():
