@@ -10,7 +10,7 @@ import pytest
 from worker.exchange_info import SymbolFilters
 from worker.pattern.decision.schemas import EntryDecision
 from worker.pattern.decision.sizing import (
-    DAILY_RISK_PCT, LEVERAGE_BUCKETS, MAX_MARGIN_PCT, MAX_STOP_PCT, MIN_STOP_PCT,
+    DAILY_RISK_PCT, LEVERAGE_BUCKETS, MAX_MARGIN_PCT, MAX_STOP_PCT, MIN_STOP_ATR, MIN_STOP_PCT,
     RISK_FRACTION_OF_REMAINING, clamp_stop_pct, pick_leverage, size_position,
     take_profit_for, validate_risk_reward,
 )
@@ -128,8 +128,29 @@ def test_hair_tight_stop_is_floored_rather_than_exploding_the_position():
     r = _size(requested_stop_price=PRICE - 10)
     assert r.approved
     assert r.stop_pct >= MIN_STOP_PCT
-    assert r.stop_pct >= 0.5 * ATR_PCT  # at least half an ATR
+    assert r.stop_pct >= MIN_STOP_ATR * ATR_PCT  # and outside the noise band, not just inside policy
     assert r.clamped is True
+
+
+def test_the_volatility_floor_actually_binds():
+    """The regression the first paper week exposed.
+
+    At MIN_STOP_ATR=0.5 this floor was unreachable — 0.5 ATR was always smaller than the fixed
+    0.3% floor, so stop placement had no relationship to volatility at all and every stop landed
+    around 2 ATR, inside one bar's normal range. The ATR term must be the binding one.
+    """
+    r = _size(requested_stop_price=PRICE * (1 - 0.004))  # 0.4%: above MIN_STOP_PCT, ~1.1 ATR
+    assert r.clamped is True
+    assert r.stop_pct == pytest.approx(MIN_STOP_ATR * ATR_PCT)
+    assert r.stop_pct > MIN_STOP_PCT
+
+
+def test_a_wider_stop_shrinks_the_position_rather_than_the_risk():
+    """Why widening the floor is free: dollars risked are unchanged, size absorbs it."""
+    tight = _size(requested_stop_price=PRICE * (1 - 0.011))
+    wide = _size(requested_stop_price=PRICE * (1 - 0.018))
+    assert wide.notional < tight.notional
+    assert wide.risk_usd == pytest.approx(tight.risk_usd, rel=0.01)
 
 
 def test_stop_floor_scales_with_volatility():
@@ -140,9 +161,10 @@ def test_stop_floor_scales_with_volatility():
 
 
 def test_reasonable_stop_is_left_alone():
-    r = _size(requested_stop_price=PRICE * (1 - 0.01))
+    # 1.5% is comfortably outside both floors (3 ATR = 1.068% here) and inside the 2% ceiling.
+    r = _size(requested_stop_price=PRICE * (1 - 0.015))
     assert r.clamped is False
-    assert r.stop_pct == pytest.approx(0.01)
+    assert r.stop_pct == pytest.approx(0.015)
 
 
 # --------------------------------------------------------------------------- caps
@@ -189,10 +211,10 @@ def test_account_too_small_even_for_leverage_is_refused_clearly():
 
 
 def test_short_sizing_mirrors_long():
-    r = _size(side="short", requested_stop_price=PRICE * 1.01)
+    r = _size(side="short", requested_stop_price=PRICE * 1.015)
     assert r.approved
     assert r.stop_price > PRICE
-    assert r.stop_pct == pytest.approx(0.01)
+    assert r.stop_pct == pytest.approx(0.015)
 
 
 # --------------------------------------------------------------------------- reward:risk

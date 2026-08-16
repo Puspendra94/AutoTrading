@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from .sizing import MAX_STOP_PCT, MIN_STOP_PCT
+from .sizing import MAX_STOP_PCT, MIN_STOP_ATR, MIN_STOP_PCT
 
 MIN_RISK_REWARD = 1.5
 MAX_FAILURES_SHOWN = 5
@@ -137,7 +137,10 @@ WHEN PATTERNS DISAGREE
 HARD CONSTRAINTS — a decision breaking any of these is rejected and the trade is skipped:
   1. Never trade against a strong_uptrend or strong_downtrend.
   2. The stop must be between {MIN_STOP_PCT * 100:.2f}% and {MAX_STOP_PCT * 100:.2f}% from entry,
-     and at least 0.5 ATR away.
+     and at least {MIN_STOP_ATR:.1f} ATR away. Place it where the setup is genuinely INVALIDATED —
+     beyond the level, not just beyond the last wick. A stop inside one bar's normal range gets hit
+     by noise rather than by being wrong, and a stop tighter than this is widened to it anyway
+     (which moves your target too, so propose one you actually believe in).
   3. Reward:risk must be at least {MIN_RISK_REWARD}:1 against the stop.
   4. Give an entry RANGE (entry_min/entry_max) that brackets the current price — roughly
      +/- 0.25 ATR. Price moves between this decision and the fill; a range that excludes the

@@ -39,7 +39,25 @@ from ...exchange_info import SymbolFilters
 DAILY_RISK_PCT = 0.02          # rule 1: lose no more than 2% of the day-start balance, per DAY
 MAX_STOP_PCT = 0.02            # rule 2: the stop may not exceed 2% from entry
 MIN_STOP_PCT = 0.003           # absolute floor, so a hair-tight stop cannot explode the size
-MIN_STOP_ATR = 0.5             # ...and at least half an ATR, so the stop clears normal noise
+# ...and at least this many ATR, so the stop sits OUTSIDE the noise rather than inside it.
+#
+# Raised from 0.5 to 3.0 on the evidence of the first paper week. At 0.5 this floor was dead
+# code: BTC's 15m ATR14 ran ~0.13-0.17% of price, so 0.5 ATR is ~0.08% and the fixed 0.3% floor
+# always won — which meant every stop was placed at whatever 0.3-0.4% happened to be, about 2 ATR,
+# with no relationship to volatility at all. Sorted by stop distance in ATR, the 41 closed trades
+# split cleanly:
+#
+#     1.0-2.0 ATR   16 trades   -160.05   56% stopped out
+#     2.0-2.7 ATR   14 trades   -154.94   50% stopped out
+#     3.0+  ATR      8 trades    +38.03   12% stopped out
+#
+# 30 of 38 trades sat in the first two buckets and accounted for the entire loss. (The 3.0+ bucket
+# is only 8 trades — directionally clear, not proof, but it agrees with the obvious mechanism: a
+# stop inside one bar's normal range is hit by noise, not by being wrong.)
+#
+# This costs nothing in risk. A wider stop makes the position SMALLER — notional = r_trade /
+# stop_pct — so the dollars at risk are unchanged and only the odds of being shaken out improve.
+MIN_STOP_ATR = 3.0
 # Never commit more than this share of the balance to one position.
 #
 # 60%, raised from 50% so that 5x becomes reachable on a very small account: holding the $63.50
