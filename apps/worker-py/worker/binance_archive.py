@@ -12,6 +12,7 @@ import asyncio
 import csv
 import io
 import logging
+import math
 import zipfile
 from datetime import date, datetime, timezone
 
@@ -239,3 +240,134 @@ async def backfill_all() -> list[dict]:
     for interval in config.backfill_intervals:
         results.append(await backfill_symbol_interval(config.backfill_symbol, interval))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Derivatives archives: funding rate and futures metrics.
+#
+# Different shapes from klines and from each other. Funding is MONTHLY back to 2020-01; metrics
+# are DAILY only and start around 2021. Both use the same skip-on-404 rule the kline backfill
+# uses, so the real start date is discovered rather than hardcoded.
+
+
+def _funding_url(symbol: str, y: int, m: int) -> str:
+    return (f"{config.binance_vision_base}/{_ARCHIVE_PREFIX}/monthly/fundingRate/"
+            f"{symbol}/{symbol}-fundingRate-{y:04d}-{m:02d}.zip")
+
+
+def _metrics_url(symbol: str, d: date) -> str:
+    return (f"{config.binance_vision_base}/{_ARCHIVE_PREFIX}/daily/metrics/"
+            f"{symbol}/{symbol}-metrics-{d.isoformat()}.zip")
+
+
+def _num(v: str):
+    """Archive rows carry empty strings for absent values. None, never 0.0 — a zero open interest
+    or a zero long/short ratio is a strong claim, and a fabricated one."""
+    v = (v or "").strip()
+    if not v:
+        return None
+    try:
+        f = float(v)
+    except ValueError:
+        return None
+    return None if math.isnan(f) else f
+
+
+async def _fetch_csv(client: httpx.AsyncClient, url: str) -> list[list[str]] | None:
+    """Rows of a zipped CSV with any header dropped, or None on 404."""
+    resp = await client.get(url)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    out: list[list[str]] = []
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        with zf.open(zf.namelist()[0]) as fh:
+            for r in csv.reader(io.TextIOWrapper(fh, encoding="utf-8")):
+                if not r or r[0] in ("calc_time", "create_time"):
+                    continue
+                out.append(r)
+    return out
+
+
+async def _stage_copy(table: str, cols: list[str], types: str, records: list[tuple],
+                      insert_sql: str, ticker_id: str) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(f"CREATE TEMP TABLE _stg ({types}) ON COMMIT DROP")
+            await conn.copy_records_to_table("_stg", records=records, columns=cols)
+            res = await conn.execute(insert_sql, ticker_id)
+    try:
+        return int(res.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def backfill_funding(symbol: str, interval: str = "1m", *, start: str | None = None) -> dict:
+    """Funding-rate history. calc_time is epoch MILLISECONDS; rate is a fraction (0.0001 = 0.01%)."""
+    ticker_id = await resolve_ticker_id(symbol, interval)
+    if not ticker_id:
+        return {"symbol": symbol, "skipped": True, "reason": "no ticker"}
+    today = datetime.now(timezone.utc).date()
+    inserted = 0
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for (y, m) in _months(start or config.backfill_start, today):
+            rows = await _fetch_csv(client, _funding_url(symbol, y, m))
+            if not rows:
+                continue
+            records = [(_to_utc(r[0]), _num(r[2]), int(float(r[1])) if r[1].strip() else None)
+                       for r in rows if _num(r[2]) is not None]
+            if records:
+                inserted += await _stage_copy(
+                    "funding_rate", ["ts", "rate", "ih"],
+                    "ts timestamptz, rate numeric, ih integer", records,
+                    """INSERT INTO funding_rate (ticker_id, timestamp, rate, interval_hours)
+                       SELECT $1, ts, rate, ih FROM _stg
+                       ON CONFLICT (ticker_id, timestamp) DO NOTHING""",
+                    ticker_id)
+    log.info("Funding backfill %s: %d rows.", symbol, inserted)
+    return {"symbol": symbol, "insertedRows": inserted, "tickerId": ticker_id}
+
+
+async def backfill_metrics(symbol: str, interval: str = "1m", *, start: str | None = None) -> dict:
+    """Open interest and long/short ratios at 5-minute grain, from DAILY archives only.
+
+    404s are normal both before the series begins and for today, so they are skipped rather than
+    treated as failures — which is also how the real start date gets discovered.
+    """
+    ticker_id = await resolve_ticker_id(symbol, interval)
+    if not ticker_id:
+        return {"symbol": symbol, "skipped": True, "reason": "no ticker"}
+    d = datetime.strptime(start or "2021-01", "%Y-%m").date().replace(day=1)
+    today = datetime.now(timezone.utc).date()
+    inserted, days = 0, 0
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        while d <= today:
+            rows = await _fetch_csv(client, _metrics_url(symbol, d))
+            d = date.fromordinal(d.toordinal() + 1)
+            if not rows:
+                continue
+            records = []
+            for r in rows:
+                if len(r) < 8:
+                    continue
+                ts = datetime.strptime(r[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                records.append((ts, _num(r[2]), _num(r[3]), _num(r[4]),
+                                _num(r[5]), _num(r[6]), _num(r[7])))
+            if not records:
+                continue
+            inserted += await _stage_copy(
+                "futures_metrics", ["ts", "oi", "oiv", "tra", "trp", "gra", "tbs"],
+                "ts timestamptz, oi numeric, oiv numeric, tra numeric, trp numeric, "
+                "gra numeric, tbs numeric", records,
+                """INSERT INTO futures_metrics (ticker_id, timestamp, open_interest,
+                       open_interest_value, toptrader_ratio_accounts, toptrader_ratio_positions,
+                       global_ratio_accounts, taker_buy_sell_ratio)
+                   SELECT $1, ts, oi, oiv, tra, trp, gra, tbs FROM _stg
+                   ON CONFLICT (ticker_id, timestamp) DO NOTHING""",
+                ticker_id)
+            days += 1
+            if days % 300 == 0:
+                log.info("metrics %s: %d days, %d rows so far…", symbol, days, inserted)
+    log.info("Metrics backfill %s: %d rows across %d days.", symbol, inserted, days)
+    return {"symbol": symbol, "insertedRows": inserted, "days": days, "tickerId": ticker_id}

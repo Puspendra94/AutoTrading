@@ -132,3 +132,55 @@ def test_flow_features_have_no_coverage_when_the_column_is_missing():
     assert rows["flow:buy_share"]["coverage"] == 0
     assert rows["flow:buy_share_ma5"]["coverage"] == 0
     assert rows["price:ret1"]["coverage"] > 100      # price features unaffected
+
+
+# --------------------------------------------------------------------------- as-of join
+def test_as_of_never_uses_a_future_value():
+    """The one join that can leak the future. Funding settles every 8h, so a nearest-neighbour
+    match would routinely attach a rate that did not exist yet at bar close — up to eight hours
+    of hindsight, which would look like a spectacular edge."""
+    from worker.pattern.screen_features import as_of
+    series = [(1000, 0.1), (2000, 0.2), (3000, 0.3)]
+    got = as_of([999, 1000, 1500, 2000, 2500, 9999], series, 1)
+    assert math.isnan(got[0])          # before the series starts — unknown, not 0.1
+    assert got[1] == 0.1               # exactly at a publication
+    assert got[2] == 0.1               # between: the OLD value, not the next one
+    assert got[3] == 0.2
+    assert got[4] == 0.2
+    assert got[5] == 0.3               # after the end: the last KNOWN value persists
+
+
+def test_as_of_is_nan_before_the_series_begins():
+    """Metrics start ~2021 while klines go back to 2020. Carrying the first known value backwards
+    would invent history for a year of bars."""
+    from worker.pattern.screen_features import as_of
+    got = as_of([0, 1, 2], [(100, 5.0)], 1)
+    assert np.all(np.isnan(got))
+
+
+def test_as_of_handles_an_empty_series():
+    from worker.pattern.screen_features import as_of
+    assert np.all(np.isnan(as_of([1, 2, 3], [], 1)))
+
+
+def test_derivative_features_appear_only_when_data_is_supplied():
+    bars = bars_from([100.0 + i for i in range(300)])
+    assert "fund:rate" not in build_features(bars)
+    funding = [(b["timestamp"], 0.0001 * (i % 7 - 3)) for i, b in enumerate(bars)]
+    f = build_features(bars, funding=funding)
+    assert "fund:rate" in f and "fund:rate_z" in f
+    assert np.isfinite(f["fund:rate"]).sum() > 200
+
+
+def test_planted_funding_signal_is_detected_through_the_as_of_join():
+    """End-to-end: if funding really led price, the screen must find it through the join."""
+    rng = np.random.default_rng(11)
+    n = 3000
+    rates = rng.uniform(-0.0003, 0.0003, n)
+    closes = [60_000.0]
+    for i in range(1, n):
+        closes.append(closes[-1] * (1 + rates[i - 1] * 30 + rng.normal(0, 0.0004)))
+    bars = bars_from(closes)
+    funding = [(b["timestamp"], rates[i]) for i, b in enumerate(bars)]
+    rows = {r["feature"]: r for r in screen(bars, horizons=(1,), funding=funding)}
+    assert rows["fund:rate"]["ic1"] > 0.3

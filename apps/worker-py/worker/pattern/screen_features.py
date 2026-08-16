@@ -54,6 +54,60 @@ log = logging.getLogger("worker.pattern.screen_features")
 HORIZONS = (1, 4, 16)
 
 
+# --------------------------------------------------------------------------- derivatives
+
+
+async def load_derivatives(symbol: str, start, end) -> tuple[list[tuple], list[tuple]]:
+    """(funding, metrics) as time-sorted tuples, for as-of joining onto bars."""
+    from ..db import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        f = await conn.fetch(
+            """SELECT f.timestamp, f.rate FROM funding_rate f
+               JOIN tickers t ON t.id = f.ticker_id
+               WHERE t.symbol = $1 AND f.timestamp >= $2 AND f.timestamp < $3
+               ORDER BY f.timestamp""", symbol, start, end)
+        m = await conn.fetch(
+            """SELECT m.timestamp, m.open_interest, m.toptrader_ratio_positions,
+                      m.global_ratio_accounts, m.taker_buy_sell_ratio
+               FROM futures_metrics m JOIN tickers t ON t.id = m.ticker_id
+               WHERE t.symbol = $1 AND m.timestamp >= $2 AND m.timestamp < $3
+               ORDER BY m.timestamp""", symbol, start, end)
+    fund = [(int(r["timestamp"].timestamp() * 1000), float(r["rate"])) for r in f]
+    met = [(int(r["timestamp"].timestamp() * 1000),
+            float(r["open_interest"]) if r["open_interest"] is not None else float("nan"),
+            float(r["toptrader_ratio_positions"]) if r["toptrader_ratio_positions"] is not None else float("nan"),
+            float(r["global_ratio_accounts"]) if r["global_ratio_accounts"] is not None else float("nan"),
+            float(r["taker_buy_sell_ratio"]) if r["taker_buy_sell_ratio"] is not None else float("nan"))
+           for r in m]
+    return fund, met
+
+
+def as_of(bar_times: list[int], series: list[tuple], col: int) -> np.ndarray:
+    """The newest value at or BEFORE each bar time — never after.
+
+    This is the only join that cannot leak the future. Funding settles every 8h and metrics
+    publish every 5m, so a naive nearest-neighbour join would routinely attach a value that did
+    not exist yet at bar close; on an 8-hourly series that is up to eight hours of hindsight, and
+    it would look like a spectacular edge.
+
+    NaN before the series starts — the value was genuinely unknown then, and carrying the first
+    known value backwards would be inventing history.
+    """
+    out = np.full(len(bar_times), np.nan)
+    if not series:
+        return out
+    times = [s[0] for s in series]
+    j = 0
+    for i, t in enumerate(bar_times):
+        while j + 1 < len(times) and times[j + 1] <= t:
+            j += 1
+        if times[j] <= t:
+            out[i] = series[j][col]
+    return out
+
+
 # --------------------------------------------------------------------------- features
 
 
@@ -89,7 +143,7 @@ def _zscore(x: np.ndarray, n: int) -> np.ndarray:
     return _safe_div(x - m, np.sqrt(v))
 
 
-def build_features(bars: list[dict]) -> dict[str, np.ndarray]:
+def build_features(bars: list[dict], funding=None, metrics=None) -> dict[str, np.ndarray]:
     """Every candidate, aligned to bar index. All strictly backward-looking."""
     close = np.array([b["close"] for b in bars], dtype=np.float64)
     high = np.array([b["high"] for b in bars], dtype=np.float64)
@@ -127,6 +181,29 @@ def build_features(bars: list[dict]) -> dict[str, np.ndarray]:
     f["price:close_loc"] = _safe_div(close - low, high - low) - 0.5
     f["price:range_z20"] = _zscore(high - low, 20)
     f["vol:volume_z20"] = _zscore(vol, 20)
+
+    # --- DERIVATIVES. Positioning, not price: who is holding what and what it costs them.
+    times = [b["timestamp"] for b in bars]
+    if funding:
+        rate = as_of(times, funding, 1)
+        # The level itself: persistently positive funding = crowded longs paying to stay.
+        f["fund:rate"] = rate
+        # ...and how extreme it is versus its own recent history, which is what "crowded" means
+        # relative to a regime rather than to an absolute number.
+        f["fund:rate_z"] = _zscore(rate, 60)
+    if metrics:
+        oi = as_of(times, metrics, 1)
+        f["oi:change_z"] = _zscore(np.concatenate(([np.nan], np.diff(oi))), 20)
+        # The interpretation that price alone cannot give: a rally on RISING open interest is new
+        # money; the same rally on FALLING open interest is shorts being forced out, a move with
+        # nobody left to fuel it.
+        oi_chg = np.concatenate(([np.nan], np.diff(oi) / np.where(oi[:-1] == 0, np.nan, oi[:-1])))
+        f["oi:price_divergence"] = np.sign(np.nan_to_num(ret1)) * -np.sign(np.nan_to_num(oi_chg))
+        f["ratio:toptrader_positions"] = as_of(times, metrics, 2)
+        f["ratio:global_accounts"] = as_of(times, metrics, 3)
+        f["ratio:taker_buy_sell"] = as_of(times, metrics, 4)
+        # Crowd against smart money: retail account ratio vs top-trader position ratio.
+        f["ratio:retail_vs_top"] = (as_of(times, metrics, 3) - as_of(times, metrics, 2))
     return f
 
 
@@ -160,8 +237,8 @@ def spearman(a: np.ndarray, b: np.ndarray) -> tuple[float, int]:
     return (float((ra * rb).sum()) / denom if denom else float("nan")), n
 
 
-def screen(bars: list[dict], horizons=HORIZONS) -> list[dict]:
-    feats = build_features(bars)
+def screen(bars: list[dict], horizons=HORIZONS, funding=None, metrics=None) -> list[dict]:
+    feats = build_features(bars, funding, metrics)
     fwd = {h: forward_returns(bars, h) for h in horizons}
     rows = []
     for name, values in feats.items():
@@ -196,9 +273,10 @@ def report(rows: list[dict], interval: str, horizons=HORIZONS) -> str:
             ic, t = r[f"ic{h}"], r[f"t{h}"]
             line += (f"{'—':>10}{'—':>8}" if math.isnan(ic) else f"{ic:>10.4f}{t:>8.1f}")
         lines.append(line)
-    lines += ["", "Features prefixed 'flow:' come from taker-buy volume — information a candle "
-              "does not contain. 'price:'/'vol:' are the existing OHLCV family, shown as the bar "
-              "flow has to clear to be worth adding."]
+    lines += ["", "'price:'/'vol:' are the existing OHLCV family — the bar anything new must clear.",
+              "'flow:' is taker-buy volume (who was aggressive). 'fund:'/'oi:'/'ratio:' are "
+              "derivatives positioning — who holds what and what it costs them. Neither is "
+              "recoverable from a candle."]
     return "\n".join(lines)
 
 
@@ -215,11 +293,14 @@ async def _main(args) -> int:
         log.error("No stored bars in that range.")
         return 1
     bars = rollup(bars_1m, args.interval)
+    funding, metrics = await load_derivatives(args.symbol, start, end)
+    log.info("derivatives: %s funding rows, %s metrics rows.",
+             f"{len(funding):,}", f"{len(metrics):,}")
     have_flow = sum(1 for b in bars if b.get("taker_buy_base"))
     log.info("%s %s bars (%s with flow data).", f"{len(bars):,}", args.interval, f"{have_flow:,}")
     if have_flow == 0:
         log.warning("No flow data in this range — run the backfill with from_start=True first.")
-    print(report(screen(bars), args.interval))
+    print(report(screen(bars, funding=funding, metrics=metrics), args.interval))
     return 0
 
 
