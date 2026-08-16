@@ -89,6 +89,11 @@ class Config:
     llm_models: str = os.getenv("LLM_MODELS") or "direct_api:claude-opus-4-8"
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+    # Groq. Note the token budget: ENTRY_MAX_TOKENS is 12288 because DeepSeek's reasoning models
+    # spend ~5k tokens thinking before they emit any JSON. A non-reasoning model on Groq
+    # (llama-3.3-70b-versatile and friends) needs a fraction of that, and giving it 12288 only
+    # widens the window for a runaway generation — see LLM_MODELS guidance in the README.
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     # Only needed for 'bedrock' entries in LLM_MODELS.
     aws_region: str = os.getenv("AWS_REGION", "")
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")

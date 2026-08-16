@@ -2,10 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { ChatDeepSeek } from '@langchain/deepseek';
+import { ChatGroq } from '@langchain/groq';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { config } from '../../config/configuration';
 
-const KNOWN_PROVIDERS = ['direct_api', 'bedrock', 'deepseek'] as const;
+const KNOWN_PROVIDERS = ['direct_api', 'bedrock', 'deepseek', 'groq'] as const;
 export type ProviderKind = (typeof KNOWN_PROVIDERS)[number];
 
 export interface ModelSpec {
@@ -74,6 +75,14 @@ export class LlmChainBuilder {
           throw new Error('DEEPSEEK_API_KEY not configured for deepseek provider.');
         }
         return new ChatDeepSeek({ apiKey, model: spec.modelId, maxTokens });
+      }
+
+      case 'groq': {
+        const apiKey = config.llm.groqApiKey.trim();
+        if (!apiKey || apiKey.length < 10) {
+          throw new Error('GROQ_API_KEY not configured for groq provider.');
+        }
+        return new ChatGroq({ apiKey, model: spec.modelId, maxTokens });
       }
 
       case 'bedrock': {

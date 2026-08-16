@@ -16,6 +16,7 @@ dependencies = [
     "langchain-anthropic>=0.3",
     "langchain-aws>=0.2",
     "langchain-deepseek>=0.1",
+    "langchain-groq>=0.2",
     "binance-connector>=3.0",   # live SPOT market-order placement (Phase 3c-2 execution)
     "binance-futures-connector>=4.0",  # live USD-M FUTURES orders (Phase 4b short-side execution)
     "numpy>=1.26",              # required by TA-Lib

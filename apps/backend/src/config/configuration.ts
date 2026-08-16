@@ -102,6 +102,7 @@ export interface AppConfig {
     readonly models: string;
     readonly anthropicApiKey: string;
     readonly deepseekApiKey: string;
+    readonly groqApiKey: string;
   };
 
   readonly aws: {
@@ -228,6 +229,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
       models: str(env, 'LLM_MODELS', 'direct_api:claude-opus-4-8'),
       anthropicApiKey: str(env, 'ANTHROPIC_API_KEY'),
       deepseekApiKey: str(env, 'DEEPSEEK_API_KEY'),
+      groqApiKey: str(env, 'GROQ_API_KEY'),
     }),
 
     aws: Object.freeze({

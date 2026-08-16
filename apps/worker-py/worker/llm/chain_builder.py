@@ -20,8 +20,8 @@ from ..config import config
 
 log = logging.getLogger("worker.llm.chain")
 
-KNOWN_PROVIDERS = ("direct_api", "bedrock", "deepseek")
-ProviderKind = Literal["direct_api", "bedrock", "deepseek"]
+KNOWN_PROVIDERS = ("direct_api", "bedrock", "deepseek", "groq")
+ProviderKind = Literal["direct_api", "bedrock", "deepseek", "groq"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,14 @@ def build_model(spec: ModelSpec, max_tokens: int) -> Any:
         from langchain_deepseek import ChatDeepSeek
 
         return ChatDeepSeek(api_key=api_key, model=spec.model_id, max_tokens=max_tokens)
+
+    if spec.provider == "groq":
+        api_key = config.groq_api_key.strip()
+        if not api_key or len(api_key) < 10:
+            raise ValueError("GROQ_API_KEY not configured for groq provider.")
+        from langchain_groq import ChatGroq
+
+        return ChatGroq(api_key=api_key, model=spec.model_id, max_tokens=max_tokens)
 
     if spec.provider == "bedrock":
         region = config.aws_region

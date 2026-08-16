@@ -4,43 +4,74 @@ Covers chain parsing, pricing normalization, text extraction, and the synthetic 
 shape/validity. Live model calls are not exercised here (that needs credentials + network);
 the fallback path is verified by pointing the chain at a provider with no credentials.
 """
+import contextlib
+import importlib
 import os
 
 import pytest
 
+from worker import config as cfg
 from worker.llm import chain_builder as cb
 from worker.llm.schemas import StrategyParams
 from worker.llm.service import LlmService, price_for
 
 
-def test_parse_chain_default(monkeypatch):
-    monkeypatch.delenv("LLM_MODELS", raising=False)
-    chain = cb.parse_chain()
-    assert chain == [cb.ModelSpec("direct_api", "claude-opus-4-8")]
+
+@contextlib.contextmanager
+def chain_env(**env):
+    """Set LLM env vars so `parse_chain` actually sees them.
+
+    `worker.config.config` is a frozen dataclass built from os.getenv at IMPORT time — deliberate,
+    since the process reads its environment once at startup. That means monkeypatch.setenv alone
+    is invisible to parse_chain: it reads config, not os.getenv, so the test would silently assert
+    against whatever env existed when the module was first imported. Both modules have to be
+    reloaded, and reloaded again on the way out so the patched values cannot leak into later tests.
+    """
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update({k: v for k, v in env.items() if v is not None})
+    for k, v in env.items():
+        if v is None:
+            os.environ.pop(k, None)
+    try:
+        importlib.reload(cfg)
+        importlib.reload(cb)
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        importlib.reload(cfg)
+        importlib.reload(cb)
 
 
-def test_parse_chain_multi_and_colon_in_model_id(monkeypatch):
+def test_parse_chain_default():
+    with chain_env(LLM_MODELS=None):
+        assert cb.parse_chain() == [cb.ModelSpec("direct_api", "claude-opus-4-8")]
+
+
+def test_parse_chain_multi_and_colon_in_model_id():
     # Bedrock model ids contain colons — split on the FIRST ':' only.
-    monkeypatch.setenv(
-        "LLM_MODELS",
-        "bedrock:anthropic.claude-sonnet-4-5-20250929-v1:0, deepseek:deepseek-chat, direct_api:claude-opus-4-8",
-    )
-    chain = cb.parse_chain()
-    assert chain[0] == cb.ModelSpec("bedrock", "anthropic.claude-sonnet-4-5-20250929-v1:0")
-    assert chain[1] == cb.ModelSpec("deepseek", "deepseek-chat")
-    assert chain[2] == cb.ModelSpec("direct_api", "claude-opus-4-8")
+    with chain_env(
+        LLM_MODELS="bedrock:anthropic.claude-sonnet-4-5-20250929-v1:0, deepseek:deepseek-chat, direct_api:claude-opus-4-8",
+    ):
+        chain = cb.parse_chain()
+        assert chain[0] == cb.ModelSpec("bedrock", "anthropic.claude-sonnet-4-5-20250929-v1:0")
+        assert chain[1] == cb.ModelSpec("deepseek", "deepseek-chat")
+        assert chain[2] == cb.ModelSpec("direct_api", "claude-opus-4-8")
 
 
-def test_parse_chain_rejects_unknown_provider(monkeypatch):
-    monkeypatch.setenv("LLM_MODELS", "openai:gpt-4o")
-    with pytest.raises(ValueError):
-        cb.parse_chain()
+def test_parse_chain_rejects_unknown_provider():
+    with chain_env(LLM_MODELS="openai:gpt-4o"):
+        with pytest.raises(ValueError):
+            cb.parse_chain()
 
 
-def test_parse_chain_rejects_missing_colon(monkeypatch):
-    monkeypatch.setenv("LLM_MODELS", "direct_api-claude")
-    with pytest.raises(ValueError):
-        cb.parse_chain()
+def test_parse_chain_rejects_missing_colon():
+    with chain_env(LLM_MODELS="direct_api-claude"):
+        with pytest.raises(ValueError):
+            cb.parse_chain()
 
 
 def test_price_for_normalizes_dated_and_bedrock_ids():
@@ -77,3 +108,23 @@ async def test_structured_completion_falls_back_when_no_credentials(monkeypatch)
     out = await svc.generate_structured_completion("prompt", StrategyParams)
     assert isinstance(out["data"], StrategyParams)
     assert out["model"] == "claude-opus-4-8-fallback"
+
+
+# --------------------------------------------------------------------------- groq provider
+def test_parse_chain_accepts_groq():
+    with chain_env(LLM_MODELS="groq:llama-3.3-70b-versatile"):
+        [spec] = cb.parse_chain()
+        assert spec.provider == "groq" and spec.model_id == "llama-3.3-70b-versatile"
+
+
+def test_groq_is_a_known_provider():
+    from worker.llm.chain_builder import KNOWN_PROVIDERS
+    assert "groq" in KNOWN_PROVIDERS
+
+
+def test_groq_without_a_key_fails_loudly_rather_than_silently():
+    """A missing key must raise so the chain falls through to the next model, not hang or
+    return a half-built client that fails later inside the call."""
+    with chain_env(GROQ_API_KEY=""):
+        with pytest.raises(ValueError, match="GROQ_API_KEY"):
+            cb.build_model(cb.ModelSpec(provider="groq", model_id="x"), 512)

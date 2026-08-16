@@ -12,7 +12,7 @@ export interface LlmCompletionResponse {
   model: string;
   /** Which backend actually served this completion — set by whichever entry in the
    * LLM_MODELS fallback chain succeeded, not necessarily the first/primary one. */
-  provider?: 'direct_api' | 'bedrock' | 'deepseek';
+  provider?: 'direct_api' | 'bedrock' | 'deepseek' | 'groq';
 }
 
 export interface LlmStructuredCompletionResponse<T> {
@@ -21,7 +21,7 @@ export interface LlmStructuredCompletionResponse<T> {
   outputTokens: number;
   costUsd: number;
   model: string;
-  provider?: 'direct_api' | 'bedrock' | 'deepseek';
+  provider?: 'direct_api' | 'bedrock' | 'deepseek' | 'groq';
 }
 
 export interface LLMProvider {
