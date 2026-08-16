@@ -31,15 +31,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from ..config import config
+
 LONG = "long"
 SHORT = "short"
 
 OPEN = "open"
 RUNNER = "runner"
 
-# Round-trip taker fees on Binance USD-M are ~0.08%. "Breakeven" that ignores them is a small
-# guaranteed loss, so the floor is set just beyond the fees.
-FEE_BUFFER_PCT = 0.001  # 0.1%
+# "Breakeven" that ignores costs is a small GUARANTEED loss, so the protective floor has to clear
+# the full round trip: taker fee on both legs plus the spread crossed on both legs. Derived from
+# the same config the execution engine charges against, rather than hardcoded, so the two can
+# never drift apart — a hardcoded 0.1% was already under the real 0.12% cost of a futures round
+# trip once simulated slippage started being charged.
+FEE_BUFFER_PCT = 2 * (config.futures_taker_fee_pct + config.paper_slippage_pct)
 
 # Trailing distance behind the best price seen, in ATR. Wide enough that ordinary noise inside a
 # trend does not knock the position out — the point of a runner is to stay in.

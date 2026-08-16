@@ -70,6 +70,15 @@ export interface AppConfig {
     readonly startingBalanceUsd: number;
   };
 
+  // Trading costs, charged on paper fills as well as live ones. Must stay in step with the
+  // worker's FUTURES_TAKER_FEE_PCT / SPOT_TAKER_FEE_PCT / PAPER_SLIPPAGE_PCT — the two engines
+  // can both close a position, and they must not book different P/L for the same trade.
+  readonly costs: {
+    readonly futuresTakerFeePct: number;
+    readonly spotTakerFeePct: number;
+    readonly paperSlippagePct: number;
+  };
+
   readonly strategy: {
     // Timeframe strategies are generated/backtested on. We only ingest 1m candles; higher
     // intervals are aggregated on the fly via TimescaleDB time_bucket. 1m trend-following is
@@ -187,6 +196,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
     paper: Object.freeze({
       startingBalanceUsd: float(env, 'PAPER_STARTING_BALANCE_USD', 10000),
+    }),
+
+    costs: Object.freeze({
+      futuresTakerFeePct: float(env, 'FUTURES_TAKER_FEE_PCT', 0.0004),
+      spotTakerFeePct: float(env, 'SPOT_TAKER_FEE_PCT', 0.001),
+      paperSlippagePct: float(env, 'PAPER_SLIPPAGE_PCT', 0.0002),
     }),
 
     strategy: Object.freeze({

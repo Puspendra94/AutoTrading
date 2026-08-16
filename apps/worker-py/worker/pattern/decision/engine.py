@@ -211,6 +211,11 @@ class DecisionEngine:
                                     llm=decision.model_dump(), response=response,
                                     validation=verdict.as_dict(), sizing=sizing.as_dict())
 
+            # Hand the stop to the exchange as well, so it survives this process dying. A no-op in
+            # paper mode. Never fatal: sync_protective_stop swallows its own failures and the
+            # software ladder above is unaffected either way.
+            await self.execution.sync_protective_stop(position_id, sizing.stop_price)
+
         log.warning(
             "ENTRY %s %s qty=%s @ %.2f | stop %.2f (%.2f%%) target %.2f | risking %.2f of %.2f USD",
             decision.side, state.ticker_id, sizing.quantity, entry_price,

@@ -13,6 +13,28 @@ import { PlaintextSecretsProvider } from '../../common/secrets/plaintext-secrets
 import { ProviderService } from '../provider/provider.service';
 import { config } from '../../config/configuration';
 
+/**
+ * Fee per side, as a fraction of notional, for the venue a position trades on.
+ * Mirrors worker/execution/execution.py::taker_fee_pct — keep the two in step.
+ */
+function takerFeePct(marketType?: string | null): number {
+  return marketType?.toLowerCase() === 'futures'
+    ? config.costs.futuresTakerFeePct
+    : config.costs.spotTakerFeePct;
+}
+
+/**
+ * Where a SIMULATED market order would really fill. A market order always crosses the spread, so
+ * it fills at the worse of the two prices: a long pays up to open and sells down to close, a short
+ * sells down to open and buys up to cover. Treating the signal price as the fill handed the paper
+ * account half a spread per leg, for free, always in the helpful direction.
+ */
+function slippedFill(price: number, side: PositionSide, opening: boolean): number {
+  const adverse = (side === PositionSide.LONG) === opening;
+  const slip = config.costs.paperSlippagePct;
+  return adverse ? price * (1 + slip) : price * (1 - slip);
+}
+
 @Injectable()
 export class ExecutionService {
   private readonly logger = new Logger(ExecutionService.name);
@@ -56,7 +78,9 @@ export class ExecutionService {
     if (!ticker) throw new BadRequestException('Invalid ticker');
     const provider = await this.providerRepo.findOne({ where: { id: ticker.providerId } });
 
-    let fillPrice = price;
+    // A simulated fill crosses the spread just like a real one. Applied here so the stored
+    // entryPrice IS the fill, and every downstream reader measures against the real number.
+    let fillPrice = slippedFill(price, side, true);
     let fillQuantity = riskCheck.allowedQuantity;
     let providerOrderId = `SIM_${Date.now()}`;
     let isLiveOrder = false;
@@ -135,12 +159,16 @@ export class ExecutionService {
   }
 
   async closePosition(positionId: string, exitPrice: number) {
-    const position = await this.positionRepo.findOne({ where: { id: positionId }, relations: ['ticker'] });
+    const position = await this.positionRepo.findOne({
+      where: { id: positionId },
+      relations: ['ticker', 'ticker.marketType'],
+    });
     if (!position || position.status === PositionStatus.CLOSED) {
       throw new BadRequestException('Position not found or already closed');
     }
 
-    let finalExitPrice = exitPrice;
+    // Simulated until a live placer says otherwise, so it pays the simulated spread.
+    let finalExitPrice = slippedFill(exitPrice, position.side, false);
     let providerOrderId = `SIM_exit_${Date.now()}`;
 
     const ticker = position.ticker;
@@ -167,10 +195,18 @@ export class ExecutionService {
       }
     }
 
-    const priceDiff = finalExitPrice - Number(position.entryPrice);
-    const realizedPl = Number(
-      (position.side === PositionSide.LONG ? priceDiff : -priceDiff) * Number(position.quantity),
-    );
+    const entry = Number(position.entryPrice);
+    const qty = Number(position.quantity);
+    const priceDiff = finalExitPrice - entry;
+    const gross = (position.side === PositionSide.LONG ? priceDiff : -priceDiff) * qty;
+
+    // Both legs are charged here, at close, because that is the only moment a position has a
+    // single P/L number to carry them. Fees are a function of NOTIONAL, not of the move, so a
+    // scratch trade still costs money — the fact a fee-free paper record hid. Leverage does not
+    // appear: the fee is on the position, not on the margin behind it.
+    const feePct = takerFeePct(ticker?.marketType?.name);
+    const fees = (entry * qty + finalExitPrice * qty) * feePct;
+    const realizedPl = gross - fees;
 
     position.status = PositionStatus.CLOSED;
     position.exitPrice = finalExitPrice;

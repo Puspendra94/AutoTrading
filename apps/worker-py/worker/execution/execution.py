@@ -16,6 +16,7 @@ import logging
 import time
 from typing import Any, Optional, Protocol
 
+from ..config import config
 from ..util import to_fixed
 from .binance_orders import OrderPlacer
 from .risk_gate import OrderIntent, RiskGateStore, evaluate_order_risk_gate
@@ -31,6 +32,27 @@ FUTURES = "futures"
 
 class ExecutionError(Exception):
     """Invalid input (mirrors BadRequestException)."""
+
+
+def taker_fee_pct(market_type: Optional[str]) -> float:
+    """Fee per side, as a fraction of notional, for the venue this position trades on."""
+    return (
+        config.futures_taker_fee_pct
+        if (market_type or "").lower() == FUTURES
+        else config.spot_taker_fee_pct
+    )
+
+
+def slipped_fill(price: float, side: str, *, opening: bool) -> float:
+    """Where a SIMULATED market order would really fill.
+
+    A market order crosses the spread, so it is always filled at the worse of the two prices: a
+    long pays up to open and sells down to close, a short sells down to open and buys up to cover.
+    Modelling it as `price` exactly — which is what a simulated fill did — hands the paper account
+    half a spread on every leg, for free, in the direction that always helps.
+    """
+    adverse = (side == LONG) == opening
+    return price * (1 + config.paper_slippage_pct) if adverse else price * (1 - config.paper_slippage_pct)
 
 
 class ExecutionStore(Protocol):
@@ -116,7 +138,10 @@ class ExecutionService:
                 ),
             }
 
-        fill_price = price
+        # A simulated fill crosses the spread just like a real one. Applied here rather than at
+        # close time so the stored entry_price IS the fill, and every downstream reader — the exit
+        # ladder's stop distance, the mark price, the dashboard — measures against the real number.
+        fill_price = slipped_fill(price, side, opening=True)
         fill_quantity = risk["allowedQuantity"]
         provider_order_id = f"SIM_{int(time.time() * 1000)}"
         is_live_order = False
@@ -164,12 +189,63 @@ class ExecutionService:
         )
         return {"status": "EXECUTED", "positionId": position_id, "isLiveOrder": is_live_order}
 
+    async def sync_protective_stop(self, position_id: str, stop_price: float) -> Optional[str]:
+        """Make the exchange hold this position's stop, instead of only this process holding it.
+
+        Software-polled stops were measured giving away an average of 38.9 points past the stop
+        level (worst: 189.6) on a ~240-point risk distance — 16% of the risk, handed over on every
+        stop-out, because the ladder can only react on the next tick it happens to see. A resting
+        STOP_MARKET triggers on the exchange's own mark price, in the matching engine, at whatever
+        speed the market is actually moving.
+
+        It also removes the failure this system had no answer for at all: if the worker dies, the
+        old design left a live position with NO stop anywhere. Now the exchange still has it.
+
+        The software ladder is deliberately left in place on top. It is the only thing that can
+        trail, apply the max-hold rule, or act on the LLM's read, and belt-and-braces on a stop is
+        the right kind of redundancy — whichever fires first, `reduce_only`/`closePosition` means
+        the second one cannot open anything.
+
+        Idempotent: cancels whatever was resting before placing the replacement, so a ratchet is
+        just another call. Returns the exchange order id, or None when no order was placed (paper
+        mode, spot venue, or no credentials — all normal, none of them an error).
+        """
+        position = await self.store.get_position(position_id)
+        if not position or position["status"] == "closed":
+            return None
+        provider = await self.store.get_provider(position["providerId"]) if position.get("providerId") else None
+        if not provider or provider.get("tradingMode") != LIVE or provider.get("type") != BINANCE:
+            return None  # paper: the software ladder is the whole protection, by design
+        creds = await self.store.get_credential(provider["id"], provider.get("useTestnet", False))
+        if not creds or not creds.get("apiKey") or not creds.get("apiSecret"):
+            return None
+
+        use_testnet = provider.get("useTestnet", False)
+        symbol = position["symbol"]
+        placer = self._placer_for(position.get("marketType"))
+        # SELL protects a long, BUY covers a short.
+        close_side = "SELL" if position["side"] == LONG else "BUY"
+        try:
+            await placer.cancel_open_orders(creds, use_testnet, symbol)
+            result = await placer.place_stop_order(creds, use_testnet, symbol, close_side, stop_price)
+        except Exception as err:  # noqa: BLE001
+            # Loud, but not fatal: the software ladder still holds this position's stop, so the
+            # trade is no less protected than it was before this method existed.
+            log.error("Could not rest a protective stop for %s at %.2f: %s", position_id, stop_price, err)
+            return None
+        if not result:
+            return None
+        log.info("Protective stop resting at %.2f for position %s (order %s).",
+                 stop_price, position_id, result["orderId"])
+        return result["orderId"]
+
     async def close_position(self, position_id: str, exit_price: float) -> dict:
         position = await self.store.get_position(position_id)
         if not position or position["status"] == "closed":
             raise ExecutionError("Position not found or already closed")
 
-        final_exit_price = exit_price
+        # Simulated until a live placer says otherwise, so it pays the simulated spread.
+        final_exit_price = slipped_fill(exit_price, position["side"], opening=False)
         provider_order_id = f"SIM_exit_{int(time.time() * 1000)}"
 
         provider = await self.store.get_provider(position["providerId"]) if position.get("providerId") else None
@@ -187,6 +263,16 @@ class ExecutionService:
                     )
                     final_exit_price = result.get("fillPrice") or exit_price
                     provider_order_id = result["orderId"]
+                    # Binance cancels a closePosition stop once the position is flat, but doing it
+                    # explicitly means a resting stop can never outlive the position it protected
+                    # and re-arm against the next one.
+                    try:
+                        await placer.cancel_open_orders(
+                            creds, provider.get("useTestnet", False), position["symbol"],
+                        )
+                    except Exception:  # noqa: BLE001 — the position IS closed; this is tidy-up
+                        log.warning("Could not clear resting orders on %s after close.",
+                                    position["symbol"], exc_info=True)
                 except Exception as err:  # noqa: BLE001
                     log.error("Live close-order failed for position %s: %s", position_id, err)
                     raise ExecutionError(f"Exchange close-order failed: {err}")
@@ -194,14 +280,22 @@ class ExecutionService:
         entry = _num(position["entryPrice"])
         qty = _num(position["quantity"])
         price_diff = final_exit_price - entry
-        realized_pl = to_fixed((price_diff if position["side"] == LONG else -price_diff) * qty, 8)
+        gross = (price_diff if position["side"] == LONG else -price_diff) * qty
+
+        # Both legs are charged here, at close, because that is the only moment a position has a
+        # single P/L number to carry them. Fees are a function of NOTIONAL, not of the move, so a
+        # scratch trade still costs money — which is exactly the fact a fee-free paper record hid.
+        # Note leverage does not appear: the fee is on the position, not on the margin behind it.
+        fee_pct = taker_fee_pct(position.get("marketType"))
+        fees = (entry * qty + final_exit_price * qty) * fee_pct
+        realized_pl = to_fixed(gross - fees, 8)
 
         await self.store.close_position_row(position_id=position_id, exit_price=final_exit_price, realized_pl=realized_pl)
         await self.store.insert_order(
             position_id=position_id, provider_order_id=provider_order_id,
             side="sell" if position["side"] == LONG else "buy", quantity=qty, price=final_exit_price,
         )
-        return {"positionId": position_id, "realizedPl": realized_pl}
+        return {"positionId": position_id, "realizedPl": realized_pl, "fees": to_fixed(fees, 8)}
 
     async def flatten_all_positions_for_provider(self, provider_id: str, reason: str) -> dict:
         positions = await self.store.find_open_positions_by_provider(provider_id)

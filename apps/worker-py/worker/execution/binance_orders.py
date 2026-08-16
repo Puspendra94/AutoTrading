@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Protocol
+from typing import Optional, Protocol
 
 log = logging.getLogger("worker.execution.orders")
 
@@ -25,6 +25,8 @@ FUTURES_TESTNET_REST = "https://testnet.binancefuture.com"
 
 # Binance returns -4046 when the requested margin type is already set — a no-op, not an error.
 _MARGIN_TYPE_UNCHANGED = "-4046"
+# ...and -2011 when asked to cancel orders on a symbol that has none resting.
+_NO_SUCH_ORDER = "-2011"
 
 
 class OrderPlacer(Protocol):
@@ -32,6 +34,16 @@ class OrderPlacer(Protocol):
         self, creds: dict, use_testnet: bool, symbol: str, side: str, quantity: float,
         *, reduce_only: bool = False, leverage: int = 1,
     ) -> dict: ...
+
+    async def place_stop_order(
+        self, creds: dict, use_testnet: bool, symbol: str, side: str, stop_price: float,
+    ) -> Optional[dict]:
+        """Rest a protective stop AT THE EXCHANGE. None when the venue cannot."""
+        ...
+
+    async def cancel_open_orders(self, creds: dict, use_testnet: bool, symbol: str) -> None:
+        """Clear any resting orders on the symbol. Must tolerate 'there were none'."""
+        ...
 
 
 class BinanceOrderPlacer:
@@ -43,6 +55,19 @@ class BinanceOrderPlacer:
         *, reduce_only: bool = False, leverage: int = 1,
     ) -> dict:
         return await asyncio.to_thread(self._place, creds, use_testnet, symbol, side, quantity)
+
+    async def place_stop_order(
+        self, creds: dict, use_testnet: bool, symbol: str, side: str, stop_price: float,
+    ) -> Optional[dict]:
+        """Not supported. Spot has STOP_LOSS orders, but they need the quantity pre-committed and
+        there is no reduceOnly, so a resting spot stop can desynchronise from the position it is
+        meant to protect. Returning None keeps the software ladder as the only protection here —
+        the pattern brain trades futures, which does support this properly."""
+        log.warning("Protective stop on %s not placed: the SPOT venue does not support it.", symbol)
+        return None
+
+    async def cancel_open_orders(self, creds: dict, use_testnet: bool, symbol: str) -> None:
+        return None
 
     def _place(self, creds: dict, use_testnet: bool, symbol: str, side: str, quantity: float) -> dict:
         from binance.spot import Spot
@@ -82,6 +107,49 @@ class FuturesOrderPlacer:
         return await asyncio.to_thread(
             self._place, creds, use_testnet, symbol, side, quantity, reduce_only, leverage
         )
+
+    async def place_stop_order(
+        self, creds: dict, use_testnet: bool, symbol: str, side: str, stop_price: float,
+    ) -> Optional[dict]:
+        return await asyncio.to_thread(self._place_stop, creds, use_testnet, symbol, side, stop_price)
+
+    async def cancel_open_orders(self, creds: dict, use_testnet: bool, symbol: str) -> None:
+        return await asyncio.to_thread(self._cancel_all, creds, use_testnet, symbol)
+
+    def _place_stop(self, creds: dict, use_testnet: bool, symbol: str, side: str,
+                    stop_price: float) -> dict:
+        """A STOP_MARKET that rests AT BINANCE until triggered.
+
+        `closePosition=true` rather than a quantity, deliberately: it flattens whatever the
+        position happens to be at trigger time, needs no quantity that could drift out of sync,
+        and Binance cancels it automatically once the position is closed — so there is no dangling
+        order to clean up if the software exits first.
+
+        `side` is the CLOSING side (SELL protects a long, BUY protects a short).
+        """
+        from binance.um_futures import UMFutures
+
+        base_url = FUTURES_TESTNET_REST if use_testnet else FUTURES_MAINNET_REST
+        client = UMFutures(key=creds["apiKey"], secret=creds["apiSecret"], base_url=base_url)
+        res = client.new_order(
+            symbol=symbol, side=side, type="STOP_MARKET",
+            stopPrice=f"{stop_price:.2f}", closePosition="true",
+            workingType="MARK_PRICE", timeInForce="GTE_GTC",
+        )
+        return {"orderId": str(res["orderId"]), "stopPrice": stop_price, "raw": res}
+
+    def _cancel_all(self, creds: dict, use_testnet: bool, symbol: str) -> None:
+        from binance.um_futures import UMFutures
+
+        base_url = FUTURES_TESTNET_REST if use_testnet else FUTURES_MAINNET_REST
+        client = UMFutures(key=creds["apiKey"], secret=creds["apiSecret"], base_url=base_url)
+        try:
+            client.cancel_open_orders(symbol=symbol)
+        except Exception as err:  # noqa: BLE001
+            # -2011 "Unknown order sent" just means there was nothing resting, which is the normal
+            # case on the first entry. Anything else is worth seeing but must not block the trade.
+            if _NO_SUCH_ORDER not in str(err):
+                log.warning("Could not cancel open orders on %s: %s", symbol, err)
 
     def _place(self, creds: dict, use_testnet: bool, symbol: str, side: str, quantity: float,
                reduce_only: bool, leverage: int) -> dict:

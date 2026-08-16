@@ -85,9 +85,12 @@ class _ExecStore:
 
 
 class _Placer:
-    def __init__(self, raises=False, fill=None):
+    def __init__(self, raises=False, fill=None, stop_raises=False):
         self.calls = []
+        self.stops = []
+        self.cancels = []
         self.raises = raises
+        self.stop_raises = stop_raises
         self.fill = fill
 
     async def place_market_order(self, creds, use_testnet, symbol, side, quantity, *, reduce_only=False, leverage=1):
@@ -96,9 +99,23 @@ class _Placer:
             raise RuntimeError("exchange down")
         return self.fill or {"orderId": "LIVE123", "fillPrice": 101.0, "fillQuantity": quantity, "status": "FILLED"}
 
+    async def place_stop_order(self, creds, use_testnet, symbol, side, stop_price):
+        if self.stop_raises:
+            raise RuntimeError("stop rejected")
+        self.stops.append((symbol, side, stop_price))
+        return {"orderId": f"STOP{len(self.stops)}", "stopPrice": stop_price}
+
+    async def cancel_open_orders(self, creds, use_testnet, symbol):
+        self.cancels.append(symbol)
+
 
 PAPER = {"id": "p1", "name": "P", "tradingMode": "paper", "type": "binance", "useTestnet": True}
 LIVE = {"id": "p1", "name": "P", "tradingMode": "live", "type": "binance", "useTestnet": True}
+
+# Costs the engine now charges (worker.config defaults): 0.10% taker/side on spot, 0.04% on
+# futures, plus 0.02% of simulated slippage per leg. Spelled out here so a config change that
+# silently zeroes them fails a test rather than quietly flattering every paper result again.
+SPOT_FEE, FUTURES_FEE, SLIP = 0.001, 0.0004, 0.0002
 
 
 async def test_execute_paper_uses_simulated_fill():
@@ -109,7 +126,9 @@ async def test_execute_paper_uses_simulated_fill():
     assert placer.calls == []  # no exchange call in paper mode
     assert len(store.positions) == 1 and store.orders[0]["side"] == "buy"
     # probation 25% of 10000 even-share / price 100 = 25.
-    assert store.orders[0]["quantity"] == 25.0 and store.orders[0]["price"] == 100
+    assert store.orders[0]["quantity"] == 25.0
+    # A simulated BUY crosses the spread like a real one, so the fill is ABOVE the signal price.
+    assert store.orders[0]["price"] == pytest.approx(100 * (1 + SLIP))
 
 
 async def test_execute_rejected_by_gate_persists_nothing():
@@ -166,20 +185,45 @@ async def test_execute_live_without_credentials_raises():
         await ExecutionService(store, _RiskStore(), _Placer()).execute_trade_signal("t1", "long", 100)
 
 
-async def test_close_long_pnl():
+async def test_close_long_pnl_is_net_of_costs():
     store = _ExecStore(PAPER)
     pid = store.seed("long", entry=100, qty=2)
     r = await ExecutionService(store, _RiskStore(), _Placer()).close_position(pid, 110)
-    assert r["realizedPl"] == 20.0  # (110-100)*2
+    exit_fill = 110 * (1 - SLIP)                       # selling to close crosses the spread down
+    expected = (exit_fill - 100) * 2 - (100 * 2 + exit_fill * 2) * SPOT_FEE
+    assert r["realizedPl"] == pytest.approx(expected)
+    assert r["realizedPl"] < 20.0                      # the gross figure this used to book
     assert store.positions[pid]["status"] == "closed" and store.orders[-1]["side"] == "sell"
 
 
-async def test_close_short_pnl():
+async def test_close_short_pnl_is_net_of_costs():
     store = _ExecStore(PAPER)
     pid = store.seed("short", entry=100, qty=2)
     r = await ExecutionService(store, _RiskStore(), _Placer()).close_position(pid, 90)
-    assert r["realizedPl"] == 20.0  # (100-90)*2
+    exit_fill = 90 * (1 + SLIP)                        # buying to cover crosses the spread up
+    expected = (100 - exit_fill) * 2 - (100 * 2 + exit_fill * 2) * SPOT_FEE
+    assert r["realizedPl"] == pytest.approx(expected)
+    assert r["realizedPl"] < 20.0
     assert store.orders[-1]["side"] == "buy"
+
+
+async def test_futures_pays_the_futures_fee_not_the_spot_one():
+    store = _ExecStore(PAPER, market_type="futures")
+    pid = store.seed("long", entry=100, qty=2)
+    r = await ExecutionService(store, _RiskStore(), _Placer()).close_position(pid, 110)
+    exit_fill = 110 * (1 - SLIP)
+    expected = (exit_fill - 100) * 2 - (100 * 2 + exit_fill * 2) * FUTURES_FEE
+    assert r["realizedPl"] == pytest.approx(expected)
+    assert r["fees"] == pytest.approx((100 * 2 + exit_fill * 2) * FUTURES_FEE)
+
+
+async def test_a_scratch_trade_still_costs_money():
+    """The fact a fee-free paper record hid: closing exactly where you opened is a LOSS."""
+    store = _ExecStore(PAPER, market_type="futures")
+    pid = store.seed("long", entry=100, qty=10)
+    r = await ExecutionService(store, _RiskStore(), _Placer()).close_position(pid, 100)
+    assert r["realizedPl"] < 0
+    assert r["fees"] > 0
 
 
 async def test_enforce_hard_stop_loss_closes():
@@ -210,3 +254,72 @@ async def test_flatten_closes_all_open_for_provider():
     r = await ExecutionService(store, _RiskStore(), _Placer()).flatten_all_positions_for_provider("p1", "breach")
     assert r["flattenedCount"] == 2
     assert all(p["status"] == "closed" for p in store.positions.values())
+
+
+# --- Protective stop resting AT THE EXCHANGE --------------------------------------------------
+
+async def test_protective_stop_is_a_noop_in_paper():
+    """Paper mode never reaches the exchange, so the software ladder is the whole protection."""
+    store = _ExecStore(PAPER, market_type="futures")
+    pid = store.seed("long", entry=100, qty=1)
+    placer = _Placer()
+    order_id = await ExecutionService(store, _RiskStore(), placer, placer).sync_protective_stop(pid, 95)
+    assert order_id is None
+    assert placer.stops == [] and placer.cancels == []
+
+
+async def test_protective_stop_rests_on_the_exchange_when_live():
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    pid = store.seed("long", entry=100, qty=1)
+    placer = _Placer()
+    order_id = await ExecutionService(store, _RiskStore(), placer, placer).sync_protective_stop(pid, 95)
+    assert order_id == "STOP1"
+    # SELL protects a long, and anything previously resting is cleared first so a ratchet cannot
+    # leave two stops on the same position.
+    assert placer.stops == [("BTCUSDT", "SELL", 95)]
+    assert placer.cancels == ["BTCUSDT"]
+
+
+async def test_protective_stop_covers_a_short_with_a_buy():
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    pid = store.seed("short", entry=100, qty=1)
+    placer = _Placer()
+    await ExecutionService(store, _RiskStore(), placer, placer).sync_protective_stop(pid, 105)
+    assert placer.stops == [("BTCUSDT", "BUY", 105)]
+
+
+async def test_ratchet_replaces_rather_than_stacks():
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    pid = store.seed("long", entry=100, qty=1)
+    placer = _Placer()
+    svc = ExecutionService(store, _RiskStore(), placer, placer)
+    await svc.sync_protective_stop(pid, 95)
+    await svc.sync_protective_stop(pid, 98)
+    assert [s[2] for s in placer.stops] == [95, 98]
+    assert placer.cancels == ["BTCUSDT", "BTCUSDT"]
+
+
+async def test_a_failed_stop_order_does_not_break_the_trade():
+    """The software ladder still holds the stop, so this is loud but survivable."""
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    pid = store.seed("long", entry=100, qty=1)
+    placer = _Placer(stop_raises=True)
+    order_id = await ExecutionService(store, _RiskStore(), placer, placer).sync_protective_stop(pid, 95)
+    assert order_id is None
+
+
+async def test_no_stop_is_placed_for_a_closed_position():
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    pid = store.seed("long", entry=100, qty=1)
+    store.positions[pid]["status"] = "closed"
+    placer = _Placer()
+    assert await ExecutionService(store, _RiskStore(), placer, placer).sync_protective_stop(pid, 95) is None
+    assert placer.stops == []
+
+
+async def test_live_close_clears_resting_orders():
+    store = _ExecStore(LIVE, creds={"apiKey": "k", "apiSecret": "s"}, market_type="futures")
+    pid = store.seed("long", entry=100, qty=1)
+    placer = _Placer()
+    await ExecutionService(store, _RiskStore(), placer, placer).close_position(pid, 110)
+    assert placer.cancels == ["BTCUSDT"]

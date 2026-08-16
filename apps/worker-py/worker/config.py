@@ -176,6 +176,25 @@ class Config:
     # is the deliberate step from "observing" to "trading".
     pattern_decisions_enabled: bool = os.getenv("PATTERN_DECISIONS_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
+    # --- Trading costs. ------------------------------------------------------------------------
+    # These are charged on paper fills as well as live ones, and that is the entire point.
+    #
+    # A paper record that books (exit - entry) * qty and nothing else is not a cheaper version of
+    # live trading, it is a different game. Measured over the first paper week: 41 trades, $229k of
+    # cumulative notional, -$254 booked — and $184 of taker fees that were never charged. The real
+    # result was -$438, so 42% of the loss was invisible, and every downstream consumer (the daily
+    # risk budget, the AI lessons loop, the supervisor's profit factor) was reading the flattering
+    # number.
+    #
+    # Binance USD-M taker is 0.04%/side, spot taker 0.10%/side. Both are the pre-discount public
+    # rates; lower them here if a BNB/VIP discount applies.
+    futures_taker_fee_pct: float = float(os.getenv("FUTURES_TAKER_FEE_PCT", "0.0004"))
+    spot_taker_fee_pct: float = float(os.getenv("SPOT_TAKER_FEE_PCT", "0.001"))
+    # Adverse fill assumed on a SIMULATED market order, as a fraction of price. Live fills need no
+    # estimate — the exchange reports what was actually paid. 0.02% is deliberately conservative
+    # for BTCUSDT top-of-book; widen it for thinner symbols.
+    paper_slippage_pct: float = float(os.getenv("PAPER_SLIPPAGE_PCT", "0.0002"))
+
     # Phase 4b: live SHORT execution on the futures venue. Off by default — a short strategy stays
     # flat (HOLD) until this is explicitly enabled, so shorting can never happen by surprise. When
     # on, a live short strategy on a futures ticker opens a real SELL-to-open (or a simulated fill

@@ -25,9 +25,14 @@ class FakeExec:
     def __init__(self):
         self.store = FakeExecStore()
         self.hard_exits, self.trades, self.closes = [], [], []
+        self.synced_stops = []
 
     async def enforce_hard_exits(self, t, price):
         self.hard_exits.append((t, price))
+
+    async def sync_protective_stop(self, position_id, stop_price):
+        self.synced_stops.append((position_id, stop_price))
+        return None
 
 
 class RecordingStore:
@@ -248,6 +253,8 @@ async def test_crossing_the_target_ratchets_instead_of_closing():
     r = store.ratchets[0]
     assert r["lifecycle"] == "runner"
     assert r["stop"] > ENTRY  # protected above breakeven
+    # ...and the exchange is told about the new level, not just the DB row.
+    assert ex.synced_stops == [("p1", r["stop"])]
 
 
 async def test_runner_trails_and_still_does_not_close():
@@ -257,6 +264,7 @@ async def test_runner_trails_and_still_does_not_close():
 
     assert ex.closed == []
     assert store.ratchets[0]["stop"] == pytest.approx(ENTRY + 2000 - 400)
+    assert ex.synced_stops == [("p1", pytest.approx(ENTRY + 2000 - 400))]
 
 
 async def test_quiet_tick_only_advances_the_high_water_mark():

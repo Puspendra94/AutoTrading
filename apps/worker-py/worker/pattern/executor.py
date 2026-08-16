@@ -121,6 +121,10 @@ class PatternExecutor:
                 lifecycle=action.new_lifecycle or position.get("lifecycle") or "open",
                 extreme_price=extreme,
             )
+            # Move the resting exchange stop with it. The DB row is written first on purpose: if
+            # the replacement order fails, the position is protected by the tighter software stop
+            # rather than by a stale exchange one that is now too far away.
+            await self.execution.sync_protective_stop(position["id"], action.new_stop)
             log.info("Position %s: %s", position["id"], action.reason)
             return
 
