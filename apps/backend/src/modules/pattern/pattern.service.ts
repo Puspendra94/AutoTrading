@@ -137,14 +137,72 @@ export class PatternService {
   }
 
   async getLatestState(tickerId: string): Promise<Record<string, unknown> | null> {
-    // Explicitly skip rows without a pack rather than taking the newest row and hoping: a
-    // pack-less row would otherwise shadow a perfectly good older state.
-    const rows = await this.signals.query(
-      `SELECT state_pack FROM "Algo_Trading"."pattern_signals"
+    // Read from DECISIONS, not signals. pattern_signals only gets a row when a trigger fires, so
+    // sourcing the "current market read" from it meant the panel froze at the last trigger — it
+    // sat nine hours stale through a quiet range while the engine was evaluating normally every
+    // 15 minutes. Every evaluated bar writes a decision with a state pack, including the free
+    // no-trigger skips, so this is the table that actually tracks the engine.
+    //
+    // Still skipping pack-less rows explicitly rather than taking the newest and hoping: an early
+    // error row carries no pack and would otherwise shadow a perfectly good state.
+    const rows = await this.decisions.query(
+      `SELECT state_pack FROM "Algo_Trading"."pattern_decisions"
        WHERE ticker_id = $1 AND state_pack IS NOT NULL
        ORDER BY bar_time DESC LIMIT 1`,
       [tickerId],
     );
     return rows[0]?.state_pack ?? null;
+  }
+
+  /**
+   * Proof the engine is alive, for a dashboard that otherwise cannot tell.
+   *
+   * A quiet market and a dead worker look identical from the UI: no markers, and a decision feed
+   * that hides free skips by default. Both surfaces go blank at once, which is exactly when you
+   * most want to know whether anything is still running. The worker log has had this heartbeat
+   * all along; the dashboard never did.
+   *
+   * `staleBars` is the honest signal — evaluations land one per interval, so anything beyond a
+   * bar or two means the loop has actually stopped rather than found nothing to say.
+   */
+  async getHeartbeat(tickerId: string) {
+    const rows = await this.decisions.query(
+      `SELECT bar_time, created_at, interval, outcome,
+              state_pack -> 'regime' ->> 'label'        AS regime,
+              jsonb_array_length(COALESCE(state_pack -> 'triggers', '[]'::jsonb)) AS triggers
+       FROM "Algo_Trading"."pattern_decisions"
+       WHERE ticker_id = $1
+       ORDER BY bar_time DESC LIMIT 1`,
+      [tickerId],
+    );
+    const r = rows[0];
+    if (!r) return null;
+
+    const intervalMs = this.intervalMs(r.interval);
+    const barMs = new Date(r.bar_time).getTime();
+    // Bars elapsed since the last one evaluated. The bar itself has to close before it can be
+    // evaluated, so "now minus bar time" is one interval even when perfectly healthy — hence the
+    // -1, which makes 0 mean "current".
+    const staleBars = Math.max(
+      Math.floor((Date.now() - barMs) / Math.max(intervalMs, 1)) - 1,
+      0,
+    );
+    return {
+      barTime: Math.floor(barMs / 1000),
+      evaluatedAt: Math.floor(new Date(r.created_at).getTime() / 1000),
+      interval: r.interval,
+      outcome: r.outcome,
+      regime: r.regime ?? null,
+      triggers: Number(r.triggers ?? 0),
+      staleBars,
+      healthy: staleBars <= 1,
+    };
+  }
+
+  private intervalMs(interval: string): number {
+    const m = /^(\d+)([mhdw])$/i.exec(interval || '');
+    if (!m) return 15 * 60_000;
+    const n = parseInt(m[1], 10);
+    return n * ({ m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[m[2].toLowerCase()] ?? 60_000);
   }
 }

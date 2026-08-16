@@ -116,6 +116,13 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
             <span class="eyebrow">Market Read</span>
             <span id="readRegime" class="badge badge-muted">—</span>
           </div>
+          <!-- Engine heartbeat. A quiet market and a stopped worker look identical without it:
+               no markers, and a decision feed that hides free skips. This line is the only thing
+               on the page that says "still running" when nothing is happening. -->
+          <div id="readPulse" class="flex items-center gap-2 border-b border-border px-4 py-2 text-[0.7rem]">
+            <span id="readPulseDot" class="inline-block h-1.5 w-1.5 rounded-full bg-dim"></span>
+            <span id="readPulseText" class="font-semibold text-dim">—</span>
+          </div>
           <div class="grid grid-cols-2 gap-x-4 gap-y-3.5 p-4">
             <div class="flex flex-col gap-0.5"><span class="eyebrow">ADX</span><span id="readAdx" class="tabular text-sm font-bold">—</span></div>
             <div class="flex flex-col gap-0.5"><span class="eyebrow">RSI 14</span><span id="readRsi" class="tabular text-sm font-bold">—</span></div>
@@ -447,13 +454,41 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
       }
     }
 
+    // The heartbeat line. Deliberately states what the engine DID on its last bar — including
+    // "0 triggers" — because "evaluated, found nothing" is the answer to "is it broken?", and an
+    // empty chart cannot give it.
+    function renderPulse(hb: any) {
+      const dot = $('readPulseDot');
+      const text = $('readPulseText');
+      if (!hb) {
+        dot.className = 'inline-block h-1.5 w-1.5 rounded-full bg-dim';
+        text.textContent = 'no bars evaluated yet';
+        text.className = 'font-semibold text-dim';
+        return;
+      }
+      const when = new Date(hb.barTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const trig = hb.triggers === 1 ? '1 trigger' : `${hb.triggers} triggers`;
+      if (hb.healthy) {
+        dot.className = 'inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-brand)]';
+        text.className = 'font-semibold text-muted';
+        text.textContent = `engine live · evaluated ${hb.interval} bar ${when} · ${trig}`;
+      } else {
+        // Staleness is measured in BARS, not minutes: on 15m a four-minute-old evaluation is
+        // perfectly current, and on 4h a two-hour-old one is too.
+        dot.className = 'inline-block h-1.5 w-1.5 rounded-full bg-rose-400';
+        text.className = 'font-semibold text-rose-300';
+        text.textContent = `no evaluation for ${hb.staleBars} ${hb.interval} bars — last ${when}`;
+      }
+    }
+
     async function loadPatternState() {
       if (!tickerId) return;
       try {
-        const res = await apiGet<{ state: any }>(`/pattern/ticker/${tickerId}/state`);
+        const res = await apiGet<{ state: any; heartbeat: any }>(`/pattern/ticker/${tickerId}/state`);
         const st = res?.state;
         if (!st) { readWrap.hidden = true; clearLevelLines(); return; }
         readWrap.hidden = false;
+        renderPulse(res?.heartbeat);
 
         const regime = st.regime?.label ?? 'range';
         const chip = $('readRegime');

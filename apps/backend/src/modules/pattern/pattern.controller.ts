@@ -19,10 +19,19 @@ export class PatternController {
     return { markers: await this.patternService.getMarkers(tickerId, interval || '15m', lim) };
   }
 
-  /** Latest feature state — regime, S/R levels, indicators — for the dashboard strip. */
+  /**
+   * Latest feature state — regime, S/R levels, indicators — for the dashboard strip, plus the
+   * engine heartbeat. Both come from the same poll on purpose: the panel that shows the market
+   * read is exactly where "and the engine is still reading it" belongs, and folding it in costs
+   * no extra request.
+   */
   @Get('ticker/:tickerId/state')
   async getState(@Param('tickerId') tickerId: string) {
-    return { state: await this.patternService.getLatestState(tickerId) };
+    const [state, heartbeat] = await Promise.all([
+      this.patternService.getLatestState(tickerId),
+      this.patternService.getHeartbeat(tickerId),
+    ]);
+    return { state, heartbeat };
   }
 
   /**
