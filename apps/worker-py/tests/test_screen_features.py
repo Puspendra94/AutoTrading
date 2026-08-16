@@ -184,3 +184,44 @@ def test_planted_funding_signal_is_detected_through_the_as_of_join():
     funding = [(b["timestamp"], rates[i]) for i, b in enumerate(bars)]
     rows = {r["feature"]: r for r in screen(bars, horizons=(1,), funding=funding)}
     assert rows["fund:rate"]["ic1"] > 0.3
+
+
+# --------------------------------------------------------------------------- controls
+def test_tail_test_uses_only_non_overlapping_windows():
+    """The control that matters: stepping by h must shrink the sample, because overlapping
+    windows inflated three separate findings in this investigation."""
+    from worker.pattern.screen_features import tail_test
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=4000)
+    y = rng.normal(size=4000)
+    r = tail_test(x, y, h=16)
+    assert r["n_independent"] == pytest.approx(4000 / 16, rel=0.05)
+    assert abs(r["t"]) < 3          # pure noise must not clear
+
+
+def test_tail_test_refuses_a_sample_too_small_to_judge():
+    from worker.pattern.screen_features import tail_test
+    assert tail_test(np.arange(100.0), np.arange(100.0), h=32) is None
+
+
+def test_a_sign_flip_is_reported_as_worse_than_a_failure():
+    """A relationship that reverses between regimes is not a weak edge — it puts you positioned
+    exactly wrong half the time, while looking excellent in whichever half you sampled."""
+    from worker.pattern.screen_features import compare_regimes
+    a = {("f", 16): {"excess_pct": -1.8, "t": -2.4, "clears": True}}
+    b = {("f", 16): {"excess_pct": +0.9, "t": 2.2, "clears": True}}
+    assert compare_regimes(a, b)[("f", 16)] == "sign-flip"
+
+
+def test_clearing_one_regime_only_is_not_a_pass():
+    from worker.pattern.screen_features import compare_regimes
+    a = {("f", 16): {"excess_pct": 1.2, "t": 2.5, "clears": True}}
+    b = {("f", 16): {"excess_pct": 0.2, "t": 0.3, "clears": False}}
+    assert compare_regimes(a, b)[("f", 16)] == "one-regime-only"
+
+
+def test_consistent_and_significant_in_both_regimes_survives():
+    from worker.pattern.screen_features import compare_regimes
+    a = {("f", 16): {"excess_pct": 1.4, "t": 2.6, "clears": True}}
+    b = {("f", 16): {"excess_pct": 1.1, "t": 2.3, "clears": True}}
+    assert compare_regimes(a, b)[("f", 16)] == "survives"

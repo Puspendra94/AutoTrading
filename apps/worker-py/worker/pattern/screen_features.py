@@ -280,6 +280,65 @@ def report(rows: list[dict], interval: str, horizons=HORIZONS) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- controls
+
+
+def tail_test(x: np.ndarray, y: np.ndarray, h: int, cost_pct: float = 0.12) -> Optional[dict]:
+    """Excess return of the feature's extreme tail, on NON-OVERLAPPING windows only.
+
+    Stepping by h is the control that matters. Consecutive forward windows share bars, so an
+    overlapping sample claims far more independent observations than it has: at h=32 the t-stat
+    came out 2.4x too large, which was enough to make a dead signal look decisive.
+
+    Both tails are tried and the stronger is reported. That is itself a form of multiple testing
+    and inflates significance — acceptable for "is there anything here at all", not acceptable as
+    evidence on its own, which is why a candidate must also repeat in another regime.
+    """
+    idx = np.arange(0, len(x), h)
+    xv, yv = x[idx], y[idx]
+    ok = np.isfinite(xv) & np.isfinite(yv)
+    xv, yv = xv[ok], yv[ok]
+    if len(xv) < 60:
+        return None
+    best = None
+    for q, low_tail in ((0.2, True), (0.8, False)):
+        thr = np.quantile(xv, q)
+        sel = yv[xv <= thr] if low_tail else yv[xv >= thr]
+        oth = yv[xv > thr] if low_tail else yv[xv < thr]
+        if len(sel) < 20 or len(oth) < 2:
+            continue
+        exc = float(sel.mean() - oth.mean())
+        t = exc / math.sqrt(sel.var() / len(sel) + oth.var() / len(oth))
+        if best is None or abs(t) > abs(best["t"]):
+            best = {"excess_pct": exc, "t": t, "n_tail": len(sel), "n_independent": len(xv),
+                    "clears": abs(exc) > cost_pct and abs(t) > 2.0}
+    return best
+
+
+def compare_regimes(a: dict, b: dict) -> dict:
+    """Fold two per-regime control results into a verdict.
+
+    A sign FLIP is called out separately from a simple failure, because it is worse than one. A
+    weak edge costs you the fee; a relationship that reverses between regimes puts you positioned
+    exactly wrong half the time, and it will have looked excellent in whichever half you sampled.
+    """
+    out = {}
+    for key in set(a) | set(b):
+        ra, rb = a.get(key), b.get(key)
+        if not ra or not rb:
+            out[key] = "untested"
+            continue
+        if ra["clears"] and rb["clears"]:
+            out[key] = "survives" if ra["excess_pct"] * rb["excess_pct"] > 0 else "sign-flip"
+        elif ra["excess_pct"] * rb["excess_pct"] < 0 and (ra["clears"] or rb["clears"]):
+            out[key] = "sign-flip"
+        elif ra["clears"] or rb["clears"]:
+            out[key] = "one-regime-only"
+        else:
+            out[key] = "no"
+    return out
+
+
 # --------------------------------------------------------------------------- CLI
 
 
