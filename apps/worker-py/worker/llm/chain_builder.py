@@ -21,6 +21,22 @@ from ..config import config
 log = logging.getLogger("worker.llm.chain")
 
 KNOWN_PROVIDERS = ("direct_api", "bedrock", "deepseek", "groq")
+
+# Per-provider ceiling on max_tokens, applied on top of whatever the caller asks for.
+#
+# Callers size their budget for the WORST model in the chain: ENTRY_MAX_TOKENS is 12288 because
+# DeepSeek's reasoning models spend ~5k tokens thinking before emitting any JSON. Groq's free tier
+# caps a single request at 8,000 tokens per minute INCLUDING the prompt, and rejects anything
+# larger up front with a 413 — so the budget that keeps DeepSeek working made every Groq call fail
+# before the model saw it.
+#
+# Measured on groq:openai/gpt-oss-120b against a real entry prompt: 297 in / 155-338 out. 6000 is
+# already generous, and leaves room for a ~1.3k-token prompt inside the 8k cap.
+#
+# Note this bounds a SINGLE request. The structured path retries three times per model, and three
+# retries inside one minute can still exhaust a per-minute quota — which is survivable, because
+# the chain then falls through to the next provider, exactly as it is meant to.
+PROVIDER_MAX_TOKENS: dict[str, int] = {"groq": 6000}
 ProviderKind = Literal["direct_api", "bedrock", "deepseek", "groq"]
 
 
@@ -56,7 +72,14 @@ def parse_chain() -> list[ModelSpec]:
 
 def build_model(spec: ModelSpec, max_tokens: int) -> Any:
     """Instantiate the LangChain chat model for a spec, using the same env vars and
-    credential precedence as the backend's buildModel."""
+    credential precedence as the backend's buildModel.
+
+    `max_tokens` is clamped to the provider's ceiling where one applies — see PROVIDER_MAX_TOKENS.
+    """
+    ceiling = PROVIDER_MAX_TOKENS.get(spec.provider)
+    if ceiling is not None and max_tokens > ceiling:
+        log.debug("Clamping max_tokens %d -> %d for %s.", max_tokens, ceiling, spec.provider)
+        max_tokens = ceiling
     if spec.provider == "direct_api":
         api_key = re.sub(r"^[\"']|[\"']$", "", config.anthropic_api_key).strip()
         if not api_key or len(api_key) < 10:

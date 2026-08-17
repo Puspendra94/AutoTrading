@@ -7,6 +7,18 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { config } from '../../config/configuration';
 
 const KNOWN_PROVIDERS = ['direct_api', 'bedrock', 'deepseek', 'groq'] as const;
+
+/**
+ * Per-provider ceiling on maxTokens, applied over whatever the caller asks for.
+ *
+ * Callers size their budget for the WORST model in the chain — reasoning models spend thousands
+ * of tokens thinking before emitting any JSON. Groq's free tier caps a single request at 8,000
+ * tokens per minute INCLUDING the prompt and rejects anything larger up front with a 413, so the
+ * budget that keeps DeepSeek working made every Groq call fail before the model saw it.
+ *
+ * Must stay in step with the worker's PROVIDER_MAX_TOKENS.
+ */
+const PROVIDER_MAX_TOKENS: Partial<Record<ProviderKind, number>> = { groq: 6000 };
 export type ProviderKind = (typeof KNOWN_PROVIDERS)[number];
 
 export interface ModelSpec {
@@ -60,6 +72,10 @@ export class LlmChainBuilder {
   }
 
   buildModel(spec: ModelSpec, maxTokens: number): BaseChatModel {
+    const ceiling = PROVIDER_MAX_TOKENS[spec.provider];
+    if (ceiling !== undefined && maxTokens > ceiling) {
+      maxTokens = ceiling;
+    }
     switch (spec.provider) {
       case 'direct_api': {
         const apiKey = config.llm.anthropicApiKey.replace(/^["']|["']$/g, '').trim();

@@ -128,3 +128,34 @@ def test_groq_without_a_key_fails_loudly_rather_than_silently():
     with chain_env(GROQ_API_KEY=""):
         with pytest.raises(ValueError, match="GROQ_API_KEY"):
             cb.build_model(cb.ModelSpec(provider="groq", model_id="x"), 512)
+
+
+def test_groq_budget_is_clamped_to_its_free_tier_ceiling():
+    """ENTRY_MAX_TOKENS is 12288 to fit DeepSeek's hidden reasoning. Groq's free tier rejects any
+    single request over 8k tokens with a 413 before the model sees it, so the budget that keeps
+    DeepSeek working made every Groq call fail."""
+    from worker.llm.chain_builder import PROVIDER_MAX_TOKENS
+    assert PROVIDER_MAX_TOKENS["groq"] < 8000
+
+    captured = {}
+
+    class FakeChatGroq:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    with chain_env(GROQ_API_KEY="k" * 40):
+        import sys, types
+        mod = types.ModuleType("langchain_groq")
+        mod.ChatGroq = FakeChatGroq
+        sys.modules["langchain_groq"] = mod
+        try:
+            cb.build_model(cb.ModelSpec(provider="groq", model_id="openai/gpt-oss-120b"), 12288)
+        finally:
+            sys.modules.pop("langchain_groq", None)
+    assert captured["max_tokens"] == PROVIDER_MAX_TOKENS["groq"]
+
+
+def test_a_provider_without_a_ceiling_gets_the_budget_it_asked_for():
+    """The clamp must not quietly shrink DeepSeek, which genuinely needs the full 12288."""
+    from worker.llm.chain_builder import PROVIDER_MAX_TOKENS
+    assert "deepseek" not in PROVIDER_MAX_TOKENS
