@@ -22,12 +22,20 @@ Ladder order, evaluated every tick:
   1. stop-loss        — absolute, checked first, always closes
   2. max hold         — a position that has gone nowhere for a day is capital doing nothing
   3. target crossed   — ratchet to breakeven+fees, switch to 'runner'. Does NOT close.
-  4. trailing (runner) — ratchet only, never widens
+  4. give-back        — a PRE-target winner that has surrendered too much of its peak. Closes.
+  5. trailing (runner) — ratchet only, never widens
+
+Step 4 exists because steps 1-3 left a hole: below the target the only exits were the stop and max
+hold, so a trade that ran most of the way to its target and then reversed handed back every point
+and stopped out. "The target is a soft handoff" was true of the target, but with nothing else able
+to close a position it still behaved as a hard gate — profit did not influence the exit at all
+until the target was crossed.
 
 Pure functions over a position dict: no DB, no clock, no exchange.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -53,6 +61,29 @@ TRAIL_ATR_MULTIPLE = 2.0
 # 15m bars. 96 = 24 hours: past that, a position that has neither run nor stopped is capital tied
 # up in a setup that did not work.
 MAX_HOLD_BARS = 96
+
+# --- Give-back: protect profit that exists but has not reached the target.
+#
+# The gap this fills. Before this rule the ONLY ways out below the target were the stop and max
+# hold, so a trade that ran 80% of the way to its target and then rolled over gave every point
+# back and exited at the stop. The target was meant to be a soft handoff, but because nothing else
+# could close a position, it had become a hard gate: profit was not an input to the exit decision
+# until the target was crossed.
+#
+# The AI exit could not cover this either — it is consulted on BAR CLOSE and only when a trigger
+# opposes the position, the regime flips, or the trade is already a runner. "Up 80 points and
+# stalling" is none of those, so nothing looked at it.
+#
+# ARM_R is what stops this firing on noise. Below half a unit of risk the "peak" is one bar's
+# wiggle, and trailing it would exit almost immediately after every entry.
+GIVE_BACK_ARM_R = float(os.getenv("GIVE_BACK_ARM_R", "0.5"))
+# Share of the best unrealised profit that may be surrendered before closing. 0.35 means a trade
+# that peaked at +80 points exits around +52.
+#
+# Tighter is not automatically better: peak profit is measured against a moving price, so a 10%
+# give-back on a position that is up 2 ATR is triggered by well under one bar's normal range. Both
+# knobs are env-tunable because the right value depends on the timeframe's noise, not on taste.
+GIVE_BACK_FRACTION = float(os.getenv("GIVE_BACK_FRACTION", "0.35"))
 
 # Actions
 HOLD = "hold"
@@ -163,7 +194,21 @@ def evaluate_exit(position: dict, price: float, atr: float, bars_held: int = 0) 
             new_stop=new_stop, new_lifecycle=RUNNER,
         )
 
-    # 4. Trailing, once running.
+    # 4. Give-back, BEFORE the target is reached. Deliberately restricted to lifecycle 'open':
+    # once a trade is a RUNNER it is past its target and the ATR trail already protects it, and
+    # running both would mean two different rules deciding the same exit.
+    if lifecycle == OPEN:
+        initial_stop = _f(position.get("initialStop"), entry)
+        level = give_back_exit(side, entry, initial_stop, extreme, price)
+        if level is not None:
+            peak = abs(extreme - entry)
+            return ExitAction(
+                EXIT,
+                f"Gave back {GIVE_BACK_FRACTION * 100:.0f}% of a {peak:.2f} peak "
+                f"(best {extreme:.2f}, floor {level:.2f}) at {price:.2f}.",
+            )
+
+    # 5. Trailing, once running.
     if lifecycle == RUNNER and atr > 0:
         candidate = trailing_stop(side, extreme, atr)
         if is_better_stop(side, candidate, stop):
@@ -174,6 +219,28 @@ def evaluate_exit(position: dict, price: float, atr: float, bars_held: int = 0) 
             )
 
     return ExitAction(HOLD)
+
+
+def give_back_exit(
+    side: str, entry: float, initial_stop: float, extreme: float, price: float,
+    arm_r: float = GIVE_BACK_ARM_R, fraction: float = GIVE_BACK_FRACTION,
+) -> Optional[float]:
+    """The price at which a pre-target winner has given back too much, or None.
+
+    Returns the give-back LEVEL when `price` has breached it, so the caller can report the number
+    rather than just the verdict. Symmetric for shorts: "profit" is always measured in the
+    direction of the trade.
+    """
+    risk = abs(entry - initial_stop)
+    if risk <= 0:
+        return None
+    peak_profit = (extreme - entry) if side == LONG else (entry - extreme)
+    if peak_profit <= 0 or (peak_profit / risk) < arm_r:
+        return None          # not enough profit yet for there to be anything worth protecting
+    keep = peak_profit * (1.0 - fraction)
+    level = entry + keep if side == LONG else entry - keep
+    breached = price <= level if side == LONG else price >= level
+    return level if breached else None
 
 
 def r_multiple(position: dict, exit_price: float) -> float:

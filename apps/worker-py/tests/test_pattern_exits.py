@@ -142,3 +142,70 @@ def test_r_multiple_is_negative_on_a_loss():
 
 def test_r_multiple_handles_a_zero_risk_position():
     assert r_multiple(pos(initialStop=ENTRY), ENTRY + 100) == 0.0
+
+
+# --------------------------------------------------------------------------- give-back
+from worker.pattern.exits import GIVE_BACK_ARM_R, GIVE_BACK_FRACTION, give_back_exit
+
+
+def _pos(side="long", entry=1000.0, stop=900.0, target=1200.0, extreme=None, lifecycle="open"):
+    return {"side": side, "entryPrice": entry, "stopLoss": stop, "takeProfit": target,
+            "initialStop": stop, "lifecycle": lifecycle,
+            "extremePrice": entry if extreme is None else extreme}
+
+
+def test_give_back_closes_a_pre_target_winner_that_reverses():
+    """The reported gap: ran most of the way to target, rolled over, and previously had no exit
+    below the target except the stop."""
+    # risk 100, peak +80 (0.8R, armed). Floor = entry + 80*(1-0.35) = 1052.
+    act = evaluate_exit(_pos(extreme=1080.0), price=1050.0, atr=10.0)
+    assert act.is_exit
+    assert "Gave back" in act.reason
+
+
+def test_give_back_holds_while_the_winner_is_still_near_its_peak():
+    act = evaluate_exit(_pos(extreme=1080.0), price=1070.0, atr=10.0)
+    assert not act.is_exit
+
+
+def test_give_back_does_not_arm_on_a_trivial_peak():
+    """Below ARM_R the 'peak' is one bar's wiggle; trailing it would exit straight after entry."""
+    peak = 1000.0 + 100.0 * (GIVE_BACK_ARM_R / 2)      # half the arming threshold
+    act = evaluate_exit(_pos(extreme=peak), price=1000.5, atr=10.0)
+    assert not act.is_exit
+
+
+def test_give_back_is_symmetric_for_shorts():
+    # short from 1000, stop 1100 (risk 100), best price 920 => peak +80. Floor = 1000-52 = 948.
+    act = evaluate_exit(_pos(side="short", stop=1100.0, target=800.0, extreme=920.0),
+                        price=950.0, atr=10.0)
+    assert act.is_exit and "Gave back" in act.reason
+
+
+def test_stop_loss_still_wins_over_give_back():
+    """Step 1 must remain unconditional — nothing below it may override the stop."""
+    act = evaluate_exit(_pos(extreme=1080.0), price=890.0, atr=10.0)
+    assert act.is_exit and "Stop-loss hit" in act.reason
+
+
+def test_a_runner_is_left_to_its_trail_not_the_give_back():
+    """Past the target the ATR trail owns the exit; two rules deciding one exit is worse than one."""
+    act = evaluate_exit(_pos(extreme=1300.0, lifecycle="runner", stop=1050.0),
+                        price=1100.0, atr=10.0)
+    assert not act.is_exit          # give-back would have fired here had it applied to runners
+
+
+def test_crossing_the_target_still_becomes_a_runner_rather_than_giving_back():
+    act = evaluate_exit(_pos(extreme=1200.0), price=1200.0, atr=10.0)
+    assert act.is_ratchet and act.new_lifecycle == "runner"
+
+
+def test_give_back_level_maths_is_exact():
+    # risk 100, peak +100 (1.0R). fraction f => floor at entry + 100*(1-f).
+    lvl = give_back_exit("long", 1000.0, 900.0, 1100.0, price=1000.0)
+    assert lvl == pytest.approx(1000.0 + 100.0 * (1 - GIVE_BACK_FRACTION))
+    assert give_back_exit("long", 1000.0, 900.0, 1100.0, price=1099.0) is None   # not breached
+
+
+def test_give_back_is_inert_without_a_risk_distance():
+    assert give_back_exit("long", 1000.0, 1000.0, 1100.0, price=1000.0) is None
