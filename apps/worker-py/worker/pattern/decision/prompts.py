@@ -17,9 +17,10 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from ...config import config
 from .sizing import MAX_STOP_PCT, MIN_STOP_ATR, MIN_STOP_PCT
 
-MIN_RISK_REWARD = 1.5
+MIN_RISK_REWARD = config.min_risk_reward
 MAX_FAILURES_SHOWN = 5
 
 

@@ -180,6 +180,20 @@ class Config:
     # as you like before anything is allowed to spend money or open a position. Turning this on
     # is the deliberate step from "observing" to "trading".
     pattern_decisions_enabled: bool = os.getenv("PATTERN_DECISIONS_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+    # Minimum reward:risk an entry must offer against its sized stop.
+    #
+    # Lowered from 1.5 to 1.2 because it had become the binding constraint on trading at all.
+    # Stop distance is floored at MIN_STOP_ATR (3.0) and the target is R:R multiples of THAT, so
+    # 1.5 demanded a level 4.5 ATR away; in a range there frequently is none, and the model was
+    # correctly refusing. Measured on the host: 17 of 22 model skips cited the stop or the R:R.
+    # At 1.2 the target sits 3.6 ATR out — a 20% smaller move to find.
+    #
+    # This costs less than it looks, because the target is a HANDOFF, not an exit: crossing it
+    # ratchets the stop to breakeven+fees and starts the ATR trail rather than closing. A lower
+    # minimum therefore starts the runner sooner, it does not cap the winner.
+    #
+    # Env-tunable on purpose — it is being actively tuned, and a redeploy per experiment is waste.
+    min_risk_reward: float = float(os.getenv("MIN_RISK_REWARD", "1.2"))
 
     # --- Trading costs. ------------------------------------------------------------------------
     # These are charged on paper fills as well as live ones, and that is the entire point.
