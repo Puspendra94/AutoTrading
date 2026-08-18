@@ -3,6 +3,8 @@
 The stream fires every 1m but the engine evaluates on 15m, so the interesting behaviour is all
 about WHICH bar gets processed and how often — partial bars, repeats, restarts.
 """
+import dataclasses
+
 import pytest
 
 from worker.pattern.executor import PatternExecutor, _drop_incomplete_bar
@@ -306,12 +308,21 @@ async def test_strategy_brain_positions_are_never_touched():
 # label and respects the cooldown. `_run_decision` itself is stubbed: it pulls in the account
 # snapshot, provider lookups and exchange filters, none of which this change touches, and
 # dragging them in would test the plumbing around the thing instead of the thing.
+@dataclasses.dataclass(frozen=True)
 class _FakeState:
-    ticker_id, symbol, interval, bar_time_ms = "t1", "BTCUSDT", "15m", 0
-    close, warm, triggers = 100.0, True, []
-    regime = {"label": "range", "adx": 20.0}
-    summary = {"atr14": 100.0, "atrPct": 0.1}
-    levels = {"resistance": [{"price": 1000.0, "touches": 7}], "support": []}
+    """A frozen dataclass because the real FeatureState is one, and the executor uses
+    dataclasses.replace() to attach the intent as a trigger without mutating the cached read."""
+    ticker_id: str = "t1"
+    symbol: str = "BTCUSDT"
+    interval: str = "15m"
+    bar_time_ms: int = 0
+    close: float = 100.0
+    warm: bool = True
+    triggers: tuple = ()
+    regime: dict = dataclasses.field(default_factory=lambda: {"label": "range", "adx": 20.0})
+    summary: dict = dataclasses.field(default_factory=lambda: {"atr14": 100.0, "atrPct": 0.1})
+    levels: dict = dataclasses.field(
+        default_factory=lambda: {"resistance": [{"price": 1000.0, "touches": 7}], "support": []})
 
     def to_state_pack(self):
         return {}
@@ -381,3 +392,34 @@ async def test_an_open_position_is_the_exit_ladder_s_business_not_the_entry_path
     await executor.on_final_candle("t1", 995.0)
     await executor.on_final_candle("t1", 1020.0)
     assert calls == []
+
+
+async def test_the_intent_is_presented_to_the_gate_as_a_trigger():
+    """Regression for a no-op. The cached 15m state has NO triggers — that is why we are mid-bar
+    rather than at a close — so passing it through unchanged made the gate answer "No trigger on
+    this bar" and the model was never asked. The intent must arrive as the trigger."""
+    executor, _ = await _intent_executor()
+    seen = []
+
+    async def _capture(state, interval_label=None, bar_time_ms=None):
+        seen.append(state)
+    executor._run_decision = _capture
+
+    await executor.on_final_candle("t1", 995.0)
+    await executor.on_final_candle("t1", 1020.0)
+
+    assert seen, "intent did not reach the decision path"
+    triggers = seen[0].triggers
+    assert len(triggers) == 1, "the gate must see exactly the intent"
+    assert triggers[0]["name"] == "intent_level_cross"
+    assert triggers[0]["side"] == "long"
+    assert set(triggers[0]) >= {"name", "side", "price", "detail"}
+
+
+async def test_the_cached_15m_read_is_not_mutated_by_an_intent():
+    """The cached state is reused across intents; replacing triggers must not corrupt it."""
+    executor, _ = await _intent_executor()
+    cached = executor._last_state["t1"]
+    await executor.on_final_candle("t1", 995.0)
+    await executor.on_final_candle("t1", 1020.0)
+    assert cached.triggers == (), "cached 15m state must be left alone"

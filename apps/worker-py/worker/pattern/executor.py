@@ -16,6 +16,7 @@ reconnects and replayed closes, none of which a counter would survive.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import time
@@ -212,6 +213,19 @@ class PatternExecutor:
 
         self._last_intent_ms[ticker_id] = now_ms
         log.warning("INTENT %s/%s on %s: %s", intent.kind, intent.side, ticker_id, intent.detail)
+
+        # The INTENT IS THE TRIGGER. Handing the gate the cached 15m state unchanged made this a
+        # no-op: that state's trigger list is empty — which is exactly why we are mid-bar and not
+        # at a close — so the gate answered "No trigger on this bar" and the model was never
+        # asked. The 15m read (levels, regime, patterns, indicators) is what the model needs for
+        # CONTEXT; the intent is the event, and it has to be presented as one.
+        #
+        # Replacing rather than appending: any 15m trigger on that state was already decided at
+        # its own close. The new information is the intent.
+        state = dataclasses.replace(state, triggers=[{
+            "name": f"intent_{intent.kind}", "side": intent.side,
+            "price": intent.price, "detail": intent.detail,
+        }])
         # Recorded under a distinct interval label so intent-triggered decisions never collide
         # with the bar-close row for the same 15m bar (the store upserts on ticker+interval+bar),
         # and so the two are separable when measuring whether this helped.
