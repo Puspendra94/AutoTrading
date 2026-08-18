@@ -194,6 +194,10 @@ class Config:
     #
     # Env-tunable on purpose — it is being actively tuned, and a redeploy per experiment is waste.
     min_risk_reward: float = float(os.getenv("MIN_RISK_REWARD", "1.2"))
+    # Wake the decision loop between 15m closes when a level breaks or a fast run starts on 1m.
+    # See worker/pattern/intent.py — the timeframe stays 15m, only the wake-up moves to 1m,
+    # because moving the whole loop to 1m measured far worse (-0.120R vs -0.045R).
+    pattern_intent_enabled: bool = os.getenv("PATTERN_INTENT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
     # --- Trading costs. ------------------------------------------------------------------------
     # These are charged on paper fills as well as live ones, and that is the entire point.

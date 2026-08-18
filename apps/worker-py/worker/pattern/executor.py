@@ -29,6 +29,7 @@ from ..execution.risk_gate import PAPER_NOTIONAL
 from ..util import to_fixed
 from .decision.engine import build_account_snapshot
 from .exits import better_extreme, evaluate_exit
+from .intent import cooldown_ok, detect_intent
 from .features import build_feature_state
 from .store import PatternSignalStore, interval_ms
 
@@ -67,6 +68,13 @@ class PatternExecutor:
         # AFTER the LLM answers: the bar close is ~45s stale by then, and the fill, the sizing and
         # the fillability guard all care about the price we would actually get.
         self._last_price: dict[str, float] = {}
+        # --- Intent detection (see intent.py). The decision loop runs on 15m closes, so a move
+        # starting three minutes into a bar is invisible for twelve more. These keep just enough
+        # 1m state to notice it: recent closes, the last state built, and when we last woke the
+        # model early so one volatile stretch cannot wake it every minute.
+        self._closes_1m: dict[str, list[float]] = {}
+        self._last_state: dict[str, Any] = {}
+        self._last_intent_ms: dict[str, int] = {}
 
     async def on_tick(self, ticker_id: str, close: float) -> None:
         if close and close > 0:
@@ -136,9 +144,13 @@ class PatternExecutor:
         put that bar through the decision loop."""
         if close and close > 0:
             self._last_price[ticker_id] = float(close)
+        # Every 1m close lands here; `evaluate` returns None until a NEW 15m bar exists. That
+        # gap is the blind window, and it is where intent detection earns its keep.
         state = await self.evaluate(ticker_id)
         if state is None:
+            await self._check_intent(ticker_id, close)
             return
+        self._last_state[ticker_id] = state
 
         # Heartbeat on every evaluated bar. Without it a stalled decision loop is indistinguishable
         # from a quiet market in the logs — which is exactly how a ten-hour gap went unnoticed.
@@ -164,7 +176,50 @@ class PatternExecutor:
         if self.decisions is not None:
             await self._run_decision(state)
 
-    async def _run_decision(self, state) -> None:
+    async def _check_intent(self, ticker_id: str, close: float) -> None:
+        """Between 15m closes, look for a move worth waking the model for.
+
+        Everything here is free: the levels and ATR come from the last completed 15m evaluation
+        and the closes are already in memory. Only a fired intent costs anything, and even then it
+        runs the SAME gate -> validate -> size path as a bar close, so this can bring a decision
+        forward but never manufacture one the guardrails would have refused.
+        """
+        if self.decisions is None or config.pattern_intent_enabled is False:
+            return
+        buf = self._closes_1m.setdefault(ticker_id, [])
+        buf.append(float(close))
+        if len(buf) > 30:                      # only the last half hour is ever consulted
+            del buf[:-30]
+
+        state = self._last_state.get(ticker_id)
+        if state is None:
+            return                             # nothing evaluated yet this process
+
+        now_ms = int(time.time() * 1000)
+        if not cooldown_ok(now_ms, self._last_intent_ms.get(ticker_id)):
+            return
+        try:
+            # An open position is the exit ladder's business, not the entry path's.
+            if self.store is not None and await self.store.open_pattern_positions(ticker_id):
+                return
+        except Exception:  # noqa: BLE001 — never let this break ingestion
+            log.exception("Intent position check failed for %s", ticker_id)
+            return
+
+        intent = detect_intent(buf, state.levels, self._atr_by_ticker.get(ticker_id, 0.0))
+        if intent is None:
+            return
+
+        self._last_intent_ms[ticker_id] = now_ms
+        log.warning("INTENT %s/%s on %s: %s", intent.kind, intent.side, ticker_id, intent.detail)
+        # Recorded under a distinct interval label so intent-triggered decisions never collide
+        # with the bar-close row for the same 15m bar (the store upserts on ticker+interval+bar),
+        # and so the two are separable when measuring whether this helped.
+        await self._run_decision(state, interval_label=f"{self.interval}+1m",
+                                 bar_time_ms=now_ms - now_ms % 60_000)
+
+    async def _run_decision(self, state, interval_label: Optional[str] = None,
+                            bar_time_ms: Optional[int] = None) -> None:
         """One bar through the decision loop. Every bar produces a recorded decision, including
         the free ones where the gate declined — a gate that is too tight is invisible otherwise."""
         try:
@@ -190,6 +245,10 @@ class PatternExecutor:
             state, open_position=open_position, account=account, failures=failures,
             price_now=lambda: self._last_price.get(state.ticker_id),
         )
+        if interval_label:
+            decision["interval"] = interval_label
+        if bar_time_ms is not None:
+            decision["barTimeMs"] = bar_time_ms
         await self._persist(decision)
 
     async def _persist(self, decision: dict) -> None:

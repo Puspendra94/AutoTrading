@@ -298,3 +298,86 @@ async def test_strategy_brain_positions_are_never_touched():
 
     await executor.on_tick("t1", ENTRY - 5000)
     assert ex.closed == []
+
+
+# --------------------------------------------------------------------- intent wiring
+#
+# These exercise the WIRING only — that a mid-bar move reaches the decision path with the right
+# label and respects the cooldown. `_run_decision` itself is stubbed: it pulls in the account
+# snapshot, provider lookups and exchange filters, none of which this change touches, and
+# dragging them in would test the plumbing around the thing instead of the thing.
+class _FakeState:
+    ticker_id, symbol, interval, bar_time_ms = "t1", "BTCUSDT", "15m", 0
+    close, warm, triggers = 100.0, True, []
+    regime = {"label": "range", "adx": 20.0}
+    summary = {"atr14": 100.0, "atrPct": 0.1}
+    levels = {"resistance": [{"price": 1000.0, "touches": 7}], "support": []}
+
+    def to_state_pack(self):
+        return {}
+
+
+async def _intent_executor():
+    """Executor in the blind window: a state exists, no new 15m bar, no open position."""
+    store = LadderStore([])
+    executor = PatternExecutor(ClosingExec(), pool=None, store=store,
+                               load_candles=None, decisions=object())
+    executor._atr_by_ticker["t1"] = 100.0
+    executor._last_state["t1"] = _FakeState()
+
+    async def _no_new_bar(_tid):
+        return None
+    executor.evaluate = _no_new_bar
+
+    calls = []
+
+    async def _fake_decision(state, interval_label=None, bar_time_ms=None):
+        calls.append({"label": interval_label, "bar": bar_time_ms})
+    executor._run_decision = _fake_decision
+    return executor, calls
+
+
+async def test_a_mid_bar_level_break_wakes_the_decision_loop():
+    """The whole point: without this the 15m close would not look for up to fourteen minutes."""
+    executor, calls = await _intent_executor()
+    await executor.on_final_candle("t1", 995.0)      # below resistance — nothing
+    assert calls == []
+    await executor.on_final_candle("t1", 1020.0)     # crosses 1000 by more than the margin
+    assert len(calls) == 1
+
+
+async def test_a_quiet_1m_close_costs_nothing():
+    executor, calls = await _intent_executor()
+    for price in (995.0, 995.5, 996.0):
+        await executor.on_final_candle("t1", price)
+    assert calls == []
+
+
+async def test_intent_decisions_are_labelled_so_they_cannot_collide():
+    """The store upserts on (ticker, interval, bar). An intent row sharing the 15m bar's key
+    would overwrite the bar-close decision instead of being recorded alongside it."""
+    executor, calls = await _intent_executor()
+    await executor.on_final_candle("t1", 995.0)
+    await executor.on_final_candle("t1", 1020.0)
+    assert calls[0]["label"] == "15m+1m"
+    assert calls[0]["bar"] is not None
+
+
+async def test_cooldown_stops_one_move_waking_the_model_repeatedly():
+    executor, calls = await _intent_executor()
+    await executor.on_final_candle("t1", 995.0)
+    await executor.on_final_candle("t1", 1020.0)
+    await executor.on_final_candle("t1", 995.0)
+    await executor.on_final_candle("t1", 1030.0)     # would fire again but for the cooldown
+    assert len(calls) == 1
+
+
+async def test_an_open_position_is_the_exit_ladder_s_business_not_the_entry_path_s():
+    executor, calls = await _intent_executor()
+    executor.store.positions = [{"id": "p1", "side": "long", "entryPrice": 100.0,
+                                 "quantity": 1.0, "stopLoss": 90.0, "takeProfit": 120.0,
+                                 "initialStop": 90.0, "extremePrice": 100.0,
+                                 "lifecycle": "open", "openedAt": None}]
+    await executor.on_final_candle("t1", 995.0)
+    await executor.on_final_candle("t1", 1020.0)
+    assert calls == []
